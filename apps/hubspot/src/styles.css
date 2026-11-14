@@ -1,0 +1,127 @@
+/* HubSpot CRM (Demo) · studied-DNA: HubSpot CRM (pinned by the build guide)
+ * navy top bar #2D3E50 · orange accents #FF7A59 · slate ink · Lexend Deca
+ * signature: when the agent moves a deal, the card flies to its new column (View Transitions)
+ */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Lexend Deca", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-navy: #2d3e50;
+  --color-navy-2: #3d5368;
+  --color-orange: #ff7a59;
+  --color-orange-ink: #d9512c;
+  --color-orange-wash: #fff1ee;
+  --color-ink: #33475b;
+  --color-ink-2: #516f90;
+  --color-line: #cbd6e2;
+  --color-line-2: #dfe3eb;
+  --color-wash: #f5f8fa;
+  --color-paper: #ffffff;
+  --color-link: #007a8c;
+  --color-link-ink: #005a68;
+
+  --color-ai: #0b7a75;
+  --color-ai-wash: #e3f4f2;
+
+  --color-hot: #c93545;
+  --color-hot-wash: #fdecee;
+  --color-warm: #a8530f;
+  --color-warm-wash: #fef1e6;
+  --color-cold: #2563a6;
+  --color-cold-wash: #e8f1fb;
+
+  --color-danger: #c93545;
+  --color-success: #00a38d;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-arrive: arrive 3.2s var(--ease-out);
+  --animate-pulse-ring: pulse-ring 2s var(--ease-out) infinite;
+
+  @keyframes arrive {
+    0%,
+    35% {
+      background-color: var(--color-ai-wash);
+    }
+    100% {
+      background-color: var(--color-paper);
+    }
+  }
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+  }
+  @keyframes pulse-ring {
+    0% {
+      box-shadow: 0 0 0 0 rgb(11 122 117 / 0.45);
+    }
+    100% {
+      box-shadow: 0 0 0 8px rgb(11 122 117 / 0);
+    }
+  }
+}
+
+@layer base {
+  html,
+  body {
+    overflow-x: clip;
+  }
+  body {
+    @apply bg-wash font-sans text-sm text-ink antialiased;
+  }
+  ::selection {
+    @apply bg-orange-wash text-navy;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+  input,
+  textarea {
+    caret-color: var(--color-orange-ink);
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-link;
+  }
+  select {
+    @apply h-9 cursor-pointer rounded-[3px] border border-line bg-paper px-2 text-ink hover:border-ink-2;
+  }
+}
+
+@layer components {
+  /* A HubSpot record card: white, hairline border, 3px radius */
+  .box {
+    @apply rounded-[3px] border border-line bg-paper p-5;
+  }
+  .box > h2,
+  .box-title {
+    @apply mb-3 text-[13px] font-semibold text-ink;
+  }
+  .link {
+    @apply text-link no-underline underline-offset-2 hover:text-link-ink hover:underline;
+  }
+  .btn-primary {
+    @apply inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-[3px] bg-orange-ink px-4 font-semibold whitespace-nowrap text-white transition-colors hover:bg-[#c2441f] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[3px] border border-line bg-paper px-3 text-[13px] font-semibold whitespace-nowrap text-ink hover:bg-wash active:translate-y-px;
+  }
+}
+
+/* The moved card keeps its own snapshot during the board's view transition */
+::view-transition-group(*) {
+  animation-duration: 0.55s;
+  animation-timing-function: var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

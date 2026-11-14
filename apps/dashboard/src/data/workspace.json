@@ -1,0 +1,30 @@
+{
+  "team": [
+    { "id": "T-1", "title": "Dashboard UI: layout, Home, Tickets", "owner": "P1", "tag": "Frontend", "column": "done" },
+    { "id": "T-2", "title": "Kanban board + Approvals flow", "owner": "P1", "tag": "Frontend", "column": "doing" },
+    { "id": "T-3", "title": "Agent loop: understand → policy → act", "owner": "P2", "tag": "Agent", "column": "doing" },
+    { "id": "T-4", "title": "Refund policy engine + limits", "owner": "P2", "tag": "Agent", "column": "todo" },
+    { "id": "T-5", "title": "Paytm + Zendesk connector APIs", "owner": "P3", "tag": "Backend", "column": "doing" },
+    { "id": "T-6", "title": "Audit log API + trace storage", "owner": "P3", "tag": "Backend", "column": "todo" },
+    { "id": "T-7", "title": "WhatsApp webhook (sandbox)", "owner": "P3", "tag": "Backend", "column": "done" },
+    { "id": "T-8", "title": "Pitch deck + 3-min demo script", "owner": "P4", "tag": "Pitch", "column": "doing" },
+    { "id": "T-9", "title": "Record backup demo video", "owner": "P4", "tag": "Pitch", "column": "todo" }
+  ],
+  "settings": {
+    "agentName": "Aria",
+    "avatarColor": "#0F9D8A",
+    "tone": "Friendly",
+    "playbooks": { "support": true, "sales": true },
+    "autonomy": "approval",
+    "refundLimit": 2000,
+    "escalation": {
+      "critical": true,
+      "fraud": true,
+      "legal": true,
+      "vip": false,
+      "negative": true
+    },
+    "languages": ["English", "Hindi", "Hinglish", "Tamil"],
+    "hours": { "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], "from": "09:00", "to": "21:00", "afterHours": "autonomous" }
+  }
+}

@@ -1,0 +1,136 @@
+/* Hallmark · macrostructure: Workbench (shop app) · tone: bright, plain-spoken retail · anchor hue: jamun purple
+ * theme: custom · paper #ffffff · accent jamun #5b2d9e + marigold #ffb224 (price tags only)
+ * display: Bricolage Grotesque · body: Figtree · axes: light / grotesk-sans / chromatic-other
+ * signature: the parcel track rail on every order, updated live while the customer chats
+ */
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Bricolage Grotesque Variable", "Figtree Variable", system-ui, sans-serif;
+  --font-sans: "Figtree Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-paper: #ffffff;
+  --color-wash: #f5f3fa;
+  --color-wash-2: #ece8f5;
+  --color-ink: #1c1730;
+  --color-ink-2: #5b5670;
+  --color-ink-3: #7d7891;
+  --color-line: #e4e0ee;
+
+  --color-jamun: #5b2d9e;
+  --color-jamun-ink: #43207a;
+  --color-jamun-wash: #f1ebfb;
+  --color-marigold: #ffb224;
+  --color-marigold-ink: #6b4500;
+
+  --color-ok: #157a3c;
+  --color-ok-wash: #e7f6ec;
+  --color-warn: #a14a00;
+  --color-warn-wash: #fff3e3;
+  --color-bad: #b42318;
+  --color-bad-wash: #fdecea;
+  --color-info: #1d4ed8;
+  --color-info-wash: #e8efff;
+
+  /* WhatsApp-style chat surface */
+  --color-chat-wall: #efeae2;
+  --color-chat-out: #d9fdd3;
+  --color-chat-in: #ffffff;
+  --color-chat-tick: #53bdeb;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --shadow-lift: 0 10px 30px -12px rgb(28 23 48 / 0.28);
+  --shadow-pop: 0 24px 60px -20px rgb(28 23 48 / 0.45), 0 4px 12px rgb(28 23 48 / 0.08);
+
+  --animate-typing: typing 1.2s ease-in-out infinite;
+  --animate-pop-in: pop-in 0.32s var(--ease-out);
+  --animate-sheet-in: sheet-in 0.36s var(--ease-out);
+
+  @keyframes typing {
+    0%,
+    60%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.45;
+    }
+    30% {
+      transform: translateY(-3px);
+      opacity: 1;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.98);
+    }
+  }
+  @keyframes sheet-in {
+    from {
+      opacity: 0;
+      transform: translateY(16px) scale(0.97);
+    }
+  }
+}
+
+@layer base {
+  html,
+  body {
+    overflow-x: clip;
+  }
+  body {
+    @apply bg-paper font-sans text-[15px] text-ink antialiased;
+  }
+  ::selection {
+    @apply bg-marigold text-ink;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-jamun;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+  input,
+  textarea {
+    caret-color: var(--color-jamun);
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-tight text-balance;
+  }
+  input,
+  select,
+  textarea {
+    @apply text-ink;
+  }
+}
+
+@layer components {
+  .btn-primary,
+  .btn-quiet {
+    @apply inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-xl px-5 font-semibold whitespace-nowrap transition-[background-color,border-color,transform] duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-55;
+  }
+  .btn-primary {
+    @apply bg-jamun text-white hover:bg-jamun-ink;
+  }
+  .btn-quiet {
+    @apply border border-line bg-paper text-ink hover:border-jamun/40 hover:bg-jamun-wash;
+  }
+  .field {
+    @apply h-12 w-full rounded-xl border border-line bg-paper px-4 transition-[border-color,box-shadow] placeholder:text-ink-3 hover:border-ink-3 focus:border-jamun focus:ring-4 focus:ring-jamun/15 focus:outline-none;
+  }
+  .wrap {
+    @apply mx-auto w-full max-w-[1200px] px-4 sm:px-6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

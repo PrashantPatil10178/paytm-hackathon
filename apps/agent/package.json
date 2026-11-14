@@ -1,0 +1,9 @@
+{
+  "name": "@ph/agent",
+  "private": true,
+  "scripts": {
+    "dev": "sh scripts/run.sh fastapi dev app/main.py --port ${AGENT_PORT:-8000}",
+    "start": "sh scripts/run.sh fastapi run app/main.py --port ${AGENT_PORT:-8000}",
+    "test": "sh scripts/run.sh pytest -q"
+  }
+}

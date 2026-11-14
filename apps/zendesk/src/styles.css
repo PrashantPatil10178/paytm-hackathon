@@ -1,0 +1,120 @@
+/* Zendesk (Demo) · studied-DNA: Zendesk Agent Workspace (pinned by the build guide)
+ * kale sidebar #03363D · white work area · Garden status hues · system UI font stack
+ * signature: rows and replies the agent creates arrive with a teal wash that fades out
+ */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, "Helvetica Neue", Arial, sans-serif;
+
+  --color-kale: #03363d;
+  --color-kale-2: #17494d;
+  --color-kale-muted: #a6c3c5;
+  --color-ink: #2f3941;
+  --color-ink-2: #49545c;
+  --color-ink-3: #68737d;
+  --color-line: #d8dcde;
+  --color-line-2: #e9ebed;
+  --color-wash: #f8f9f9;
+  --color-paper: #ffffff;
+  --color-link: #1f73b7;
+  --color-link-ink: #144a75;
+  --color-row-hover: #edf7ff;
+  --color-agent: #f3f9fd;
+  --color-agent-line: #cfe4f5;
+  --color-online: #038153;
+
+  /* Zendesk's own status colours */
+  --color-st-new: #ffb648;
+  --color-st-new-ink: #703b15;
+  --color-st-open: #e34f32;
+  --color-st-pending: #3091ec;
+  --color-st-solved: #87929d;
+  --color-prio-urgent: #cc3340;
+  --color-prio-high: #ad5918;
+
+  /* ResolveAI's marker colour, shared with the HubSpot demo */
+  --color-ai: #0b7a75;
+  --color-ai-wash: #e3f4f2;
+
+  --color-note: #fff6db;
+  --color-note-line: #f2cd6b;
+  --color-note-ink: #7a5a00;
+  --color-danger: #cc3340;
+  --color-danger-wash: #fff0f1;
+  --color-star: #f79a3e;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --shadow-pop: 0 8px 24px rgb(4 68 77 / 0.16), 0 2px 4px rgb(4 68 77 / 0.08);
+
+  --animate-arrive: arrive 3.2s var(--ease-out);
+  --animate-rise: rise 0.45s var(--ease-out);
+  --animate-pulse-ring: pulse-ring 2s var(--ease-out) infinite;
+
+  @keyframes arrive {
+    0%,
+    35% {
+      background-color: var(--color-ai-wash);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+  @keyframes pulse-ring {
+    0% {
+      box-shadow: 0 0 0 0 rgb(11 122 117 / 0.45);
+    }
+    100% {
+      box-shadow: 0 0 0 8px rgb(11 122 117 / 0);
+    }
+  }
+}
+
+@layer base {
+  html,
+  body {
+    overflow-x: clip;
+  }
+  body {
+    @apply bg-paper font-sans text-sm/[1.43] text-ink antialiased;
+  }
+  ::selection {
+    @apply bg-ai-wash text-kale;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+  input,
+  textarea {
+    caret-color: var(--color-link);
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-link;
+  }
+}
+
+@layer components {
+  .link {
+    @apply text-link no-underline underline-offset-2 hover:text-link-ink hover:underline;
+  }
+  .zd-select {
+    @apply h-9 min-w-0 flex-1 cursor-pointer rounded border border-line bg-paper px-2 hover:border-ink-3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

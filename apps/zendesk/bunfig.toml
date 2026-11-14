@@ -1,0 +1,3 @@
+# Tailwind v4 for Bun's HTML bundler (dev server and production serve)
+[serve.static]
+plugins = ["bun-plugin-tailwind"]

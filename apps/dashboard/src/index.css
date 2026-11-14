@@ -1,0 +1,200 @@
+/* ResolveAI · Control Room
+ * Operate surface: a support lead supervising Aria, the AI teammate, inside the team's own tools.
+ * Quiet and data-first, in light and dark. Cards are trays: the header sits in a tinted tray,
+ * the content in an inset panel. One accent per meaning:
+ *   AI (Aria) mint · Human periwinkle · Guardrail amber · Danger red
+ * Type: Geist (interface) · Geist Mono (records: IDs, refs, clock times, axes)
+ *
+ * Light is the default token set; [data-theme="dark"] on <html> swaps it (index.html sets it before
+ * first paint from the saved choice or the OS preference). The Tailwind scales are re-pointed so
+ * existing classes keep one meaning in both themes:
+ *   slate-50…950   background-ish → text-ish  (slate-900 is primary text, slate-200 a border)
+ *   ink            the foreground colour, for hairlines and hovers: border-ink/[0.07], bg-ink/[0.03]
+ *   <hue>-50/100/200  translucent tints for chips, rings and callouts
+ *   <hue>-600/700/800 hue text that reads on the surface
+ */
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Surfaces */
+  --color-canvas: #f7f7f8;   /* page */
+  --color-tray: #efeff1;     /* card frame: header and footer sit here */
+  --color-surface: #ffffff;  /* inset panel, plain cards, drawers, modals */
+  --color-raised: #ffffff;   /* popovers, tooltips, toasts */
+  --color-ink: #09090b;      /* foreground, used at low alpha for lines and hovers */
+
+  /* Neutrals */
+  --color-slate-50: #f4f4f5;
+  --color-slate-100: #ededef;
+  --color-slate-200: #e4e4e7;
+  --color-slate-300: #d4d4d8;
+  --color-slate-400: #71717a;
+  --color-slate-500: #63636c;
+  --color-slate-600: #52525b;
+  --color-slate-700: #3f3f46;
+  --color-slate-800: #27272a;
+  --color-slate-900: #18181b;
+  --color-slate-950: #09090b;
+
+  /* Aria mint: the AI */
+  --color-brand-50: rgb(16 163 110 / 0.08);
+  --color-brand-100: rgb(16 163 110 / 0.14);
+  --color-brand-200: rgb(16 163 110 / 0.28);
+  --color-brand-300: #34b583;
+  --color-brand-500: #0e8f62;
+  --color-brand-600: #0b7d55;
+  --color-brand-700: #096b49;
+
+  --color-warn: #f5a524;
+  --color-human: #5160d6;
+
+  /* Hue tints: translucent, so they sit right on any surface in either theme. */
+  --color-red-50: rgb(229 72 77 / 0.08);    --color-red-100: rgb(229 72 77 / 0.14);    --color-red-200: rgb(229 72 77 / 0.28);
+  --color-amber-50: rgb(245 165 36 / 0.1);  --color-amber-100: rgb(245 165 36 / 0.16); --color-amber-200: rgb(245 165 36 / 0.32);
+  --color-amber-300: rgb(245 165 36 / 0.45);
+  --color-emerald-50: rgb(16 163 110 / 0.08); --color-emerald-100: rgb(16 163 110 / 0.14); --color-emerald-200: rgb(16 163 110 / 0.28);
+  --color-green-50: rgb(34 197 94 / 0.08);
+  --color-teal-50: rgb(20 184 166 / 0.08);
+  --color-sky-50: rgb(59 130 246 / 0.08);   --color-sky-200: rgb(59 130 246 / 0.28);
+  --color-indigo-50: rgb(81 96 214 / 0.08); --color-indigo-200: rgb(81 96 214 / 0.28);
+  --color-violet-50: rgb(139 92 246 / 0.08);
+  --color-orange-50: rgb(249 115 22 / 0.08);
+  --color-rose-50: rgb(244 63 94 / 0.08);   --color-rose-200: rgb(244 63 94 / 0.28);
+  --color-pink-50: rgb(236 72 153 / 0.08);
+
+  /* Hue solids and text (light) */
+  --color-red-500: #e5484d; --color-red-600: #d93036; --color-red-700: #c62a2f; --color-red-800: #a82327;
+  --color-amber-500: #f5a524; --color-amber-600: #b26b00; --color-amber-700: #9a5c00; --color-amber-800: #7f4c00;
+  --color-emerald-400: #12a46e; --color-emerald-500: #12a46e; --color-emerald-600: #0b7d55; --color-emerald-700: #096b49;
+  --color-green-700: #15803d;
+  --color-teal-800: #115e59;
+  --color-sky-500: #3b82f6; --color-sky-600: #2563eb; --color-sky-700: #1d4ed8;
+  --color-indigo-600: #4f5bd5; --color-indigo-700: #4350c4;
+  --color-violet-600: #7c3aed; --color-violet-700: #6d28d9;
+  --color-orange-600: #ea580c; --color-orange-700: #c2410c;
+  --color-rose-500: #f43f5e; --color-rose-700: #be123c;
+  --color-pink-600: #db2777;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-fade-in: fade-in 0.2s ease-out both;
+  --animate-slide-in: slide-in 0.32s var(--ease-out-expo) both;
+  --animate-pop: pop 0.22s var(--ease-out-expo) both;
+  --animate-rise: rise 0.32s var(--ease-out-expo) both;
+  --animate-hop: hop 0.5s var(--ease-out-expo) both;
+  --animate-working: working 1.6s ease-in-out infinite;
+  --animate-dash: dash 0.9s linear infinite;
+
+  @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+  @keyframes slide-in { from { transform: translateX(100%) } to { transform: translateX(0) } }
+  @keyframes pop { from { opacity: 0; transform: scale(0.97) translateY(4px) } to { opacity: 1; transform: none } }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+  /* tool-hop chain: each node lands in turn */
+  @keyframes hop { from { opacity: 0; transform: translateX(-6px) scale(0.9); filter: blur(2px) } to { opacity: 1; transform: none; filter: none } }
+  /* "next" link on a live chain: dashes travel toward the pending node */
+  @keyframes dash { from { background-position: 0 0 } to { background-position: 12px 0 } }
+  @keyframes working {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-brand-500) 45%, transparent) }
+    60% { box-shadow: 0 0 0 6px transparent }
+  }
+}
+
+/* Dark: same names, dark values. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-canvas: #09090b;
+  --color-tray: #111113;
+  --color-surface: #161618;
+  --color-raised: #1c1c1f;
+  --color-ink: #ffffff;
+
+  --color-slate-50: #1c1c1f;
+  --color-slate-100: #222226;
+  --color-slate-200: #2a2a2f;
+  --color-slate-300: #38383e;
+  --color-slate-400: #7a7a84;
+  --color-slate-500: #8e8e98;
+  --color-slate-600: #a3a3ad;
+  --color-slate-700: #c2c2ca;
+  --color-slate-800: #dadadf;
+  --color-slate-900: #ededf0;
+  --color-slate-950: #fafafa;
+
+  --color-brand-50: rgb(62 207 142 / 0.1);
+  --color-brand-100: rgb(62 207 142 / 0.16);
+  --color-brand-200: rgb(62 207 142 / 0.3);
+  --color-brand-300: #6ee7b7;
+  --color-brand-500: #3ecf8e;
+  --color-brand-600: #5ad9a0;
+  --color-brand-700: #7ae3b4;
+
+  --color-human: #8b93f8;
+
+  --color-red-50: rgb(255 97 102 / 0.1); --color-red-100: rgb(255 97 102 / 0.16); --color-red-200: rgb(255 97 102 / 0.3);
+  --color-emerald-50: rgb(62 207 142 / 0.1); --color-emerald-100: rgb(62 207 142 / 0.16); --color-emerald-200: rgb(62 207 142 / 0.3);
+  --color-indigo-50: rgb(139 147 248 / 0.12); --color-indigo-200: rgb(139 147 248 / 0.3);
+
+  --color-red-500: #ff6166; --color-red-600: #ff7b7f; --color-red-700: #ff8f92; --color-red-800: #ffa3a5;
+  --color-amber-600: #f7b545; --color-amber-700: #f9c264; --color-amber-800: #fbcd7d;
+  --color-emerald-400: #3ecf8e; --color-emerald-500: #3ecf8e; --color-emerald-600: #5ad9a0; --color-emerald-700: #7ae3b4;
+  --color-green-700: #86efac;
+  --color-teal-800: #7ee8d8;
+  --color-sky-500: #50aaff; --color-sky-600: #74bcff; --color-sky-700: #8ec9ff;
+  --color-indigo-600: #a3a9fa; --color-indigo-700: #b4b9fb;
+  --color-violet-600: #b9a2fb; --color-violet-700: #c6b3fc;
+  --color-orange-600: #fca05a; --color-orange-700: #fdb27a;
+  --color-rose-500: #fb7185; --color-rose-700: #fda4af;
+  --color-pink-600: #f9a8d4;
+}
+
+@layer base {
+  html { -webkit-font-smoothing: antialiased; color-scheme: light; }
+  html, body { overflow-x: clip; }
+  body {
+    @apply bg-canvas text-slate-900;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection { background: color-mix(in srgb, var(--color-brand-500) 25%, transparent); }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-brand-500; }
+  input, textarea { caret-color: var(--color-brand-500); }
+  table { font-variant-numeric: tabular-nums; }
+  h1, h2, h3 { text-wrap: balance; }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-slate-300) transparent;
+  }
+  a { text-underline-offset: 3px; }
+  select option { background: var(--color-raised); }
+}
+
+/* Theme switch: a short cross-fade (View Transitions), skipped for reduced motion. */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 0.28s; }
+
+.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: var(--color-slate-300); border-radius: 8px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+
+/* In the components layer so size/colour utilities on the same element still win. */
+@layer components {
+  .tabular { font-variant-numeric: tabular-nums; }
+  /* System records (RA-1048, ZD-88213, TXN refs, clock times) read as machine output. */
+  .ref { font-family: var(--font-mono); font-size: 0.92em; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+  /* Big figures: tight, tabular. */
+  .figure { font-variant-numeric: tabular-nums; letter-spacing: -0.035em; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

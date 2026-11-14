@@ -1,0 +1,162 @@
+import { useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Search, X, Download, ExternalLink, ScrollText } from 'lucide-react'
+import { useApp, useAuditLog } from '../store'
+import { Card, PageHeader, Tabs, Select, ResultBadge, ToolTag, Drawer, Button, LevelBadge, StatusBadge, EmptyState, Badge } from '../components/ui'
+import Trace from '../components/Trace'
+import { clockSec, cn, duration, rupees } from '../lib'
+
+export default function Audit() {
+  const audit = useAuditLog()
+  const { tickets, leads, toast } = useApp()
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const [q, setQ] = useState('')
+  const [tool, setTool] = useState('all')
+  const [result, setResult] = useState('all')
+  const [focusKey, setFocusKey] = useState(null)
+
+  const openRef = params.get('ref')
+  const tools = useMemo(() => [...new Set(audit.map((a) => a.tool))].sort(), [audit])
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase()
+    return audit.filter(
+      (a) =>
+        (tool === 'all' || a.tool === tool) &&
+        (!s || a.ref.toLowerCase().includes(s) || a.who.toLowerCase().includes(s) || a.step.toLowerCase().includes(s) || a.detail.toLowerCase().includes(s)),
+    )
+  }, [audit, q, tool])
+  const rows = result === 'all' ? filtered : filtered.filter((a) => a.result === result)
+  const count = (r) => filtered.filter((a) => a.result === r).length
+
+  const subject = openRef && (tickets.find((t) => t.id === openRef) || leads.find((l) => l.id === openRef))
+  const highlight = subject && focusKey ? subject.steps.findIndex((_, i) => `${openRef}-${i}` === focusKey) : -1
+  const open = (row) => { setFocusKey(row.key); setParams({ ref: row.ref }) }
+  const close = () => { setFocusKey(null); setParams({}) }
+  const isTicket = subject && 'customer' in subject
+  const filtersOn = q || tool !== 'all' || result !== 'all'
+
+  return (
+    <div>
+      <PageHeader
+        title="Audit log"
+        description="Every step the agent took, with the tool it used and the outcome. Nothing happens off the record."
+        actions={<Button icon={Download} onClick={() => toast({ title: 'Export started', desc: `${rows.length} rows · audit-log.csv` })}>Export CSV</Button>}
+      />
+
+      <Card>
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 p-4">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Ticket / lead ID, customer, step…"
+              className="h-9 w-full rounded-lg border border-slate-200 pr-3 pl-9 text-sm outline-none placeholder:text-slate-400 focus:border-brand-500"
+            />
+          </div>
+          <Select label="Tool" value={tool} onChange={setTool} options={[{ value: 'all', label: 'All tools' }, ...tools.map((t) => ({ value: t, label: t }))]} />
+          <Tabs
+            value={result}
+            onChange={setResult}
+            tabs={[
+              { value: 'all', label: 'All', count: filtered.length },
+              { value: 'success', label: 'Success', count: count('success') },
+              { value: 'blocked', label: 'Blocked', count: count('blocked') },
+              { value: 'escalated', label: 'Escalated', count: count('escalated') },
+            ]}
+          />
+          {filtersOn && (
+            <button onClick={() => { setQ(''); setTool('all'); setResult('all') }} className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800">
+              <X className="size-4" /> Clear
+            </button>
+          )}
+        </div>
+
+        <div className="scrollbar-thin overflow-x-auto">
+          <table className="w-full min-w-[860px] text-sm">
+            <thead>
+              <tr className="border-b border-slate-100 text-left text-xs font-medium text-slate-500">
+                <th className="px-5 py-3 font-medium">Time</th>
+                <th className="px-3 py-3 font-medium">Ticket / lead</th>
+                <th className="px-3 py-3 font-medium">Step</th>
+                <th className="px-3 py-3 font-medium">Tool</th>
+                <th className="px-3 py-3 font-medium">Detail</th>
+                <th className="px-5 py-3 font-medium">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map((a) => (
+                <tr key={a.key} onClick={() => open(a)} className={cn('cursor-pointer transition hover:bg-slate-50', a.result !== 'success' && 'bg-amber-50/20')}>
+                  <td className="ref px-5 py-3 text-xs whitespace-nowrap text-slate-500">{clockSec(a.time)}</td>
+                  <td className="px-3 py-3 whitespace-nowrap">
+                    <span className="ref font-medium text-brand-700">{a.ref}</span>
+                    <span className="block text-xs text-slate-500">{a.who}</span>
+                  </td>
+                  <td className="px-3 py-3 font-medium whitespace-nowrap text-slate-800">{a.step}</td>
+                  <td className="px-3 py-3 whitespace-nowrap"><ToolTag tool={a.tool} /></td>
+                  <td className="max-w-sm px-3 py-3 text-slate-600"><span className="line-clamp-1">{a.detail}</span></td>
+                  <td className="px-5 py-3"><ResultBadge result={a.result} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length === 0 && <EmptyState icon={ScrollText} title="No matching actions" text="Try a different ticket ID or clear the filters." />}
+        </div>
+        <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
+          Showing {rows.length} of {audit.length} actions · click a row to see the full trace
+        </div>
+      </Card>
+
+      <Drawer
+        open={!!subject}
+        onClose={close}
+        title={
+          subject && (
+            <>
+              <p className="text-xs font-medium text-slate-500">Trace · {subject.id}</p>
+              <h2 className="mt-0.5 truncate text-base font-semibold text-slate-900">{isTicket ? subject.issue : subject.need}</h2>
+            </>
+          )
+        }
+        subtitle={
+          subject && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              {isTicket ? (
+                <><span>{subject.customer.name}</span><LevelBadge level={subject.level} /><StatusBadge status={subject.status} /></>
+              ) : (
+                <><span>{subject.name} · {subject.company}</span><Badge className="bg-amber-50 text-amber-800 ring-amber-200">Lead score {subject.score}</Badge></>
+              )}
+            </div>
+          )
+        }
+      >
+        {subject && (
+          <div className="p-6">
+            <div className="mb-6 grid grid-cols-3 gap-3">
+              <Stat label="Steps" value={subject.steps.length} />
+              <Stat label="Elapsed" value={duration(subject.steps[0].time, subject.steps.at(-1).time)} />
+              <Stat label={isTicket ? 'Amount' : 'Deal value'} value={rupees(isTicket ? subject.amount : subject.value)} />
+            </div>
+            <Trace steps={subject.steps} highlight={highlight} />
+            {isTicket && (
+              <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-semibold text-slate-900">Outcome</p>
+                <p className="mt-1 text-sm text-slate-700">{subject.result}</p>
+                <Button size="sm" className="mt-3" icon={ExternalLink} onClick={() => navigate(`/tickets?id=${subject.id}`)}>Open ticket</Button>
+              </div>
+            )}
+          </div>
+        )}
+      </Drawer>
+    </div>
+  )
+}
+
+const Stat = ({ label, value }) => (
+  <div className="rounded-lg border border-slate-200 px-3 py-2.5">
+    <p className="text-[11px] text-slate-500">{label}</p>
+    <p className="mt-0.5 text-sm font-semibold text-slate-900 tabular">{value}</p>
+  </div>
+)

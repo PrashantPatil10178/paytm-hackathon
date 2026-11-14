@@ -1,0 +1,22 @@
+{
+  "daily": {
+    "ai": [52, 58, 61, 55, 49, 63, 70, 66, 72, 68, 59, 74, 78, 81],
+    "human": [18, 16, 17, 15, 14, 16, 15, 13, 14, 12, 11, 12, 10, 11]
+  },
+  "deltas": { "queries": 9.2, "aiRate": 4.1, "escalated": -12.0, "solveTime": -18.0, "hotLeads": 27.0 },
+  "escalated": { "value": 86, "spark": [9, 8, 8, 7, 7, 8, 6, 6, 7, 5, 5, 6, 4, 4] },
+  "solveTime": { "seconds": 112, "spark": [168, 160, 151, 149, 140, 138, 131, 129, 125, 121, 119, 116, 114, 112] },
+  "hotLeads": { "value": 14, "spark": [0, 1, 1, 0, 1, 1, 2, 1, 1, 0, 2, 1, 2, 1] },
+  "byChannel": [
+    { "channel": "whatsapp", "count": 486 },
+    { "channel": "webchat", "count": 262 },
+    { "channel": "email", "count": 214 },
+    { "channel": "appchat", "count": 138 }
+  ],
+  "byLevel": [
+    { "level": "low", "count": 498 },
+    { "level": "medium", "count": 372 },
+    { "level": "high", "count": 186 },
+    { "level": "critical", "count": 44 }
+  ]
+}

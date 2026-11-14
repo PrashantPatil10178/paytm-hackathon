@@ -1,0 +1,47 @@
+{
+  "name": "paytm-hackathon",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:agent": "AGENT_URL=http://localhost:8000 turbo run dev",
+    "dev:api": "turbo run dev --filter=@ph/api",
+    "dev:zendesk": "turbo run dev --filter=@ph/api --filter=@ph/zendesk",
+    "dev:hubspot": "turbo run dev --filter=@ph/api --filter=@ph/hubspot",
+    "dev:shop": "turbo run dev --filter=@ph/api --filter=@ph/shopkart",
+    "dev:dashboard": "turbo run dev --filter=@ph/dashboard",
+    "test:agent": "bun run --cwd apps/agent test",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "check-types": "turbo run check-types",
+    "lint": "turbo run lint",
+    "reset": "curl -s -X POST http://localhost:4000/admin/reset"
+  },
+  "devDependencies": {
+    "turbo": "2.11.10",
+    "typescript": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "bun",
+      "version": "1.4.4"
+    }
+  },
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*"
+    ],
+    "catalog": {
+      "@types/bun": "^1.4.4",
+      "@types/react": "~19.3.0",
+      "@types/react-dom": "~19.3.0",
+      "bun-plugin-tailwind": "^0.1.2",
+      "lucide-react": "^1.73.0",
+      "react": "19.3.1",
+      "react-dom": "19.3.1",
+      "tailwindcss": "^4.3.5",
+      "typescript": "7.0.2"
+    }
+  }
+}

@@ -3,6 +3,7 @@ import { CheckCheck, MessageCircle, SendHorizontal, Ticket, X } from "lucide-rea
 import { useEffect, useRef } from "react";
 import { useChat, useCustomer, type ChatMessage } from "../store.tsx";
 import { LogoMark } from "./Logo.tsx";
+import { BRAND, ResolveAIGlyph } from "@ph/shared/brand";
 
 const QUICK = ["Where is my order?", "Item damaged, I want a refund", "₹15,000 debited but payment failed"];
 
@@ -86,7 +87,9 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
         </span>
         <div className="min-w-0 flex-1 leading-tight">
           <p className="font-display text-base font-bold tracking-tight">ShopKart Support</p>
-          <p className="text-xs text-white/75">{typing ? "typing…" : "Powered by ResolveAI"}</p>
+          <p className="flex items-center gap-1 text-xs text-white/75">
+            {typing ? "typing…" : <><ResolveAIGlyph size={14} className="text-white" dot={BRAND.mint} />Powered by ResolveAI</>}
+          </p>
         </div>
         {onClose && (
           <button type="button" onClick={onClose} aria-label="Close chat" className="grid size-9 cursor-pointer place-items-center rounded-full text-white/85 hover:bg-white/15 hover:text-white focus-visible:outline-white">

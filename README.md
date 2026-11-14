@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="packages/shared/brand/resolveai-logo-dark.svg">
+  <img src="packages/shared/brand/resolveai-logo.svg" alt="ResolveAI" height="40">
+</picture>
+
 # paytm-hackathon · ResolveAI demo apps
 
 Three look-alike apps for the ResolveAI demo, the ResolveAI Control Room dashboard, and the API they share. The agent creates and updates

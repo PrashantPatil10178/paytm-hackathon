@@ -7,6 +7,7 @@ import {
 import { api } from '../api'
 import { useApp } from '../store'
 import { useTheme } from '../theme'
+import { ResolveAIGlyph, ResolveAIMark } from '@ph/shared/brand'
 import { cn, num } from '../lib'
 import { Toaster } from './ui'
 import CommandPalette from './CommandPalette'
@@ -30,14 +31,6 @@ const NAV = [
 const PAGE = Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.to, i.label])))
 
 const AUTONOMY = { suggest: 'Suggest only', approval: 'Act with approval', autonomous: 'Fully autonomous' }
-
-function Mark({ className }) {
-  return (
-    <span className={cn('grid shrink-0 place-items-center rounded-lg bg-brand-500 text-canvas', className)} aria-hidden>
-      <svg viewBox="0 0 32 32" className="size-[62%]"><path d="M9 22V10h7.2a4.6 4.6 0 0 1 1.3 9l3.5 4" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>
-    </span>
-  )
-}
 
 /** Conversations the agent has open right now, like the reference's project list. */
 function LiveNow({ tickets, onNavigate }) {
@@ -97,7 +90,7 @@ function Sidebar({ onNavigate }) {
   return (
     <div className="flex h-full flex-col border-r border-ink/[0.06] bg-canvas px-3 py-4">
       <Link to="/" onClick={onNavigate} className="flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-ink/[0.03]">
-        <Mark className="size-8" />
+        <ResolveAIMark size={32} className="shrink-0" />
         <div className="min-w-0">
           <p className="truncate text-sm leading-tight font-semibold text-slate-950">ResolveAI</p>
           <p className="truncate text-xs leading-tight text-slate-500">ShopKart · Control room</p>
@@ -145,8 +138,8 @@ function Sidebar({ onNavigate }) {
       {settings && (
         <NavLink to="/settings" onClick={onNavigate} className="mt-4 block rounded-xl border border-ink/[0.07] bg-surface p-3 transition-colors hover:border-ink/[0.12]">
           <div className="flex items-center gap-2.5">
-            <span className="relative grid size-7 shrink-0 place-items-center rounded-lg border border-ink/[0.08] bg-ink/[0.04] text-xs font-semibold text-slate-900">
-              {settings.agentName[0]}
+            <span className="relative grid size-7 shrink-0 place-items-center rounded-lg border border-ink/[0.08] bg-ink/[0.04] text-brand-600">
+              <ResolveAIGlyph className="size-5" />
               <span className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full bg-brand-500 ring-2 ring-surface" />
             </span>
             <div className="min-w-0">

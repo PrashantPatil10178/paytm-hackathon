@@ -1,5 +1,6 @@
 import { BOT, cap, initials, type TicketPriority, type TicketStatus } from "@ph/shared";
-import { ArrowUpRight, Bot } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
+import { ResolveAIGlyph } from "@ph/shared/brand";
 
 const STATUS_CLS: Record<TicketStatus, string> = {
   new: "bg-st-new text-st-new-ink",
@@ -28,7 +29,8 @@ export function PriorityText({ priority }: { priority: TicketPriority }) {
 
 export function AiTag() {
   return (
-    <span className="inline-flex h-[18px] items-center rounded bg-ai px-1.5 text-[11px] font-bold tracking-wide text-white" title="Handled by ResolveAI">
+    <span className="inline-flex h-[18px] items-center gap-0.5 rounded bg-ai pr-1.5 pl-1 text-[11px] font-bold tracking-wide text-white" title="Handled by ResolveAI">
+      <ResolveAIGlyph size={13} />
       AI
     </span>
   );
@@ -66,7 +68,7 @@ const AVATAR_TONE = {
 export function Avatar({ name, tone }: { name: string; tone: keyof typeof AVATAR_TONE }) {
   return (
     <span className={`grid size-8 flex-none place-items-center rounded-full text-xs font-bold ${AVATAR_TONE[tone]}`} aria-hidden>
-      {tone === "bot" ? <Bot size={16} /> : initials(name)}
+      {tone === "bot" ? <ResolveAIGlyph size={20} /> : initials(name)}
     </span>
   );
 }

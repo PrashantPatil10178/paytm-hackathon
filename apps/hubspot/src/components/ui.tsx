@@ -1,5 +1,6 @@
 import { BOT, cap, initials, type LeadScore } from "@ph/shared";
-import { Bot, Flame, Snowflake, Thermometer } from "lucide-react";
+import { Flame, Snowflake, Thermometer } from "lucide-react";
+import { ResolveAIGlyph } from "@ph/shared/brand";
 
 const SCORE = {
   hot: { icon: Flame, cls: "bg-hot-wash text-hot" },
@@ -19,7 +20,8 @@ export function ScoreBadge({ score }: { score: LeadScore }) {
 
 export function AiTag() {
   return (
-    <span className="inline-flex h-[18px] items-center rounded-[3px] bg-ai px-1.5 text-[11px] font-semibold tracking-wide text-white" title="Done by ResolveAI">
+    <span className="inline-flex h-[18px] items-center gap-0.5 rounded-[3px] bg-ai pr-1.5 pl-1 text-[11px] font-semibold tracking-wide text-white" title="Done by ResolveAI">
+      <ResolveAIGlyph size={13} />
       AI
     </span>
   );
@@ -41,7 +43,7 @@ export function Avatar({ name, size = "md" }: { name: string; size?: "sm" | "md"
   const tone = name === BOT ? "bg-ai text-white" : "bg-[#eaf0f6] text-ink-2";
   return (
     <span className={`grid flex-none place-items-center rounded-full font-semibold ${dims} ${tone}`} aria-hidden>
-      {name === BOT ? <Bot size={size === "sm" ? 12 : 16} /> : initials(name)}
+      {name === BOT ? <ResolveAIGlyph size={size === "sm" ? 14 : 22} /> : initials(name)}
     </span>
   );
 }

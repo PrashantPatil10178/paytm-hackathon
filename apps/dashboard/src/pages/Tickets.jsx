@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Search, ExternalLink, ScrollText, Bot, UserRound, Ticket as TicketIcon, CheckCircle2, Clock } from 'lucide-react'
+import { Search, ExternalLink, ScrollText, UserRound, CheckCircle2, Clock } from 'lucide-react'
+import { ResolveAIGlyph } from '@ph/shared/brand'
 import { useApp } from '../store'
 import {
   Card, PageHeader, Tabs, Select, LevelBadge, StatusBadge, SolvedBy, ChannelTag, Drawer, Button, EmptyState, Skeleton, SectionTitle,
@@ -166,7 +167,7 @@ function TicketDetail({ t, onAudit }) {
               <div key={i} className={cn('flex gap-2', mine && 'flex-row-reverse')}>
                 <span className={cn('grid size-7 shrink-0 place-items-center rounded-full text-[11px] font-semibold',
                   m.from === 'customer' ? 'bg-slate-200 text-slate-600' : m.from === 'ai' ? 'bg-brand-500 text-canvas' : 'bg-human text-canvas')}>
-                  {m.from === 'customer' ? t.customer.name[0] : m.from === 'ai' ? <Bot className="size-3.5" /> : <UserRound className="size-3.5" />}
+                  {m.from === 'customer' ? t.customer.name[0] : m.from === 'ai' ? <ResolveAIGlyph className="size-4" /> : <UserRound className="size-3.5" />}
                 </span>
                 <div className={cn('max-w-[78%] rounded-2xl px-3.5 py-2 text-sm', mine ? 'rounded-tr-sm bg-surface shadow-sm ring-1 ring-slate-200' : 'rounded-tl-sm bg-ink/[0.03] ring-1 ring-slate-200/70')}>
                   <p className="text-slate-800">{m.text}</p>

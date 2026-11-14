@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { X, CheckCircle2, Info, Bot, UserRound } from 'lucide-react'
+import { X, CheckCircle2, Info, UserRound } from 'lucide-react'
+import { ResolveAIGlyph } from '@ph/shared/brand'
 import { cn } from '../lib'
 import { LEVELS, STATUSES, RESULTS, CHANNELS, toolMeta } from '../meta'
 
@@ -104,7 +105,7 @@ export function SolvedBy({ by }) {
   if (!by) return <span className="text-xs text-slate-400">—</span>
   return by === 'ai' ? (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-700">
-      <span className="grid size-5 place-items-center rounded-full bg-brand-50"><Bot className="size-3" /></span>AI
+      <span className="grid size-5 place-items-center rounded-full bg-brand-50"><ResolveAIGlyph className="size-3.5" /></span>AI
     </span>
   ) : (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-human">

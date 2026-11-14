@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import {
-  MessagesSquare, Sparkles, CornerUpRight, Timer, Flame, Activity, ChartColumn, History, Gauge,
-  Radio, ArrowUpRight, ShieldCheck, Coffee, CalendarRange,
-} from 'lucide-react'
+import { MessagesSquare, CornerUpRight, Timer, Flame, Activity, ChartColumn, History, Gauge, Radio, ArrowUpRight, ShieldCheck, Coffee, CalendarRange } from 'lucide-react'
+import { ResolveAIGlyph } from '@ph/shared/brand'
 import { api } from '../api'
 import { useApp, useAuditLog } from '../store'
 import { useTheme } from '../theme'
@@ -449,7 +447,7 @@ export default function Home() {
           {derived ? (
             <>
               <Kpi icon={MessagesSquare} label="Queries handled" parts={[[num(derived.total)]]} delta={stats.deltas.queries} spark={derived.spark} />
-              <Kpi icon={Sparkles} label="Solved by AI" parts={[[derived.aiPct.toFixed(1), '%']]} delta={stats.deltas.aiRate} unit=" pt" spark={derived.aiSpark} />
+              <Kpi icon={ResolveAIGlyph} label="Solved by AI" parts={[[derived.aiPct.toFixed(1), '%']]} delta={stats.deltas.aiRate} unit=" pt" spark={derived.aiSpark} />
               <Kpi icon={CornerUpRight} label="Escalated to humans" parts={[[stats.escalated.value]]} delta={stats.deltas.escalated} goodWhenDown spark={stats.escalated.spark} />
               <Kpi icon={Timer} label="Avg. solve time" parts={[[Math.floor(solve / 60), 'm'], [String(Math.round(solve % 60)).padStart(2, '0'), 's']]} delta={stats.deltas.solveTime} goodWhenDown spark={stats.solveTime.spark} />
               <Kpi icon={Flame} label="Hot leads" parts={[[stats.hotLeads.value]]} delta={stats.deltas.hotLeads} spark={stats.hotLeads.spark} />

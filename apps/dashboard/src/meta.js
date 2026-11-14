@@ -1,7 +1,5 @@
-import {
-  MessageCircle, Mail, Globe, Smartphone, CheckCircle2, ShieldX, ArrowUpRight,
-  Sparkles, ShieldCheck, CreditCard, LifeBuoy, Users, Truck, Inbox, Hand,
-} from 'lucide-react'
+import { MessageCircle, Mail, Globe, Smartphone, CheckCircle2, ShieldX, ArrowUpRight, ShieldCheck, CreditCard, LifeBuoy, Users, Truck, Inbox, Hand } from 'lucide-react'
+import { ResolveAIGlyph } from '@ph/shared/brand'
 
 // Icon tiles are neutral and bordered. Colour is reserved for meaning: mint = the AI, amber = a human gate.
 const TILE = 'bg-ink/[0.04] text-slate-700 ring-1 ring-inset ring-ink/[0.08]'
@@ -38,7 +36,7 @@ export const RESULTS = {
 }
 
 export const TOOLS = {
-  'Aria LLM': { icon: Sparkles, tile: AI_TILE },
+  'Aria LLM': { icon: ResolveAIGlyph, tile: AI_TILE },
   'Policy engine': { icon: ShieldCheck, tile: TILE },
   Approvals: { icon: Hand, tile: GATE_TILE },
   Paytm: { icon: CreditCard, tile: TILE },

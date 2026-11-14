@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Lightbulb, Hand, Rocket, LifeBuoy, TrendingUp, Loader2, Check, Languages, Clock, ShieldAlert, Bot } from 'lucide-react'
+import { Lightbulb, Hand, Rocket, LifeBuoy, TrendingUp, Loader2, Check, Languages, Clock, ShieldAlert } from 'lucide-react'
+import { ResolveAIGlyph } from '@ph/shared/brand'
 import { api } from '../api'
 import { useApp } from '../store'
 import { Card, PageHeader, Toggle, Button, Select, Skeleton } from '../components/ui'
@@ -64,7 +65,7 @@ export default function Settings() {
       <PageHeader title="Agent settings" description="Shape how your AI teammate behaves: its voice, its playbooks and how far it can go on its own." />
 
       <div className="space-y-4">
-        <Section icon={Bot} title="Profile" text="How the agent introduces itself to customers.">
+        <Section icon={ResolveAIGlyph} title="Profile" text="How the agent introduces itself to customers.">
           <div className="flex flex-wrap items-start gap-6">
             <div className="grid size-16 place-items-center rounded-2xl text-2xl font-semibold text-white shadow-lg transition-colors" style={{ background: form.avatarColor }}>
               {form.agentName?.[0] || '?'}

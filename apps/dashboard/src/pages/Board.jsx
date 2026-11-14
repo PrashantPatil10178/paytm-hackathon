@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import {
   DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, useDraggable, useDroppable,
 } from '@dnd-kit/core'
-import { LifeBuoy, Users, RefreshCw, Plus, Bot, UserRound } from 'lucide-react'
+import { LifeBuoy, Users, RefreshCw, Plus, UserRound } from 'lucide-react'
+import { ResolveAIGlyph } from '@ph/shared/brand'
 import { api } from '../api'
 import { useApp } from '../store'
 import { PageHeader, Tabs, LevelBadge, ChannelTag, Badge } from '../components/ui'
@@ -90,7 +91,7 @@ function TicketCard({ t, onOpen }) {
         <ChannelTag channel={t.channel} compact />
         <span className="min-w-0 flex-1 truncate">{t.customer.name}</span>
         <span className="flex shrink-0 items-center gap-1 whitespace-nowrap">
-          {t.status === 'solved' && (t.solvedBy === 'ai' ? <Bot className="size-3.5 text-brand-600" /> : <UserRound className="size-3.5 text-human" />)}
+          {t.status === 'solved' && (t.solvedBy === 'ai' ? <ResolveAIGlyph className="size-3.5 text-brand-600" /> : <UserRound className="size-3.5 text-human" />)}
           {ago(t.createdAt)}
         </span>
       </div>

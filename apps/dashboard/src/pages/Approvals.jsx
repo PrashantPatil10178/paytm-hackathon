@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, X, Sparkles, PartyPopper, Clock, ShieldAlert, Wallet, Handshake } from 'lucide-react'
+import { Check, X, PartyPopper, Clock, ShieldAlert, Wallet, Handshake } from 'lucide-react'
+import { ResolveAIGlyph } from '@ph/shared/brand'
 import { useApp } from '../store'
 import { Card, PageHeader, Tabs, Button, Badge, Modal, EmptyState } from '../components/ui'
 import { ago, cn, rupees } from '../lib'
@@ -65,7 +66,7 @@ export default function Approvals() {
                     <p className="mt-1.5 text-sm text-slate-600">{a.summary}</p>
 
                     <div className="mt-4 rounded-lg border border-brand-100 bg-brand-50/50 p-3">
-                      <p className="flex items-center gap-1.5 text-xs font-medium text-brand-700"><Sparkles className="size-3.5" />Suggested action</p>
+                      <p className="flex items-center gap-1.5 text-xs font-medium text-brand-700"><ResolveAIGlyph className="size-3.5" />Suggested action</p>
                       <p className="mt-1 text-sm text-slate-800">{a.suggestion}</p>
                     </div>
 

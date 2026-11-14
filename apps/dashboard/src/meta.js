@@ -50,3 +50,9 @@ export const TOOLS = {
   'App chat': { icon: Smartphone, tile: TILE },
 }
 export const toolMeta = (t) => TOOLS[t] || { icon: Inbox, tile: TILE }
+
+// Chart colours per theme. They mirror the tokens in index.css: SVG attributes can't read CSS vars.
+export const CHART = {
+  light: { ai: '#12a46e', human: '#5160d6', line: '#18181b', grid: '#ededef', tick: '#71717a', surface: '#ffffff', cursor: 'rgb(9 9 11 / 0.04)' },
+  dark: { ai: '#3ecf8e', human: '#8b93f8', line: '#ededf0', grid: '#232327', tick: '#7a7a84', surface: '#161618', cursor: 'rgb(255 255 255 / 0.04)' },
+}

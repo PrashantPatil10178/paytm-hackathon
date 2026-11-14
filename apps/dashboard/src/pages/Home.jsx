@@ -8,14 +8,9 @@ import { useApp, useAuditLog } from '../store'
 import { useTheme } from '../theme'
 import { Panel, Skeleton, Button, StatusBadge, ChannelTag } from '../components/ui'
 import ToolChain from '../components/ToolChain'
-import { CHANNELS, LEVELS, RESULTS } from '../meta'
+import { CHANNELS, LEVELS, RESULTS, CHART } from '../meta'
 import { ago, cn, duration, num, rupees } from '../lib'
 
-// Chart colours mirror the tokens in index.css (SVG attributes can't read CSS vars).
-const CHART = {
-  light: { ai: '#12a46e', human: '#5160d6', line: '#18181b', grid: '#ededef', tick: '#71717a', surface: '#ffffff', cursor: 'rgb(9 9 11 / 0.04)' },
-  dark: { ai: '#3ecf8e', human: '#8b93f8', line: '#ededf0', grid: '#232327', tick: '#7a7a84', surface: '#161618', cursor: 'rgb(255 255 255 / 0.04)' },
-}
 const MONO = '"Geist Mono Variable", ui-monospace, monospace'
 
 const signed = (n) => (n < 0 ? `−${Math.abs(n)}` : `+${n}`)

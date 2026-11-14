@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutGrid, Logs, Inbox, ShieldCheck, SquareKanban, Radio, Cable, SlidersHorizontal,
@@ -11,6 +11,12 @@ import { ResolveAIGlyph, ResolveAIMark } from '@ph/shared/brand'
 import { cn, num } from '../lib'
 import { Toaster } from './ui'
 import CommandPalette from './CommandPalette'
+
+// Ask Aria stays open across visits on this browser, like the theme.
+// CopilotKit is heavier than the rest of the dashboard together: load it on first open only.
+const AskAria = lazy(() => import('../copilot/AskAria'))
+const ARIA_KEY = 'resolveai-aria-open'
+const readAria = () => { try { return localStorage.getItem(ARIA_KEY) === '1' } catch { return false } }
 
 const NAV = [
   { group: 'Overview', items: [
@@ -167,6 +173,9 @@ export default function Layout() {
   const { toasts, dismissToast, approvals } = useApp()
   const [mobileNav, setMobileNav] = useState(false)
   const [palette, setPalette] = useState(false)
+  const [aria, setAria] = useState(readAria)
+  const [ariaLoaded, setAriaLoaded] = useState(aria)
+  if (aria && !ariaLoaded) setAriaLoaded(true)
   const location = useLocation()
   const page = PAGE[location.pathname] ?? 'Overview'
   const pending = approvals.pending.length
@@ -177,12 +186,17 @@ export default function Layout() {
         e.preventDefault()
         setPalette((p) => !p)
       }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault()
+        setAria((a) => !a)
+      }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [])
 
   useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
+  useEffect(() => { try { localStorage.setItem(ARIA_KEY, aria ? '1' : '0') } catch { /* private mode */ } }, [aria])
 
   return (
     <div className="min-h-screen">
@@ -197,7 +211,7 @@ export default function Layout() {
         </div>
       )}
 
-      <div className="lg:pl-60">
+      <div className={cn('transition-[padding] duration-300 lg:pl-60', aria && 'xl:pr-[420px]')}>
         <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-ink/[0.06] bg-canvas/80 px-4 backdrop-blur-md sm:px-6 lg:px-8">
           <button className="-ml-1.5 cursor-pointer rounded-lg p-1.5 text-slate-500 hover:bg-ink/[0.06] hover:text-slate-950 lg:hidden" onClick={() => setMobileNav(true)} aria-label="Open menu">
             <Menu className="size-5" />
@@ -217,6 +231,18 @@ export default function Layout() {
               <span className="hidden flex-1 truncate text-left sm:inline">Search tickets, leads, pages…</span>
               <kbd className="hidden rounded border border-ink/10 bg-ink/[0.04] px-1.5 font-mono text-[10px] text-slate-500 sm:inline">⌘K</kbd>
             </button>
+            <button
+              onClick={() => setAria((a) => !a)}
+              className={cn(
+                'flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
+                aria ? 'border-brand-200 bg-brand-50 text-brand-700' : 'border-ink/[0.08] text-slate-700 hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700',
+              )}
+              aria-pressed={aria}
+              title="Ask Aria (⌘J)"
+            >
+              <ResolveAIGlyph className="size-4 text-brand-600" />
+              <span className="hidden md:inline">Ask Aria</span>
+            </button>
             <ThemeToggle />
             <Link
               to="/approvals"
@@ -235,8 +261,9 @@ export default function Layout() {
         </main>
       </div>
 
+      {ariaLoaded && <Suspense fallback={null}><AskAria open={aria} onClose={() => setAria(false)} /></Suspense>}
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
-      <Toaster toasts={toasts} dismiss={dismissToast} />
+      <Toaster toasts={toasts} dismiss={dismissToast} className={aria && 'sm:right-[436px]'} />
     </div>
   )
 }

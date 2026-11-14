@@ -1,0 +1,18 @@
+{
+  "name": "@ph/copilot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "COPILOTKIT_TELEMETRY_DISABLED=true bun --env-file=../../.env --watch src/index.ts",
+    "start": "COPILOTKIT_TELEMETRY_DISABLED=true bun --env-file=../../.env src/index.ts",
+    "check-types": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  },
+  "dependencies": {
+    "@copilotkit/runtime": "1.88.0",
+    "zod": "^3.25.76"
+  }
+}

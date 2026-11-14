@@ -198,3 +198,44 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Ask Aria (CopilotKit v2). Its components read shadcn tokens on [data-copilotkit]; point them at
+ * ours so the chat follows the light/dark switch. :root raises specificity over the package's own
+ * defaults, and since we never set its `.dark` class, these are the only values in play. */
+:root .aria-chat [data-copilotkit] {
+  --cpk-default-font-family: var(--font-sans);
+  --background: var(--color-surface);
+  --foreground: var(--color-slate-900);
+  --card: var(--color-surface);
+  --card-foreground: var(--color-slate-900);
+  --popover: var(--color-raised);
+  --popover-foreground: var(--color-slate-900);
+  --primary: var(--color-slate-950);
+  --primary-foreground: var(--color-canvas);
+  --secondary: color-mix(in srgb, var(--color-ink) 5%, transparent);
+  --secondary-foreground: var(--color-slate-900);
+  --muted: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  --muted-foreground: var(--color-slate-500);
+  --accent: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  --accent-foreground: var(--color-slate-950);
+  --destructive: var(--color-red-600);
+  --border: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  --input: color-mix(in srgb, var(--color-ink) 10%, transparent);
+  --ring: var(--color-brand-500);
+  --radius: 0.75rem;
+  font-size: 13px;
+}
+/* `.dark` on .aria-chat switches CopilotKit's own dark: variants; these keep its input on our surface. */
+.aria-chat .copilotKitInput {
+  background: var(--color-raised);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-ink) 10%, transparent), 0 8px 24px -12px rgb(0 0 0 / 0.25);
+}
+.aria-chat .copilotKitInput:focus-within {
+  box-shadow: 0 0 0 1px var(--color-brand-500), 0 8px 24px -12px rgb(0 0 0 / 0.25);
+}
+.aria-chat .copilotKitInput textarea { font-size: 13px; line-height: 1.5; }
+/* Message text at the dashboard's reading size, so replies sit quietly next to the cards. */
+.aria-chat .copilotKitMessage :is(p, li, blockquote, td, th) { font-size: 13.5px; line-height: 1.6; }
+.aria-chat .copilotKitMessage :is(ul, ol) { margin-block: 0.25rem; }
+.aria-chat .copilotKitMessage :is(h1, h2, h3, h4) { font-size: 14px; font-weight: 600; }
+.aria-chat .copilotKitUserMessage, .aria-chat .copilotKitUserMessage * { font-size: 13.5px; line-height: 1.55; }

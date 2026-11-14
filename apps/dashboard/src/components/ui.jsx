@@ -276,9 +276,9 @@ export function Select({ value, onChange, options, className, label }) {
   )
 }
 
-export function Toaster({ toasts, dismiss }) {
+export function Toaster({ toasts, dismiss, className }) {
   return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-[60] flex w-80 flex-col gap-2">
+    <div className={cn('pointer-events-none fixed right-4 bottom-4 z-[60] flex w-80 flex-col gap-2', className)}>
       {toasts.map((t) => (
         <div key={t.id} className="pointer-events-auto flex animate-rise items-start gap-3 rounded-xl border border-ink/10 bg-raised px-4 py-3 text-slate-950 shadow-[0_24px_64px_-16px_rgb(0_0_0/0.35)]">
           {t.tone === 'success' ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-brand-500" /> : <Info className="mt-0.5 size-4 shrink-0 text-slate-500" />}

@@ -7,7 +7,14 @@
   "globalPassThroughEnv": [
     "API_URL",
     "AGENT_URL",
-    "PORT"
+    "PORT",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "COPILOT_PORT",
+    "COPILOT_URL",
+    "COPILOT_MODEL"
   ],
   "tasks": {
     "build": {

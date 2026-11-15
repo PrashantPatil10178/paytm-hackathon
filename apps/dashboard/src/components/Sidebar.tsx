@@ -307,6 +307,8 @@ function useAreaContent(areaId: AreaId): AreaContent {
       return {
         fact: `${rupees(pipeline)} in pipeline`,
         groups: [
+          // Everything sales in one place: the live numbers first, then the pipeline, then where leads come from.
+          { label: 'Insights', items: [page('/sales/analytics')] },
           {
             label: 'Pipeline',
             items: [

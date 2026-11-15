@@ -19,7 +19,7 @@ import {
 import type { Agent, Memory } from "@voltagent/core";
 import { z } from "zod";
 import { DemoAPIError, type DemoAPI, type KnownContact } from "./demo-api.ts";
-import { ANALYSIS_THREAD, analysisNote, personKey } from "./memory.ts";
+import { analysisNote, analysisThread, personKey } from "./memory.ts";
 import { memorySessions, type SessionStore } from "./sessions.ts";
 import { runContext, type AnalysisRun, type LeadsRun } from "./tools/context.ts";
 
@@ -39,7 +39,7 @@ const LeadBody = z.object({
   start_when: z.string().default(""),
 });
 
-const AnalysisBody = z.object({ focus: z.string().trim().max(300).optional() }).default({});
+const AnalysisBody = z.object({ focus: z.string().trim().max(300).optional(), scope: z.enum(["all", "sales"]).default("all") }).default({ scope: "all" });
 
 const LeadSyncBody = z.object({ limit: z.coerce.number().int().min(1).max(25).default(10) }).default({ limit: 10 });
 
@@ -162,15 +162,18 @@ export function createService({ api, support, sales, analysis, leads, sessions =
   async function analyze(raw: unknown): Promise<Result<AnalysisResponse>> {
     const parsed = AnalysisBody.safeParse(raw ?? {});
     if (!parsed.success) return invalid(parsed.error);
-    const { focus } = parsed.data;
+    const { focus, scope } = parsed.data;
 
     return guard<AnalysisResponse>(async () => {
-      const run: AnalysisRun = { kind: "analysis" };
-      const prompt = `[Control Room analysis request · today ${today()}]\nFocus: ${focus || "a general health check of support, sales, the shop and campaigns"}`;
+      const run: AnalysisRun = { kind: "analysis", scope };
+      const prompt =
+        scope === "sales"
+          ? `[Sales analysis for the Control Room's Sales area · today ${today()}]\nScope: sales only (pipeline, lead scores, campaigns, lead sources).\nFocus: ${focus || "how the pipeline and campaigns are doing, and what sales should do next"}`
+          : `[Control Room analysis request · today ${today()}]\nFocus: ${focus || "a general health check of support, sales, the shop and campaigns"}`;
       try {
         // No raw history (contextLimit 0): what Aria knows about earlier runs is the working-memory note, which
         // VoltAgent puts in the system prompt, plus get_previous_reports. The run itself is still saved.
-        await analysis.generateText(prompt, { memory: { ...ANALYSIS_THREAD, options: { contextLimit: 0 } }, context: runContext(run) });
+        await analysis.generateText(prompt, { memory: { ...analysisThread(scope), options: { contextLimit: 0 } }, context: runContext(run) });
       } catch (e) {
         log.error("[agent] analysis agent failed:", e);
         if (!run.report) return { status: 502, body: { error: `Aria couldn't finish the analysis (${errorText(e)}).` } };
@@ -239,8 +242,9 @@ export function createService({ api, support, sales, analysis, leads, sessions =
   async function rememberReport(report: NonNullable<AnalysisRun["report"]>) {
     if (!analysisMemory) return;
     try {
-      const previous = await analysisMemory.getWorkingMemory(ANALYSIS_THREAD);
-      await analysisMemory.updateWorkingMemory({ ...ANALYSIS_THREAD, content: analysisNote(report, previous), options: { mode: "replace" } });
+      const thread = analysisThread(report.scope ?? "all");
+      const previous = await analysisMemory.getWorkingMemory(thread);
+      await analysisMemory.updateWorkingMemory({ ...thread, content: analysisNote(report, previous), options: { mode: "replace" } });
     } catch (e) {
       log.warn("[agent] couldn't update the analysis memory note:", e);
     }

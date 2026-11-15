@@ -1,10 +1,10 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import {
-  ChartColumnBig, CircleCheck, Eye, TriangleAlert, Table2, LoaderCircle, MessagesSquare, IndianRupee, Briefcase, Megaphone, Inbox,
+  ChartColumnBig, CircleCheck, Eye, TriangleAlert, Table2, LoaderCircle, MessagesSquare, IndianRupee, Briefcase, Megaphone, Inbox, Flame, Trophy,
 } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
-import type { AnalysisInsight, AnalysisReport, AnalyticsDataset, AnalyticsDatasetId, AnalyticsTotals, AnalyticsUnit, InsightTone } from '@ph/shared'
+import { SALES_DATASETS, type AnalysisInsight, type AnalysisReport, type AnalysisScope, type AnalyticsDataset, type AnalyticsDatasetId, type AnalyticsTotals, type AnalyticsUnit, type InsightTone } from '@ph/shared'
 import { api, live } from '../api'
 import { useApp } from '../store'
 import { useTheme } from '../theme'
@@ -33,7 +33,7 @@ const TONES: Record<InsightTone, { label: string; icon: Icon; chip: string }> = 
 const worst = (findings: AnalysisInsight[]): InsightTone =>
   (['risk', 'watch', 'good'] as const).find((t) => findings.some((f) => f.tone === t)) ?? 'watch'
 
-function ToneChip({ tone, count = 1 }: { tone: InsightTone; count?: number }) {
+export function ToneChip({ tone, count = 1 }: { tone: InsightTone; count?: number }) {
   const t = TONES[tone] ?? TONES.watch
   return (
     <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset', t.chip)} title={count > 1 ? `${count} findings about this chart` : undefined}>
@@ -175,6 +175,11 @@ function DatasetChart({ ds, view, c }: { ds: AnalyticsDataset; view: View; c: Pa
   )
 }
 
+/** One dataset drawn exactly as on the Analytics page, for reuse in the Ask Aria cards. */
+export function DatasetMiniChart({ ds, c }: { ds: AnalyticsDataset; c: Palette }) {
+  return <DatasetChart ds={ds} view={VIEWS[ds.id]} c={c} />
+}
+
 function DataTable({ ds }: { ds: AnalyticsDataset }) {
   return (
     <div className="scrollbar-thin max-h-56 overflow-auto">
@@ -249,12 +254,16 @@ function summary(ds: AnalyticsDataset): string | null {
 
 /* ───────── Aria's report ───────── */
 
-function Report({ report, loading, running, titles }: { report: AnalysisReport | null; loading: boolean; running: boolean; titles: Partial<Record<AnalyticsDatasetId, string>> }) {
+function Report({ report, loading, running, titles, scope }: { report: AnalysisReport | null; loading: boolean; running: boolean; titles: Partial<Record<AnalyticsDatasetId, string>>; scope: AnalysisScope }) {
   if (loading) return <Panel icon={ResolveAIGlyph} title="Aria's findings"><div className="p-4"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-4 h-14" /><Skeleton className="mt-2 h-14" /></div></Panel>
   if (!report) {
     return (
       <Panel icon={ResolveAIGlyph} title="Aria's findings">
-        <EmptyState icon={ResolveAIGlyph} title={running ? 'Aria is reading the numbers…' : 'No analysis yet'} text="Run an analysis and Aria reads every chart below, then writes what stands out and what to do about it." />
+        <EmptyState
+          icon={ResolveAIGlyph}
+          title={running ? 'Aria is reading the numbers…' : scope === 'sales' ? 'No sales analysis yet' : 'No analysis yet'}
+          text={`Run ${scope === 'sales' ? 'a sales analysis' : 'an analysis'} and Aria reads every chart below, then writes what stands out and what to do about it.`}
+        />
       </Panel>
     )
   }
@@ -304,11 +313,19 @@ function Tile({ icon: TileIcon, label, value, note }: { icon: Icon; label: strin
   )
 }
 
-function Totals({ t }: { t?: AnalyticsTotals }) {
+function Totals({ t, scope }: { t?: AnalyticsTotals; scope: AnalysisScope }) {
   return (
     <Panel icon={Inbox} title="Right now" meta="live from Postgres">
       <div className="grid grid-cols-2 gap-px bg-ink/[0.07] md:grid-cols-5">
-        {t ? (
+        {t && scope === 'sales' ? (
+          <>
+            <Tile icon={Briefcase} label="Open pipeline" value={rupees(t.pipeline_open)} note={`${t.deals_open} open deals`} />
+            <Tile icon={Flame} label="Hot deals" value={num(t.hot_open)} note="open, scored hot" />
+            <Tile icon={Trophy} label="Closed won" value={rupees(t.won_value)} note="all time" />
+            <Tile icon={IndianRupee} label="Campaign spend" value={rupees(t.campaign_spend)} note={`${num(t.campaign_responses)} responses`} />
+            <Tile icon={Megaphone} label="Campaign leads" value={num(t.campaign_leads)} note={t.cost_per_lead ? `${rupees(t.cost_per_lead)} per lead` : 'none yet'} />
+          </>
+        ) : t ? (
           <>
             <Tile icon={ResolveAIGlyph} label="Handled by AI" value={`${t.ai_rate.toFixed(1)}%`} note={`${num(t.tickets_ai)} of ${num(t.tickets)} tickets · ${t.tickets_escalated} escalated`} />
             <Tile icon={MessagesSquare} label="Open tickets" value={num(t.tickets_open)} note={`${num(t.tickets_solved)} solved`} />
@@ -324,12 +341,33 @@ function Totals({ t }: { t?: AnalyticsTotals }) {
 
 /* ───────── Page ───────── */
 
+const COPY: Record<AnalysisScope, { title: string; description: string; button: string; placeholder: string }> = {
+  all: {
+    title: 'Analytics',
+    description: 'Live numbers from the helpdesk, the shop, the CRM and your campaigns. Aria reads them and writes what stands out.',
+    button: 'Run analysis',
+    placeholder: 'Ask about something specific (optional)',
+  },
+  sales: {
+    title: 'Sales analytics',
+    description: 'The live pipeline, lead scores, campaigns and lead sources. Aria reads them and tells sales what to do next.',
+    button: 'Run sales analysis',
+    placeholder: 'e.g. Which campaign should get more budget?',
+  },
+}
+
+/** The full Analytics page; the Sales area uses the same view with scope "sales" (sales charts and sales reports only). */
 export default function Analytics() {
+  return <AnalyticsView scope="all" />
+}
+
+export function AnalyticsView({ scope }: { scope: AnalysisScope }) {
+  const copy = COPY[scope]
   const { toast } = useApp()
   const { resolved } = useTheme()
   const c = CHART[resolved]
   const metrics = live.useMetrics()
-  const latest = live.useLatestReport()
+  const latest = live.useLatestReport(scope)
   const [focus, setFocus] = useState('')
   const [running, setRunning] = useState(false)
 
@@ -341,17 +379,18 @@ export default function Analytics() {
   }, [report])
   const datasets = useMemo(() => {
     const list = metrics.data?.datasets ?? []
-    return ORDER.map((id) => list.find((d) => d.id === id)).filter((d): d is AnalyticsDataset => Boolean(d))
-  }, [metrics.data])
+    const ids = scope === 'sales' ? ORDER.filter((id) => SALES_DATASETS.includes(id)) : ORDER
+    return ids.map((id) => list.find((d) => d.id === id)).filter((d): d is AnalyticsDataset => Boolean(d))
+  }, [metrics.data, scope])
   const titles = useMemo(() => Object.fromEntries(datasets.map((d) => [d.id, d.title])) as Partial<Record<AnalyticsDatasetId, string>>, [datasets])
 
   async function run(e: FormEvent) {
     e.preventDefault()
     setRunning(true)
     try {
-      const { report: r } = await api.runAnalysis(focus.trim())
+      const { report: r } = await api.runAnalysis(focus.trim(), scope)
       await latest.refresh()
-      toast({ tone: 'success', title: 'Analysis published', desc: `${r.insights.length} findings · ${r.author === 'Rules' ? 'rule-based stand-in' : 'by Aria'}` })
+      toast({ tone: 'success', title: scope === 'sales' ? 'Sales analysis published' : 'Analysis published', desc: `${r.insights.length} findings · ${r.author === 'Rules' ? 'rule-based stand-in' : 'by Aria'}` })
     } catch (err) {
       toast({ title: "Analysis didn't finish", desc: (err as Error).message })
     } finally {
@@ -362,20 +401,20 @@ export default function Analytics() {
   return (
     <div>
       <PageHeader
-        title="Analytics"
-        description="Live numbers from the helpdesk, the shop, the CRM and your campaigns. Aria reads them and writes what stands out."
+        title={copy.title}
+        description={copy.description}
         actions={
           <form onSubmit={run} className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <input
               value={focus}
               onChange={(e) => setFocus(e.target.value)}
               maxLength={300}
-              placeholder="Ask about something specific (optional)"
+              placeholder={copy.placeholder}
               aria-label="Question for the analysis"
               className="h-8 w-full min-w-0 rounded-full border border-ink/10 bg-ink/[0.03] px-3.5 text-[13px] text-slate-900 placeholder:text-slate-400 hover:border-ink/15 focus:border-brand-500 focus:ring-3 focus:ring-brand-500/15 focus:outline-none sm:w-72"
             />
             <Button type="submit" variant="primary" icon={running ? LoaderCircle : ResolveAIGlyph} disabled={running} className={running ? '[&>svg]:animate-spin' : undefined}>
-              {running ? 'Analysing…' : 'Run analysis'}
+              {running ? 'Analysing…' : copy.button}
             </Button>
           </form>
         }
@@ -386,8 +425,8 @@ export default function Analytics() {
       )}
 
       <div className="space-y-3">
-        <Report report={report} loading={!latest.data && !latest.error} running={running} titles={titles} />
-        <Totals t={metrics.data?.totals} />
+        <Report report={report} loading={!latest.data && !latest.error} running={running} titles={titles} scope={scope} />
+        <Totals t={metrics.data?.totals} scope={scope} />
         <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
           {datasets.length
             ? datasets.map((ds) => <ChartPanel key={ds.id} ds={ds} c={c} findings={byDataset[ds.id] ?? []} />)

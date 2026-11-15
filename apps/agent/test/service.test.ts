@@ -10,7 +10,8 @@ import { createLeadsAgent } from "../src/agents/leads.ts";
 import { createSalesAgent } from "../src/agents/sales.ts";
 import { createSupportAgent } from "../src/agents/support.ts";
 import { createDemoAPI } from "../src/demo-api.ts";
-import { analysisNote, createAgentMemory } from "../src/memory.ts";
+import { analysisNote, analysisThread, createAgentMemory } from "../src/memory.ts";
+import { indianRupees } from "../src/tools/analysis.ts";
 import { createService } from "../src/service.ts";
 
 /* ───── Fake demo API ───── */
@@ -365,6 +366,20 @@ test("analysis: a second publish in the same run is refused", async () => {
   expect(db.reports).toHaveLength(1);
 });
 
+test("analysis: a sales analysis may only write about sales charts", async () => {
+  const sales = INSIGHTS.filter((i) => i.dataset !== "tickets_per_day");
+  const svc = service(
+    scripted([
+      { tool: "publish_report", args: { headline: "Mixed", insights: INSIGHTS } }, // tickets_per_day is not a sales chart
+      { tool: "publish_report", args: { headline: "Sales only", insights: [...sales, { ...sales[0]!, title: "Third" }] } },
+      { text: "Done." },
+    ]),
+  );
+  const res = await svc.analyze({ scope: "sales" });
+  expect(res.body).toMatchObject({ report: { headline: "Sales only", scope: "sales" } });
+  expect(db.reports).toHaveLength(1);
+});
+
 test("analysis: a finding about an unknown chart is rejected, and no report means 502", async () => {
   const svc = service(
     scripted([
@@ -447,7 +462,7 @@ test("memory: the analysis agent sees a note about its last report, not the last
   });
 
   await svc.analyze({ focus: "first question" });
-  const note = await analysisMemory.getWorkingMemory({ userId: "control-room", conversationId: "control-room-analysis" });
+  const note = await analysisMemory.getWorkingMemory(analysisThread("all"));
   expect(note).toContain("Headline: First headline: AI handled 60%.");
   expect(note).toContain("[good] AI handled 60% of tickets (tickets_per_day)");
 
@@ -457,7 +472,7 @@ test("memory: the analysis agent sees a note about its last report, not the last
   expect(second).toContain("second question");
   expect(second).not.toContain("first question"); // contextLimit 0: no replay of the earlier run
 
-  const after = await analysisMemory.getWorkingMemory({ userId: "control-room", conversationId: "control-room-analysis" });
+  const after = await analysisMemory.getWorkingMemory(analysisThread("all"));
   expect(after).toContain("Headline: Second headline.");
   expect(after).toContain("## Report before that"); // the previous headline is kept, one level deep
 });
@@ -482,11 +497,15 @@ test("memory: two replies from the same person share a thread and run one after 
 });
 
 test("memory: analysisNote keeps the report before last", () => {
-  const report = (headline: string) => ({ id: 1, headline, insights: [], author: "ResolveAI Bot", created_at: "2026-11-15T06:00:00.000Z", snapshot: METRICS.totals as any });
+  const report = (headline: string) => ({ id: 1, scope: "all" as const, headline, insights: [], author: "ResolveAI Bot", created_at: "2026-11-15T06:00:00.000Z", snapshot: METRICS.totals as any });
   const first = analysisNote(report("One"), null);
   const second = analysisNote(report("Two"), first);
   expect(second).toContain("Headline: Two");
   expect(second).toContain("## Report before that");
   expect(second).toContain("Headline: One");
   expect(analysisNote(report("Three"), second)).not.toContain("Headline: One"); // only one level deep
+});
+
+test("analysis: ₹ amounts are rewritten with Indian grouping", () => {
+  expect(indianRupees("₹603,000 of ₹903000 and ₹1,20,000; ₹9,050/lead, ₹4.5 avg")).toBe("₹6,03,000 of ₹9,03,000 and ₹1,20,000; ₹9,050/lead, ₹4.5 avg");
 });

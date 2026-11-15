@@ -84,6 +84,10 @@ instructions), not as hidden background jobs.
 - Analysis and leads rules in tools/API: findings may only name known dataset ids (`ANALYTICS_DATASETS`), one report
   per run; a lead's deal amount is the response's stated budget (never the model's), a response is converted or skipped
   once (API 409), and an email that already has a contact reuses it. Responses the agent couldn't decide stay `new`.
+- Analysis scope: `POST /analysis { scope: "all" | "sales" }`. A sales run sees only `SALES_DATASETS` (pipeline by stage and
+  score, campaign performance, contacts by source), `publish_report` refuses findings about other charts, and the report is
+  saved with `scope` (`GET /analytics/reports/latest?scope=sales`). Each scope has its own memory thread and note.
+  `publish_report` rewrites every ₹ amount with Indian grouping (`indianRupees`), since models drift to ₹603,000.
 - Memory: see "Agent memory" below.
 - Tests (`bun test`) run the real agents against a fake demo API with `MockLanguageModelV3` from `ai/test`
   scripting the tool calls; keep them standalone.
@@ -120,9 +124,11 @@ To change memory: keep thread keys in `service.ts` built from `personKey` / `ANA
 ## Dashboard (`apps/dashboard`)
 
 - Data comes **only** through `src/api.ts`. Most pages read mock JSON in `src/data/` (timestamps shifted so the newest
-  event is always recent); swap function bodies there, keep the return shapes. **Analytics** (`/analytics`, Home area)
-  and **Campaigns** (`/campaigns`, Sales area) are live: `live.use*()` in `api.ts` polls the demo API through `/api`
-  (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Their shapes come from `@ph/shared`.
+  event is always recent); swap function bodies there, keep the return shapes. **Analytics** (`/analytics`, Home area),
+  **Sales analytics** (`/sales/analytics`) and **Campaigns** (`/campaigns`) are live: `live.use*()` in `api.ts` polls the
+  demo API through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Shapes come from `@ph/shared`.
+- The Sales area holds every sales task: Sales analytics (its home: `AnalyticsView scope="sales"`, the sales charts and
+  the latest sales report), Leads (mock JSON) and Campaigns (live, runs the leads agent). A new sales page goes there.
 - Analytics charts: one y-axis per chart (a second measure goes in the tooltip), `ai`/`human` only for AI vs people,
   `bar` (neutral) for single series, `track` for the remainder of a part-of-whole bar; every chart has a Table view.
 - Shared state and the audit log are in `src/store.tsx`; labels/colours/icons per channel, level, status, tool in `src/meta.ts`.
@@ -154,10 +160,16 @@ To change memory: keep thread keys in `service.ts` built from `personKey` / `ANA
 - Topbar "Ask Aria" button or ⌘J opens a docked chat (`apps/dashboard/src/copilot/`). Everything CopilotKit
   (provider, tools, panel, its CSS) is one lazy chunk, `AskAria.jsx`, loaded on first open; keep it out of the main bundle.
 - Use the v2 API only (`@copilotkit/react-core/v2`, `@copilotkit/runtime/v2`). The `copilotkit` skill points at current docs.
-- Generative UI = frontend tools with a `render` (`tools.jsx`) drawing cards from `cards.jsx`. The model passes only an id or
-  filter; the card reads the live record from the store, so it can't show invented data. Handlers return a short text
-  summary for the model. Live data reaches the model through `useAgentContext`. To add a card: write it in `cards.jsx`,
-  register it in `tools.jsx`, mention it in the runtime prompt (`apps/copilot/src/index.ts`).
+- Generative UI = frontend tools with a `render` drawing cards. Support/approval cards: `tools.jsx` + `cards.jsx` (mock
+  store). Sales: `sales.tsx` registers its own tools, cards and context from the live API. Shared card frame: `frame.tsx`.
+  The model passes only an id or filter; the card reads the live record, so it can't show invented data. Handlers return
+  a short text summary for the model. Live data reaches the model through `useAgentContext` (values must be JSON: use
+  `null`, not `undefined`). To add a card: write it (typed, in a `.tsx`), register it, mention it in the runtime prompt
+  (`apps/copilot/src/index.ts`).
+- Sales tools (all the Sales area can do): `show_deals`, `show_deal`, `show_campaigns`, `show_campaign_responses`,
+  `show_sales_analytics`, and two actions that run the real agents, `fetch_campaign_leads` and `run_sales_analysis`.
+  Actions keep their outcome by tool call id (`runs` map) for their card, skip replays (`ctx.isReplay`), and the prompt
+  says to run them only when asked. Every Sales page is reachable with `open_page`.
 - Cards may hold real controls (Approve/Reject call `decideApproval` in the store), never fake ones.
 - Theming: `index.css` maps CopilotKit's shadcn tokens onto ours under `.aria-chat`, and the panel gets `.dark` in dark
   mode for CopilotKit's own `dark:` variants. Don't pass `threadId` to `CopilotChat` (it hides the welcome screen); "New chat" remounts it.

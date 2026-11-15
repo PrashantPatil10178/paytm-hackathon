@@ -6,6 +6,7 @@
 import type {
   ActivityType,
   AnalysisInsight,
+  AnalysisScope,
   AnalyticsTotals,
   CampaignChannel,
   CampaignResponseStatus,
@@ -222,6 +223,7 @@ export const campaignResponses = pgTable(
 /** Reports written by the analysis agent (or the API's rule-based stand-in). */
 export const analysisReports = pgTable("analysis_reports", {
   id: id(),
+  scope: text().$type<AnalysisScope>().notNull().default("all"),
   headline: text().notNull(),
   insights: jsonb().$type<AnalysisInsight[]>().notNull(),
   author: text().notNull(),

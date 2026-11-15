@@ -8,7 +8,8 @@ import integrations from './data/integrations.json'
 import workspace from './data/workspace.json'
 import { api as http, usePoll } from '@ph/shared/react'
 import type {
-  AnalysisReport, AnalysisResponse, AnalyticsMetrics, CampaignResponse, CampaignResponseStatus, CampaignSummary, LeadSyncResponse,
+  AnalysisReport, AnalysisResponse, AnalysisScope, AnalyticsMetrics, CampaignResponse, CampaignResponseStatus, CampaignSummary,
+  DealCard, DealDetail, DealStage, LeadSyncResponse,
 } from '@ph/shared'
 import type {
   Approvals, ChannelConnection, ChannelOffer, Connector, ConnectorOffer, Decision, Lead, Settings, Stats, Status,
@@ -60,14 +61,19 @@ export const api = {
   connect: (id: string) => respond({ id, ok: true }, 1100),
 
   // Live: the agents. Each waits for the model, so these take seconds (the lead sync up to a few minutes).
-  runAnalysis: (focus?: string) => http.post<AnalysisResponse>('/analysis', focus ? { focus } : {}),
+  runAnalysis: (focus?: string, scope: AnalysisScope = 'all') => http.post<AnalysisResponse>('/analysis', { scope, ...(focus ? { focus } : {}) }),
   syncCampaignLeads: (limit = 10) => http.post<LeadSyncResponse>('/campaigns/sync', { limit }),
 }
 
 /** Live, polled reads from the demo API. Identical payloads keep the same object, so idle pages don't re-render. */
 export const live = {
   useMetrics: () => usePoll<AnalyticsMetrics>('/analytics/metrics', 5000),
-  useLatestReport: () => usePoll<{ report: AnalysisReport | null }>('/analytics/reports/latest', 5000),
+  /** The newest report of that scope ("sales" for the Sales area). */
+  useLatestReport: (scope: AnalysisScope = 'all') => usePoll<{ report: AnalysisReport | null }>(`/analytics/reports/latest?scope=${scope}`, 5000),
+  /** The real CRM pipeline (HubSpot look-alike), not the mock leads. */
+  useDeals: () => usePoll<{ stages: { id: DealStage; label: string; probability: number }[]; deals: DealCard[] }>('/crm/deals', 5000),
+  /** One CRM deal with its contact and activity timeline. Pass null to skip. */
+  useDeal: (id: number | null) => usePoll<DealDetail>(id == null ? null : `/crm/deals/${id}`, 5000),
   useCampaigns: () => usePoll<{ campaigns: CampaignSummary[] }>('/campaigns', 4000),
   /** All responses when `status` is omitted. */
   useResponses: (status?: CampaignResponseStatus) =>

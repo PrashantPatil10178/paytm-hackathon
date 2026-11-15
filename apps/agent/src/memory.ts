@@ -11,13 +11,14 @@
  * - Cleanup: `bun run reset` wipes these tables with the demo data (packages/db). `prune` deletes threads idle
  *   longer than AGENT_MEMORY_RETENTION_DAYS (default 30, 0 turns it off); messages and steps go with them.
  */
-import { rupees, type AnalysisReport } from "@ph/shared";
+import { rupees, type AnalysisReport, type AnalysisScope } from "@ph/shared";
 import { InMemoryStorageAdapter, Memory } from "@voltagent/core";
 import { PostgreSQLMemoryAdapter } from "@voltagent/postgres";
 import { SQL } from "bun";
 
-/** The analysis agent's single long-running thread. */
-export const ANALYSIS_THREAD = { userId: "control-room", conversationId: "control-room-analysis" } as const;
+/** The analysis agent's long-running thread per scope (each has its own working-memory note). */
+export const analysisThread = (scope: AnalysisScope) =>
+  ({ userId: "control-room", conversationId: scope === "sales" ? "control-room-sales-analysis" : "control-room-analysis" }) as const;
 
 /** One thread per person across enquiries and campaign replies, keyed by their email. */
 export const personKey = (email: string) => email.trim().toLowerCase();

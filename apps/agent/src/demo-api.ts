@@ -1,6 +1,7 @@
 /** Typed client for the demo API (apps/api). The agents' tools act only through this. */
 import type {
   AnalysisReport,
+  AnalysisScope,
   AnalyticsMetrics,
   BookMeetingBody,
   CampaignResponse,
@@ -89,7 +90,7 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch) 
 
     // Analytics (the analysis agent's input and output)
     metrics: () => call<AnalyticsMetrics>("GET", "/analytics/metrics"),
-    reports: () => call<{ reports: AnalysisReport[] }>("GET", "/analytics/reports"),
+    reports: (scope?: AnalysisScope) => call<{ reports: AnalysisReport[] }>("GET", `/analytics/reports${scope ? `?scope=${scope}` : ""}`),
     saveReport: (body: CreateReportBody) => call<AnalysisReport>("POST", "/analytics/reports", body),
   };
 }

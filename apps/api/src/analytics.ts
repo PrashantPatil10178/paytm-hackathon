@@ -8,15 +8,17 @@ import {
   BOT,
   CAMPAIGN_CHANNELS,
   DEAL_STAGES,
+  SALES_DATASETS,
   type AnalysisInsight,
   type AnalysisReport,
+  type AnalysisScope,
   type AnalyticsDataset,
   type AnalyticsDatasetId,
   type AnalyticsMetrics,
   type AnalyticsSeries,
   type CreateReportBody,
 } from "@ph/shared";
-import { desc, schema as s, toReport } from "@ph/db";
+import { desc, eq, schema as s, toReport } from "@ph/db";
 import { listCampaigns } from "./campaigns.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, ok, oneOf } from "./http.ts";
@@ -132,38 +134,53 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
 
 const DATASET_IDS = ANALYTICS_DATASETS.map((d) => d.id);
 const TONES = ["good", "watch", "risk"] as const;
+const SCOPES = ["all", "sales"] as const;
+/** The datasets a report of this scope may write about. */
+export const datasetsFor = (scope: AnalysisScope) => (scope === "sales" ? SALES_DATASETS : DATASET_IDS);
 
 export async function saveReport(b: CreateReportBody): Promise<AnalysisReport> {
+  const scope = b.scope ? oneOf(b.scope, SCOPES, "scope") : "all";
+  const allowed = datasetsFor(scope);
   const headline = b.headline?.trim();
   if (!headline) throw bad("headline is required");
   if (!Array.isArray(b.insights) || b.insights.length < 1 || b.insights.length > 8) throw bad("insights must list 1 to 8 findings");
   const insights: AnalysisInsight[] = b.insights.map((i, n) => {
     if (!i?.title?.trim() || !i?.finding?.trim()) throw bad(`insights[${n}] needs a title and a finding`);
-    return { dataset: oneOf(i.dataset, DATASET_IDS, `insights[${n}].dataset`), title: i.title.trim().slice(0, 80), finding: i.finding.trim().slice(0, 400), tone: oneOf(i.tone, TONES, `insights[${n}].tone`) };
+    return { dataset: oneOf(i.dataset, allowed, `insights[${n}].dataset (${scope} report)`), title: i.title.trim().slice(0, 80), finding: i.finding.trim().slice(0, 400), tone: oneOf(i.tone, TONES, `insights[${n}].tone`) };
   });
   // The report keeps the totals it was written against, so its numbers still make sense later.
   const { totals } = await computeMetrics();
   const [row] = await db
     .insert(s.analysisReports)
-    .values({ headline: headline.slice(0, 200), insights, author: b.author?.trim() || BOT, snapshot: totals, created_at: new Date() })
+    .values({ scope, headline: headline.slice(0, 200), insights, author: b.author?.trim() || BOT, snapshot: totals, created_at: new Date() })
     .returning();
   return toReport(row!);
 }
 
-export async function latestReports(limit = 10): Promise<AnalysisReport[]> {
-  const rows = await db.select().from(s.analysisReports).orderBy(desc(s.analysisReports.created_at), desc(s.analysisReports.id)).limit(limit);
+export async function latestReports(limit = 10, scope?: AnalysisScope): Promise<AnalysisReport[]> {
+  const rows = await db
+    .select()
+    .from(s.analysisReports)
+    .where(scope ? eq(s.analysisReports.scope, scope) : undefined)
+    .orderBy(desc(s.analysisReports.created_at), desc(s.analysisReports.id))
+    .limit(limit);
   return rows.map(toReport);
 }
+
+const scopeParam = (req: Request) => {
+  const v = new URL(req.url).searchParams.get("scope");
+  return v ? oneOf(v, SCOPES, "scope") : undefined;
+};
 
 export const analyticsRoutes = {
   "/analytics/metrics": {
     GET: handle(async () => ok(await computeMetrics())),
   },
   "/analytics/reports": {
-    GET: handle(async () => ok({ reports: await latestReports() })),
+    GET: handle(async (req) => ok({ reports: await latestReports(10, scopeParam(req)) })),
     POST: handle(async (req) => ok(await saveReport(await body<CreateReportBody>(req)), 201)),
   },
   "/analytics/reports/latest": {
-    GET: handle(async () => ok({ report: (await latestReports(1))[0] ?? null })),
+    GET: handle(async (req) => ok({ report: (await latestReports(1, scopeParam(req)))[0] ?? null })),
   },
 };

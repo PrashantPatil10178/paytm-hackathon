@@ -1,4 +1,4 @@
-import type { AnalysisReport, LeadScore } from "@ph/shared";
+import type { AnalysisReport, AnalysisScope, LeadScore } from "@ph/shared";
 import type { ToolExecuteOptions } from "@voltagent/core";
 
 /**
@@ -19,6 +19,8 @@ export interface SalesRun {
 /** One POST /analysis run. `report` is set by publish_report so the service can return it. */
 export interface AnalysisRun {
   kind: "analysis";
+  /** "sales": the tools show only sales datasets and publish_report accepts only findings about them */
+  scope: AnalysisScope;
   report?: AnalysisReport;
 }
 

@@ -212,12 +212,13 @@ async function simulateLead(b: LeadRequest): Promise<LeadResponse> {
 
 /* ───────────── Analysis stand-in ───────────── */
 
-async function simulateAnalysis(_req: AnalysisRequest): Promise<AnalysisResponse> {
+async function simulateAnalysis(req: AnalysisRequest): Promise<AnalysisResponse> {
+  const scope = req.scope === "sales" ? "sales" : "all";
   const { totals: t, datasets } = await computeMetrics();
   const campaigns = datasets.find((d) => d.id === "campaign_performance")!.rows;
   const insights: AnalysisInsight[] = [];
 
-  insights.push({
+  if (scope === "all") insights.push({
     dataset: "tickets_per_day",
     title: `AI handled ${t.ai_rate.toFixed(0)}% of tickets`,
     finding: `${t.tickets_ai} of ${t.tickets} tickets stayed with the AI; ${t.tickets_escalated} were escalated to a person. ${t.tickets_open} are still open.`,
@@ -238,7 +239,15 @@ async function simulateAnalysis(_req: AnalysisRequest): Promise<AnalysisResponse
       tone: t.campaign_leads > 0 ? "good" : "watch",
     });
   }
-  insights.push({
+  if (scope === "sales") {
+    const won = datasets.find((d) => d.id === "deals_by_stage")!.rows.find((r) => r.key === "closed_won");
+    insights.push({
+      dataset: "deals_by_stage",
+      title: `${rupees(t.won_value)} closed won`,
+      finding: `${won?.deals ?? 0} deals won so far against ${rupees(t.pipeline_open)} still open. Push the qualified and meeting-booked deals toward a quote.`,
+      tone: t.won_value > 0 ? "watch" : "risk",
+    });
+  } else insights.push({
     dataset: "orders_per_day",
     title: `${rupees(t.revenue_14d)} revenue in 14 days`,
     finding: `${t.orders_14d} orders in the last 14 days. ${t.refunds} orders refunded or being refunded.`,
@@ -246,7 +255,11 @@ async function simulateAnalysis(_req: AnalysisRequest): Promise<AnalysisResponse
   });
 
   const report = await saveReport({
-    headline: `AI handled ${t.ai_rate.toFixed(0)}% of tickets; ${rupees(t.pipeline_open)} open pipeline with ${t.hot_open} hot deals.`,
+    scope,
+    headline:
+      scope === "sales"
+        ? `${rupees(t.pipeline_open)} open pipeline with ${t.hot_open} hot deals; ${t.campaign_leads} campaign leads${t.cost_per_lead ? ` at ${rupees(t.cost_per_lead)} each` : ""}.`
+        : `AI handled ${t.ai_rate.toFixed(0)}% of tickets; ${rupees(t.pipeline_open)} open pipeline with ${t.hot_open} hot deals.`,
     insights,
     author: "Rules",
   });

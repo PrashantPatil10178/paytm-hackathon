@@ -462,6 +462,12 @@ export const ANALYTICS_DATASETS: { id: AnalyticsDatasetId; title: string; descri
   { id: "contacts_by_source", title: "Contacts by source", description: "CRM contacts by where they came from" },
 ];
 
+/** The charts that are about sales: what the Sales area shows and what a sales-scoped analysis may write about. */
+export const SALES_DATASETS: AnalyticsDatasetId[] = ["deals_by_stage", "pipeline_by_score", "campaign_performance", "contacts_by_source"];
+
+/** What an analysis covers: everything (Analytics page) or just sales (Sales area). */
+export type AnalysisScope = "all" | "sales";
+
 export type AnalyticsUnit = "count" | "inr";
 
 export interface AnalyticsSeries {
@@ -519,6 +525,7 @@ export interface AnalysisInsight {
 
 export interface AnalysisReport {
   id: number;
+  scope: AnalysisScope;
   headline: string;
   insights: AnalysisInsight[];
   /** ResolveAI Bot for the agent, "Rules" for the built-in stand-in */
@@ -529,6 +536,8 @@ export interface AnalysisReport {
 }
 
 export interface CreateReportBody {
+  /** Default "all". A "sales" report may only have findings about SALES_DATASETS. */
+  scope?: AnalysisScope;
   headline: string;
   insights: AnalysisInsight[];
   author?: string;
@@ -537,6 +546,8 @@ export interface CreateReportBody {
 export interface AnalysisRequest {
   /** Optional question to focus the analysis, e.g. "Which campaign should get more budget?" */
   focus?: string;
+  /** Default "all" */
+  scope?: AnalysisScope;
 }
 
 export interface AnalysisResponse {

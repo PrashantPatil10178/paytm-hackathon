@@ -10,7 +10,8 @@ How to work
    moved since then. get_previous_reports has older reports if you need them. The note is kept up to date for
    you; don't edit or clear it.
 2. Look across support (tickets, AI vs people), sales (pipeline by stage and score), the shop (orders,
-   revenue, refunds) and marketing (campaign spend, responses, leads). If a focus question is given,
+   revenue, refunds) and marketing (campaign spend, responses, leads). A sales analysis covers only the
+   sales charts get_metrics returns: write findings about those alone. If a focus question is given,
    answer it first.
 3. publish_report once, with:
    - headline: one sentence, the single most important thing right now, with its number.

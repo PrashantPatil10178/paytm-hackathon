@@ -48,7 +48,8 @@ both are forwarded there unchanged:
 AGENT_URL=http://localhost:8000 bun run dev   # or: bun run dev:agent
 ```
 
-The agent lives in `apps/agent` (Python, FastAPI); see its README.
+The agent lives in `apps/agent` (TypeScript, [VoltAgent](https://voltagent.dev/docs)): a support agent for chats and a
+sales agent for enquiries. It uses `AGENT_MODEL` (else `COPILOT_MODEL`) and the same keys as Ask Aria; see its README.
 
 The agent receives exactly what the shop sends and must answer in the same shape:
 
@@ -74,7 +75,7 @@ All bodies are JSON. Types live in `packages/shared/src/types.ts`.
 | GET | `/zendesk/tickets?view=` | `all_unsolved` · `unassigned` · `assigned_humans` · `recently_solved`. Also returns per-view counts. |
 | GET | `/zendesk/tickets/{id}` | Ticket with all comments |
 | POST | `/zendesk/tickets` | `{ subject, comment?, requester_id \| requester{name,email,phone}, priority?, type?, status?, assignee?, tags?, via?, order_id? }` |
-| PATCH | `/zendesk/tickets/{id}` | `{ status?, priority?, type?, assignee?, tags?, escalated_by_ai? }` |
+| PATCH | `/zendesk/tickets/{id}` | `{ subject?, status?, priority?, type?, assignee?, tags?, escalated_by_ai? }` |
 | POST | `/zendesk/tickets/{id}/comments` | `{ body, public }`, where `public: false` is an internal note. Author defaults to `ResolveAI Bot`. |
 | GET | `/zendesk/users/{id}/tickets` | Other tickets from the same customer |
 
@@ -106,6 +107,7 @@ Stages: `new_lead → qualified → meeting_booked → quote_sent → closed_won
 | GET | `/shop/customers` |
 | GET | `/shop/customers/{id}/orders` |
 | GET | `/shop/orders/{id}` |
+| POST | `/shop/orders/{id}/refund` (delivered or damaged orders that are paid; marks it damaged, `refund_initiated`) |
 | POST | `/chat` |
 | POST | `/lead` |
 | POST | `/admin/reset` |
@@ -135,7 +137,8 @@ apps/
   hubspot/    HubSpot CRM (Demo)                         :3002
   shopkart/   ShopKart shop + chat                       :3003
   dashboard/  ResolveAI Control Room (Vite, mock data)   :3004
-  agent/      ResolveAI agent (Python, FastAPI)          :8000
+  agent/      ResolveAI agents (VoltAgent, Bun)          :8000
+  copilot/    Ask Aria runtime (CopilotKit)              :4100
 packages/
   shared/     API types, ₹/date formatting, polling + router hooks, the app server helper
 ```

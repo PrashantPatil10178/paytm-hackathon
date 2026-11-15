@@ -21,7 +21,7 @@ import {
 import { createContact, createDeal, logActivity } from "./crm.ts";
 import { db } from "./db.ts";
 import { bad, body, CORS, handle, ok } from "./http.ts";
-import { findCustomer } from "./shop.ts";
+import { findCustomer, refundOrder } from "./shop.ts";
 import { addComment, createTicket, findTicket, updateTicket } from "./zendesk.ts";
 
 const AGENT_URL = process.env.AGENT_URL?.replace(/\/$/, "");
@@ -130,10 +130,9 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
     updateTicket(ticket.id, { assignee: "Priya – Support", priority: "urgent", status: "open", escalated_by_ai: true });
     reply = `I can see ${rupees(order.amount)} left your bank for order #${order.id}, but the payment never reached us. Amounts this large need a person to check, so I've passed this to Priya on our payments team with all the details. You'll hear back within 2 hours. Your ticket number is #${ticket.id}.`;
   } else if (intent === "refund" && order) {
-    if (order.amount <= AUTO_REFUND_LIMIT && (order.status === "damaged" || order.status === "delivered")) {
-      order.status = "damaged";
-      order.payment_status = "refund_initiated";
-      order.updated_at = new Date().toISOString();
+    const refundable = (order.status === "damaged" || order.status === "delivered") && (order.payment_status === "paid" || order.payment_status === "cod");
+    if (order.amount <= AUTO_REFUND_LIMIT && refundable) {
+      refundOrder(order.id);
       addComment(ticket.id, {
         public: false,
         body: `Policy check passed: delivered order, damage reported within 7 days, ${rupees(order.amount)} is under the ${rupees(AUTO_REFUND_LIMIT)} auto-refund limit. Refund started to the original payment method.`,

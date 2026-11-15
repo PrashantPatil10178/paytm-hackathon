@@ -94,6 +94,10 @@ export function createTicket(b: CreateTicketBody): Ticket {
 
 export function updateTicket(id: number, b: UpdateTicketBody): Ticket {
   const t = findTicket(id);
+  if (b.subject !== undefined) {
+    if (!b.subject.trim()) throw bad("subject can't be empty");
+    t.subject = b.subject.trim();
+  }
   if (b.status !== undefined) t.status = oneOf(b.status, STATUSES, "status");
   if (b.priority !== undefined) t.priority = toPriority(b.priority);
   if (b.type !== undefined) t.type = oneOf(b.type, TYPES, "type");

@@ -78,6 +78,7 @@ export interface CreateTicketBody {
 }
 
 export interface UpdateTicketBody {
+  subject?: string;
   status?: TicketStatus;
   priority?: TicketPriority | AgentLevel;
   type?: TicketType;

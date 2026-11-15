@@ -14,7 +14,7 @@ Judges watch the agent's work appear live, so the screens matter as much as the 
 | `apps/hubspot` | HubSpot CRM look-alike: deals pipeline (drag and drop), contacts | 3002 | same |
 | `apps/shopkart` | Customer side: shop, My Orders, support chat, business enquiry | 3003 | same |
 | `apps/dashboard` | ResolveAI Control Room (KPIs, audit, tickets, approvals, board, connectors, settings) | 3004 | Vite 8, React 19 (JSX), Tailwind v4, Recharts |
-| `apps/agent` | The ResolveAI agent service: `POST /chat`, `POST /lead` | 8000 | Python, FastAPI, httpx |
+| `apps/agent` | The ResolveAI agents (support + sales): `POST /chat`, `POST /lead` | 8000 | Bun, VoltAgent (`@voltagent/core`, `server-hono`) |
 | `apps/copilot` | CopilotKit runtime behind the dashboard's "Ask Aria" chat (`/api/copilotkit`) | 4100 | Bun, `@copilotkit/runtime/v2` |
 | `packages/shared` | API types, ₹/date formatting, polling hooks, app server helper, **brand (logo)** | – | TS |
 
@@ -29,7 +29,7 @@ bun run dev:dashboard    # dashboard + the Ask Aria runtime (apps/copilot)
 bun run reset            # re-seed the demo data. Do this before every demo run.
 bun run check-types      # tsc for the TS apps and packages/shared
 bun run lint             # oxlint (dashboard)
-bun run test:agent       # pytest for apps/agent (no other services needed)
+bun run test:agent       # bun test for apps/agent (no other services or API keys needed)
 bun run build
 ```
 
@@ -43,19 +43,26 @@ instructions), not as hidden background jobs.
 - ShopKart sends `POST /chat` and `POST /lead` to the API. With `AGENT_URL` set, the API forwards them unchanged
   to the agent; if it is unset or unreachable, `apps/api/src/agent.ts` answers with a rule-based stand-in.
 - The agent acts only through the API's Zendesk / CRM / shop endpoints (listed in `README.md`).
-- **`packages/shared/src/types.ts` is the contract.** `apps/agent/app/schemas.py` mirrors the chat/lead shapes;
-  change both together.
+- **`packages/shared/src/types.ts` is the contract.** The agent imports it too; its zod request schemas are in
+  `apps/agent/src/service.ts`, so change them together.
 - Seed data: customers 101–105 (shared between ShopKart and Zendesk), tickets #2031–#2040 (new ones from #2041),
   8 contacts and 8 deals. Demo stories are in `README.md` (refund handled by AI, payment escalation, hot sales lead).
 
 ## Agent (`apps/agent`)
 
-- `scripts/run.sh` creates `.venv` on first run and reinstalls when `requirements.txt` changes. Override Python with `PYTHON=`.
-- `app/main.py` routes and error mapping (demo API down → 502), `app/schemas.py` models,
-  `app/demo_api.py` async client (the agent's tools), `app/agent.py` the logic.
-- `app/agent.py` is a **placeholder**: it logs each chat to one Zendesk ticket per session and each enquiry to a
-  CRM contact + deal. The real reasoning (understand → policy check → act → reply) goes there.
-- Tests use `httpx.MockTransport` in place of the demo API; keep it that way so they run standalone.
+- Built on VoltAgent. Two agents: `support` (chats: refunds, tracking, payment escalations) and `sales` (enquiries:
+  score, stage, book a call). `src/index.ts` boots VoltAgent + Hono, `src/service.ts` runs a request,
+  `src/agents/` instructions, `src/tools/` tools, `src/demo-api.ts` the typed client they act through.
+- Split of work: code always opens one ticket per chat session (or a contact + deal per enquiry) and posts the
+  agent's final text as the public reply; the agent decides everything in between with its tools.
+- Hard rules live in tools, not only prompts: tools read the ticket/customer/deal ids from the VoltAgent operation
+  context (`src/tools/context.ts`), never from model arguments, and `start_refund` refuses above ₹1,000.
+- If the model call fails, the customer still gets a reply and the ticket is unassigned with a note. Keep that.
+- Model: `AGENT_MODEL`, else `COPILOT_MODEL`, else `anthropic/claude-opus-5-5` (same keys as Ask Aria).
+- Tests (`bun test`) run the real agents against a fake demo API with `MockLanguageModelV3` from `ai/test`
+  scripting the tool calls; keep them standalone.
+- Skills: `voltagent-best-practices`, `voltagent-core-reference`, `voltagent-docs-bundle`, `create-voltagent`
+  (from github.com/VoltAgent/skills, in `.claude/skills/`). Version-matched docs: `apps/agent/node_modules/@voltagent/core/docs`.
 
 ## Dashboard (`apps/dashboard`)
 
@@ -110,10 +117,10 @@ instructions), not as hidden background jobs.
 
 ## Gotchas
 
-- Toolchain: Bun 1.4, TypeScript 7 (catalog in the root `package.json`), Python 3.10+ for the agent (developed on 3.14).
+- Toolchain: Bun 1.4, TypeScript 7 (catalog in the root `package.json`). The agent uses VoltAgent 2.11 on AI SDK 6.
 - Data is in memory: restarting the API or running `bun run reset` wipes anything the agent created.
 - Ports 3001–3004, 4000, 4100 and 8000 must be free. If the API fails with EADDRINUSE, an earlier instance is still running.
 - Screenshots / visual checks: `bunx playwright@1.60.0 screenshot --color-scheme=dark|light …` matches the
   locally installed Chromium; other versions try to download a browser.
-- Never commit `.env` (only `.env.example`). Env vars that matter: `AGENT_URL`, `API_URL`, and for Ask Aria
+- Never commit `.env` (only `.env.example`). Env vars that matter: `AGENT_URL`, `API_URL`, `AGENT_MODEL`, and for Ask Aria
   `COPILOT_MODEL`, `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` + `OPENAI_BASE_URL`. Bun loads the root `.env` in apps/copilot via `--env-file`.

@@ -17,7 +17,7 @@ import {
   type QuoteStatus,
   type UpdateDealBody,
 } from "@ph/shared";
-import { api, linkProps, useArrivals, usePoll } from "@ph/shared/react";
+import { api, copyText, linkProps, useArrivals, usePoll } from "@ph/shared/react";
 import { ArrowLeft, ArrowRightLeft, CalendarCheck, Check, Copy, Mail, Phone, ReceiptIndianRupee, StickyNote } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ME } from "./Topbar.tsx";
@@ -233,7 +233,7 @@ function PaymentLink({ url }: { url: string }) {
         type="button"
         className="btn-secondary"
         onClick={async () => {
-          await navigator.clipboard?.writeText(url);
+          if (!(await copyText(url))) return;
           setCopied(true);
           setTimeout(() => setCopied(false), 1600);
         }}

@@ -20,7 +20,7 @@ const asker = (r: InfoRequest) => (r.requested_by === BOT ? "ShopKart assistant"
 
 /** A request form inside the chat: tap the order, pick what went wrong, add a photo, send. */
 export function ChatForm({ requestId }: { requestId: number }) {
-  const { requests, answer, typing } = useChat();
+  const { requests, answer, typing, sending: busy } = useChat();
   const r = requests[requestId];
   const [values, setValues] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
@@ -41,7 +41,7 @@ export function ChatForm({ requestId }: { requestId: number }) {
 
   return (
     <section
-      data-chat-form
+      data-chat-form={r.id}
       aria-label={r.title}
       className="mt-1.5 w-[92%] max-w-[340px] flex-none animate-pop-in self-start overflow-hidden rounded-xl rounded-tl-none border border-jamun/15 bg-chat-in shadow-[0_1px_0.5px_rgb(11_20_26/0.13)]"
     >
@@ -82,7 +82,7 @@ export function ChatForm({ requestId }: { requestId: number }) {
           {error && <p role="alert" className="rounded-md bg-bad-wash px-2.5 py-1.5 text-[12.5px] text-bad">{error}</p>}
           <button
             type="submit"
-            disabled={sending || typing}
+            disabled={sending || busy || typing}
             className="flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-jamun text-[14px] font-semibold text-white transition-colors hover:bg-jamun-ink disabled:cursor-not-allowed disabled:bg-ink-3/40"
           >
             {sending ? <><LoaderCircle size={16} className="animate-spin" aria-hidden />Sending…</> : "Send details"}

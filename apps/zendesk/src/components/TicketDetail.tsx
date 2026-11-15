@@ -102,6 +102,14 @@ export function TicketDetail({ id }: { id: number }) {
             </select>
             {t.assignee === BOT ? <AiTag /> : t.escalated_by_ai ? <EscalatedTag /> : null}
           </Field>
+          {t.level && (
+            // Set by ResolveAI's main agent when it triages the ticket.
+            <Field label="ResolveAI level">
+              <span className="text-[13px]">
+                {cap(t.level)} · {t.handled_by === "human" ? "handed to a person" : `${t.handled_by} agent`}
+              </span>
+            </Field>
+          )}
           <Field label="Status">
             <select className="zd-select" value={t.status} onChange={(e) => update({ status: e.target.value as TicketStatus })}>
               {(["new", "open", "pending", "solved"] as const).map((s) => (
@@ -231,6 +239,7 @@ function Thread({ ticket }: { ticket: Ticket }) {
                 <time dateTime={c.created_at} className="text-xs text-ink-3">{stamp(c.created_at)}</time>
               </p>
               <p className="max-w-[68ch] whitespace-pre-wrap [overflow-wrap:anywhere]">{c.body}</p>
+              {c.attachments && c.attachments.length > 0 && <Attachments items={c.attachments} />}
             </div>
           </li>
         );
@@ -363,5 +372,29 @@ function Composer({ ticket, onSubmitted }: { ticket: Ticket; onSubmitted: () => 
         </div>
       </div>
     </form>
+  );
+}
+
+const kb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+/** A comment's attachments, Zendesk style: a thumbnail per image with its file name and size, opening full size. */
+function Attachments({ items }: { items: NonNullable<Ticket["comments"][number]["attachments"]> }) {
+  return (
+    <div className="mt-3 border-t border-line-2 pt-2.5">
+      <p className="mb-2 text-xs font-semibold text-ink-2">
+        {items.length} attachment{items.length === 1 ? "" : "s"}
+      </p>
+      <ul className="flex flex-wrap gap-2.5">
+        {items.map((a, i) => (
+          <li key={a.id}>
+            <a href={`/api${a.url}`} target="_blank" rel="noreferrer" className="group block w-32 overflow-hidden rounded border border-line bg-paper hover:border-link focus-visible:outline-2 focus-visible:outline-link">
+              <img src={`/api${a.url}`} alt={`Attachment ${i + 1}${a.name ? `: ${a.name}` : ""}`} loading="lazy" className="h-24 w-full bg-wash object-cover" />
+              <span className="block truncate px-2 pt-1 text-xs text-link group-hover:underline">{a.name || `photo-${a.id}.jpg`}</span>
+              <span className="block px-2 pb-1 text-[11px] text-ink-3">{kb(a.size)}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

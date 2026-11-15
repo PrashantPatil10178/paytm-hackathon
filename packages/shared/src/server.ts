@@ -18,14 +18,15 @@ export function serveApp(opts: {
   const port = Number(process.env.PORT ?? opts.port);
   const dev = process.env.NODE_ENV !== "production";
 
-  async function proxy(req: Request): Promise<Response> {
+  async function proxy(req: Request, ip?: string): Promise<Response> {
     const url = new URL(req.url);
     const target = apiUrl + url.pathname.replace(/^\/api/, "") + url.search;
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     try {
       const res = await fetch(target, {
         method: req.method,
-        headers: { "content-type": req.headers.get("content-type") ?? "application/json" },
+        // The visitor's IP goes along, so public forms (campaign landing pages) can rate-limit per visitor.
+        headers: { "content-type": req.headers.get("content-type") ?? "application/json", ...(ip && { "x-forwarded-for": ip }) },
         body: hasBody ? await req.arrayBuffer() : undefined,
       });
       return new Response(res.body, {
@@ -41,9 +42,11 @@ export function serveApp(opts: {
 
   const server = Bun.serve({
     port,
+    // /api/chat waits on the agent through the demo API; Bun's default 10 s idle timeout would cut it off.
+    idleTimeout: 120,
     development: dev ? { hmr: true, console: true } : false,
     routes: {
-      "/api/*": proxy,
+      "/api/*": (req, srv) => proxy(req, srv.requestIP(req)?.address),
       "/static/:file": (req) => {
         const file = req.params.file;
         if (!opts.publicDir || !SAFE_FILE.test(file)) return new Response("Not found", { status: 404 });

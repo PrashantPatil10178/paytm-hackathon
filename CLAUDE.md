@@ -13,7 +13,7 @@ Judges watch the agent's work appear live, so the screens matter as much as the 
 | `apps/zendesk` | Zendesk look-alike: views, tickets, replies, internal notes | 3001 | Bun HTML bundler, React 19, Tailwind v4 |
 | `apps/hubspot` | HubSpot CRM look-alike: deals pipeline (drag and drop), contacts | 3002 | same |
 | `apps/shopkart` | Customer side: shop, My Orders, support chat, business enquiry | 3003 | same |
-| `apps/dashboard` | ResolveAI Control Room: areas Home, Support, Sales, Connect, Aria (KPIs, analytics, tickets, leads, campaigns, approvals, board, channels, phone line, connectors, audit, settings) | 3004 | Vite 8, React 19 (TS + some JSX), Tailwind v4, Recharts |
+| `apps/dashboard` | ResolveAI Control Room: areas Home, Support, Sales, Connect, Aria (KPIs, analytics, tickets, live chats, conversations, leads, campaigns, approvals, board, request forms, connectors, phone line, policies, audit, settings) | 3004 | Vite 8, React 19 (TS + some JSX), Tailwind v4, Recharts |
 | `apps/agent` | The ResolveAI agents (support, sales, analysis, leads): `/chat`, `/lead`, `/analysis`, `/campaigns/sync` | 8000 | Bun, VoltAgent (`@voltagent/core`, `server-hono`) |
 | `apps/copilot` | CopilotKit runtime behind the dashboard's "Ask Aria" chat (`/api/copilotkit`) | 4100 | Bun, `@copilotkit/runtime/v2` |
 | `packages/db` | Postgres: Drizzle schema, SQL migrations, seed data, row → API type mappers | – | Drizzle ORM on `Bun.SQL` |
@@ -58,11 +58,27 @@ instructions), not as hidden background jobs.
   writes); answers go back to Aria as the next chat message only if she asked and still owns the ticket
   (`to_aria`), else they go on the ticket. Active forms are listed in the support prompt's ticket header.
 - The agent acts only through the API's Zendesk / CRM / shop endpoints (listed in `README.md`).
+- **Chats are stored** (`chat_messages`, `apps/api/src/chats.ts`): `POST /chat` records the customer's line and Aria's
+  answer, `addComment` copies public replies on a chat's ticket in (`mirrorComment`, Aria's text deduped per turn), and
+  the Control Room's Support → Chats inbox writes a person's messages. ShopKart keeps one session per customer in
+  localStorage and renders `GET /chat/sessions/:id` (polled), so a reload keeps the chat. Replying in the inbox takes
+  the chat over: its ticket (opened then, chat copied on, tagged `live-chat`, if it has none) goes to Kabir, and while a
+  person owns the open ticket `POST /chat` hands the message to them without calling the agent. The agent adopts a
+  `live-chat` ticket for the session after hand-back (`knownTicket` asks `/chat/sessions/:id`).
+- The shop chat never shows the customer an error. A dropped `/chat` request (API restarting, network) is checked
+  against the stored chat: if the message arrived, the typing dots stay until the answer lands there (Aria's reply is
+  also copied in when the agent saves it on its run, `mirrorRunReply`); if not, it is resent quietly (clock tick).
 - **`packages/shared/src/types.ts` is the contract.** The agent imports it too; its zod request schemas are in
   `apps/agent/src/service.ts`, so change them together.
 - Data lives in Postgres (`DATABASE_URL` in the repo-root `.env`). See "Database" below.
-- Seed data: customers 101–105 (shared between ShopKart and Zendesk), tickets #2031–#2040 (new ones from #2041),
-  8 contacts and 8 deals, 4 campaigns with 10 responses (incl. spam, a test entry and a duplicate of contact 1). Demo stories are in `README.md` (refund handled by AI, payment escalation, hot sales lead).
+- Seed data is only the shop catalogue: customers 101–105 (also the Zendesk users), products, orders, and the 4 campaigns
+  (no responses). No tickets, contacts, deals, responses or reports are seeded: every record on every screen comes from a
+  real chat, enquiry, call or agent run. New tickets start at #2041, deals and contacts at 1. Demo stories are in
+  `README.md` (tracking answered without a ticket, refund handled by AI, payment escalation, hot sales lead).
+- The Control Room reads everything from `/control-room/*` (`apps/api/src/controlroom.ts`, incl. `/conversations` =
+  chats answered without a ticket, counted in `/stats` as AI-solved queries; shapes in
+  `packages/shared/src/controlroom.ts`, imported as a namespace: `import type * as CR from "@ph/shared/controlroom"`).
+  Each GET is polled, so each handler is a couple of batched query rounds (`inArray`, `Promise.all`), never per row.
 
 ## Database (`packages/db`)
 
@@ -72,24 +88,65 @@ instructions), not as hidden background jobs.
   applies pending migrations on startup. Never edit an applied migration.
 - Rows map to the `@ph/shared` types in `src/map.ts` (timestamps are `Date` in the DB, ISO strings in the API).
   Import `eq`, `sql`, etc. from `@ph/db`, not `drizzle-orm`, so there's one copy of drizzle.
-- `reset` truncates the demo tables (`DEMO_TABLES`) and re-seeds with ids continuing from the old numbers (#2041…).
+- `reset` truncates the demo tables (`DEMO_TABLES`, incl. `rai_calls`) and re-seeds with ticket ids continuing at #2041.
+  Kept across resets: channels, connectors, `rai_settings`, `board_tasks`, `rai_cases`. `ensureResolveAIConfig` inserts
+  missing config rows on API start (channels `shopkart`, `sarvam_voice`, `enquiry_form`; connectors incl. `sarvam`; the
+  default settings), never overwriting what people changed.
   It also wipes the agent's tables (`voltagent_*`, `agent_chat_sessions`, found by name via `agentMemoryTables`) so a
   fresh demo has no remembered chats. The agent still checks recycled ticket numbers by `created_at`.
 - The DB is remote (~100 ms a round trip): run independent queries with `Promise.all`, avoid per-row queries.
+- **Policies** (`policies`, `policy_rules`; content in `packages/db/src/policies.ts`): ShopKart's business rules for testing,
+  17 policies / 73 rules (returns, refunds and approval limits, damaged items, cancellations, shipping, payments, COD,
+  warranty, exchanges, address changes, price protection, goodwill, fraud, SLAs, privacy, store credit, bulk orders).
+  Each rule has `conditions` (categories, tags, order status, payment, amount range, reasons), an `effect`
+  (auto / allow / require / approval / escalate / deny / info), `params` (limits, days, fees) and an `approver` role.
+  They are configuration, not demo data: `ensurePolicies` (API startup) adds missing codes and never overwrites, and
+  `reset` keeps them. Served read-only by the API (`GET /policies` `?area=&q=&effect=`, `GET /policies/:code`,
+  `apps/api/src/policies.ts`) and they reach every agent: the VoltAgent agents (digest in instructions + `lookup_policies`;
+  support runs record a "Check policy" step, tool "Policies"), Ask Aria (`show_policies`), people (Control Room → Aria →
+  Policies). Not the Sarvam sales caller: it sells ResolveAI to merchants, so it quotes no store's terms. Money limits
+  still live in code.
+- jsonb gotcha: Drizzle on Bun's driver stores jsonb as a JSON *string* (`jsonb_typeof` = 'string'), so SQL like
+  `col->>'key'` finds nothing. Drizzle reads both forms. `ensurePolicies` unwraps the policy columns to real objects;
+  other tables (orders.items, rai_runs.plan, …) are still strings.
 
 ## Agent (`apps/agent`)
 
-- Built on VoltAgent. Four agents: `support` (chats: refunds, tracking, payment escalations), `sales` (enquiries:
-  score, stage, book a call), `analysis` (reads `/analytics/metrics`, publishes a report of findings tied to chart
-  datasets) and `leads` (per campaign response: create a scored CRM lead or skip spam/duplicates). `src/index.ts` boots VoltAgent + Hono, `src/service.ts` runs a request,
-  `src/agents/` instructions, `src/tools/` tools, `src/demo-api.ts` the typed client they act through.
-- Split of work: code always opens one ticket per chat session (or a contact + deal per enquiry) and posts the
-  agent's final text as the public reply; the agent decides everything in between with its tools.
-- Hard rules live in tools, not only prompts: tools read the ticket/customer/deal ids from the VoltAgent operation
-  context (`src/tools/context.ts`), never from model arguments, and `start_refund` refuses above ₹1,000.
-- If the model call fails, the customer still gets a reply and the ticket is unassigned with a note. Keep that.
+- Built on VoltAgent. A **main agent** triages every request; **low / medium / high** agents work tickets; critical
+  ones go to a person; `sales` handles enquiries, `analysis` publishes a report of findings tied to chart datasets
+  (reads `/analytics/metrics`) and `leads` turns each campaign response into a scored CRM lead or skips spam/duplicates. `src/index.ts` boots VoltAgent + Hono, `src/service.ts` runs a
+  request end to end, `src/agents/` instructions, `src/tools/` tools, `src/criticality.ts` the level rules,
+  `src/demo-api.ts` the tools' client, `src/platform.ts` the client for ResolveAI's own records.
+- Flow: a channel posts to `POST /intake` with `Authorization: Bearer <channel token>` → the main agent returns a
+  structured triage (new request or status check, intent, signals, confidence, plan) → code checks the order (a refund,
+  damage claim or cancellation needs the order named: number, item, a pick from the "which order?" card
+  (`ChatResponse.ask` / `ChatRequest.answer`), the chat ticket's order, or the customer's only order; otherwise Aria
+  asks, no ticket) → `assessCriticality` sets the level in code → **low** (where is my order, delivery, policy
+  questions) is answered straight in the chat by the `direct` agent with **no ticket** (the run is still recorded,
+  `ticket_id` null, and shows in the Control Room's Conversations); its `escalate_to_human` opens the ticket then
+  (context callback `openTicket`), with the chat so far copied in → **medium and above** get a ticket (`level`,
+  `handled_by`, priority, triage note), the level agent works it in the background (the "I'm on it" ack is sent only
+  if it hasn't answered within 8 s), or a person gets a brief → the reply goes back and onto the ticket → finished
+  cases are saved to memory (`rai_cases`). High-level refunds wait in `rai_approvals`; the demo API calls the agent's
+  `POST /approvals/:id/decided` after a person decides, and the agent carries it out and tells the customer.
+- Tickets per chat: one per session while it's unsolved; a new problem after it's solved starts fresh (a follow-up on
+  the same issue may reopen it). The first ticket in a chat starts with the exchanges it had without one. "Any
+  update?" after a ticketless answer is answered from that run; upset / asks for a person / confidence < 0.6 → ticket.
+- Levels: low = information (answered in the chat, no ticket unless it has to go to a person); medium = actions within limits (refunds up to the auto-refund
+  limit); high = refunds above the limit (approval first); critical = failed payments, fraud/legal → a person. Signals (angry + repeat
+  contact, asks for a person) and confidence < 0.6 push a level up. Money and risk rules stay in code, never prompts.
+- The auto-refund limit is the Control Room setting `refundLimit` (default ₹1,000). The agent reads it with
+  `platform.refundLimit()` (`GET /control-room/settings`, cached 10 s, ₹1,000 if unreachable) for the level rules, the
+  level agent's prompt and `start_refund`; the API's stand-in reads it from the DB. The rule itself stays in code.
+- Tools read the ticket/customer/deal/run from the VoltAgent operation context (`src/tools/context.ts`), never from model
+  arguments; each tool records a step on the run. Each level agent gets only its level's tools. `start_refund` and
+  `request_approval` only take orders in the run's `orderIds` (named by the customer, set in code).
+- The agents reach tools through the **connectors** (base URL + token per tool, `rai_connectors`, Control Room →
+  Connectors; campaigns and analytics go straight to the demo API). A connector turned off makes its calls fail with a clear 502. Channels and their hashed tokens are in
+  `rai_channels`; the demo API's own ShopKart forwarding uses `SHOPKART_CHANNEL_TOKEN` (or issues one at startup).
+- If a model call fails, the customer still gets a reply and the ticket goes to a person with a note. Keep that.
 - With `DATABASE_URL`, conversation memory (`@voltagent/postgres`) and chat sessions survive agent restarts.
-- Models, two tiers (`src/models.ts`): heavy (support, analysis) = `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`;
+- Models, two tiers (`src/models.ts`): heavy (main, writer, low/medium/high incl. low-direct, analysis) = `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`;
   lite (sales, leads) = `AGENT_MODEL_LITE`, else `AGENT_MODEL`, else `COPILOT_MODEL`, else `openai/gpt-5.6-luna`.
   `CLAUDE_API_KEY` is accepted for `ANTHROPIC_API_KEY`. Agents set no `temperature`: current Claude models reject it.
 - Analysis and leads rules in tools/API: findings may only name known dataset ids (`ANALYTICS_DATASETS`), one report
@@ -101,7 +158,7 @@ instructions), not as hidden background jobs.
   `publish_report` rewrites every ₹ amount with Indian grouping (`indianRupees`), since models drift to ₹603,000.
 - Memory: see "Agent memory" below.
 - Tests (`bun test`) run the real agents against a fake demo API with `MockLanguageModelV3` from `ai/test`
-  scripting the tool calls; keep them standalone.
+  scripting the triage and tool calls; keep them standalone.
 - Skills: `voltagent-best-practices`, `voltagent-core-reference`, `voltagent-docs-bundle`, `create-voltagent`
   (from github.com/VoltAgent/skills, in `.claude/skills/`). Version-matched docs: `apps/agent/node_modules/@voltagent/core/docs`.
 
@@ -132,18 +189,49 @@ shows the setting. Memory holds customer messages (names, emails, orders): don't
 To change memory: keep thread keys in `service.ts` built from `personKey` / `ANALYSIS_THREAD`, keep the note small
 (it is in every analysis prompt), and test with `createAgentMemory(undefined)` (in process) as `test/service.test.ts` does.
 
+## Voice calls (Sarvam)
+
+- The Control Room places outbound sales calls with the Sarvam voice agent "Aria · Sales Caller"
+  (`POST /resolveai/calls`); `apps/api/src/sarvam.ts` is the REST client, `apps/api/src/calls.ts` the routes, table `rai_calls`.
+  Channel `sarvam_voice`, connector `sarvam` (its token = the Sarvam API key, else `SARVAM_API_KEY`; never logged or returned).
+  Needs `SARVAM_ORG_ID` + `SARVAM_WORKSPACE_ID`; app, connection and caller number have defaults (`.env.example`).
+  App version default 3. The caller sells ResolveAI (`company_name` "ResolveAI") and never quotes a store's policies
+  (bulk pricing, shipping, returns, warranty): it defers those to the sales rep. The unattached Sarvam KB
+  `shopkart-policies` is ShopKart's customer wording, kept for a future ShopKart voice agent (Sarvam's ingestion drops
+  text between ₹ signs: write "499 rupees"). A new committed version needs `SARVAM_APP_VERSION`'s default bumped in `sarvam.ts`.
+- Guards in code: Indian mobiles only (stored E.164), a number with a `do_not_call` outcome is never called again,
+  calls only 09:00–21:00 IST unless `force: true`, 503 when Sarvam isn't set up or the channel/connector is off.
+- Results: Sarvam's webhook `POST /sarvam/webhook/<call id>.<HMAC>` (only when `PUBLIC_API_URL` is set) and polling
+  Sarvam's analytics every 30 s for calls ringing > 60 s (gives up after 30 min: failed "No result from Sarvam").
+  Both go through `applyResult`, serialised per call, so repeats never create a second deal. The token secret is
+  `SARVAM_WEBHOOK_TOKEN`, else derived from `DATABASE_URL`, so tokens survive restarts without storing anything.
+- CRM: meeting_booked / send_details / callback → a call from a deal updates that deal (score, next step, amount if
+  it had none, meeting_booked moves New lead/Qualified on); a cold call reuses a contact by email or phone or creates one
+  (source "Campaign", the contact type has no voice source) plus a deal "<company> – <need>". Every call gets one
+  `call` activity per deal ending `(call #id)`, updated in place. Other outcomes and no-answer only log on a linked deal.
+- Never place real calls from tests: insert a `rai_calls` row and POST a webhook to it (token as in `calls.ts`).
+
 ## Dashboard (`apps/dashboard`)
 
-- Data comes **only** through `src/api.ts`. Most pages read mock JSON in `src/data/` (timestamps shifted so the newest
-  event is always recent); swap function bodies there, keep the return shapes. **Analytics** (`/analytics`, Home area),
-  **Sales analytics** (`/sales/analytics`), **Campaigns** (`/campaigns`), **Phone line** (`/phone`, Connect area) and **Request forms** (`/forms`, Support area) are live: `live.use*()` in `api.ts` polls the
-  demo API through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Shapes come from `@ph/shared`.
+- Data comes **only** through `src/api.ts`, and all of it is live Postgres data (there is no mock JSON). Tickets, leads,
+  approvals, stats, channels, connectors, settings and the team board come from the demo API's `/control-room/*`
+  (`apps/api/src/controlroom.ts`, shapes in `@ph/shared/controlroom`); Analytics, Campaigns and Calls use `live.use*()`.
+  Everything polls through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Every page must
+  render an empty DB (fresh `bun run reset`) with an empty state that says what fills it.
+- The signed-in person is `OWNER` from `@ph/shared` (Kabir Malhotra, founder of ShopKart), in every app. Never invent
+  other staff names.
+- Support → Chats (`src/pages/Chats.tsx`) is the live inbox: every ShopKart chat, reply / hand back / solve. Mint = Aria
+  answering, periwinkle = a person has it, amber = the customer is waiting on that person.
+- Aria → Policies (`src/pages/Policies.tsx`, read-only, `live.usePolicies`): policies by area, rules with effect badges
+  (auto = mint, approval/escalate = amber, deny = red, others neutral); formatting shared with Ask Aria in `src/policies.ts`.
+- Phone line (`/phone`, Connect) and Request forms (`/forms`, Support) read `live.useVoiceLine/useVoiceCalls` and
+  `live.useInfoForms/useInfoRequests/useOpenTickets`: the inbound Sarvam line and the forms Aria or a person sends into a chat.
 - The Sales area holds every sales task: Sales analytics (its home: `AnalyticsView scope="sales"`, the sales charts and
-  the latest sales report), Leads (mock JSON) and Campaigns (live, runs the leads agent). A new sales page goes there.
+  the latest sales report), Leads (CRM deals, with "Call with Aria"), Calls (Sarvam voice calls) and Campaigns (runs the leads agent). A new sales page goes there.
 - Analytics charts: one y-axis per chart (a second measure goes in the tooltip), `ai`/`human` only for AI vs people,
   `bar` (neutral) for single series, `track` for the remainder of a part-of-whole bar; every chart has a Table view.
 - Shared state and the audit log are in `src/store.tsx`; labels/colours/icons per channel, level, status, tool in `src/meta.ts`.
-  Data shapes are in `src/types.ts` (keep them in step with `src/data/*.json`).
+  Data shapes are in `src/types.ts`, which re-exports `@ph/shared/controlroom` (the API contract).
 - TypeScript: new files are `.ts`/`.tsx`. The core (types, api, store, meta, lib, nav, theme, layout, sidebar, `ui`, `Trace`,
   `ToolChain`, Leads, Analytics, Campaigns) is typed; the older pages and `src/copilot/` are still `.jsx` (`allowJs`,
   unchecked). Moving a file to `.tsx` turns checking on for it. Restart Vite after renaming a file: it keeps resolving the old path.
@@ -186,6 +274,8 @@ To change memory: keep thread keys in `service.ts` built from `personKey` / `ANA
   `show_sales_analytics`, and two actions that run the real agents, `fetch_campaign_leads` and `run_sales_analysis`.
   Actions keep their outcome by tool call id (`runs` map) for their card, skip replays (`ctx.isReplay`), and the prompt
   says to run them only when asked. Every Sales page is reachable with `open_page`.
+- Policy tool (`policies.tsx`): `show_policies` (code / area / search words) draws the matching policies and returns their
+  rules as text for the answer; the context holds a one-line digest per policy (code, area, title, summary).
 - Cards may hold real controls (Approve/Reject call `decideApproval` in the store), never fake ones.
 - Theming: `index.css` maps CopilotKit's shadcn tokens onto ours under `.aria-chat`, and the panel gets `.dark` in dark
   mode for CopilotKit's own `dark:` variants. Don't pass `threadId` to `CopilotChat` (it hides the welcome screen); "New chat" remounts it.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, Ticket, CornerDownLeft, TrendingUp } from 'lucide-react'
+import { Search, Ticket, CornerDownLeft, TrendingUp, MessagesSquare } from 'lucide-react'
 import { useApp } from '../store'
 import { cn } from '../lib'
 import { LEVELS, type Icon } from '../meta'
@@ -9,7 +9,7 @@ import type { Level } from '../types'
 
 interface Result {
   key: string
-  group: 'Pages' | 'Tickets' | 'Leads'
+  group: 'Pages' | 'Tickets' | 'Conversations' | 'Leads'
   label: string
   hint?: string
   to: string
@@ -21,7 +21,7 @@ interface Result {
 const PAGE_RESULTS = AREAS.flatMap((a) => a.paths.map((to) => ({ to, ...PAGES[to]!, area: a.label })))
 
 export default function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { tickets, leads } = useApp()
+  const { tickets, conversations, leads } = useApp()
   const navigate = useNavigate()
   const [q, setQ] = useState('')
   const [active, setActive] = useState(0)
@@ -44,12 +44,16 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
         .filter((t) => match(t.id, t.customer.name, t.issue))
         .slice(0, s ? 8 : 4)
         .map((t): Result => ({ key: t.id, group: 'Tickets', label: `${t.id} · ${t.issue}`, hint: t.customer.name, to: `/tickets?id=${t.id}`, icon: Ticket, level: t.level })),
+      ...conversations
+        .filter((c) => match(c.id, c.customer.name, c.issue))
+        .slice(0, s ? 5 : 2)
+        .map((c): Result => ({ key: c.id, group: 'Conversations', label: `${c.id} · ${c.issue}`, hint: c.customer.name, to: `/conversations?id=${c.id}`, icon: MessagesSquare, level: c.level ?? undefined })),
       ...leads
         .filter((l) => match(l.id, l.name, l.company, l.need))
         .slice(0, s ? 5 : 2)
         .map((l): Result => ({ key: l.id, group: 'Leads', label: `${l.id} · ${l.need}`, hint: l.company, to: `/leads?id=${l.id}`, icon: TrendingUp })),
     ]
-  }, [q, tickets, leads])
+  }, [q, tickets, conversations, leads])
 
   useEffect(() => { setActive(0) }, [q])
 
@@ -78,7 +82,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={onKey}
-            placeholder="Search by ticket ID, customer, lead or page…"
+            placeholder="Search by ticket ID, chat, customer, lead or page…"
             className="h-14 flex-1 bg-transparent text-[15px] outline-none placeholder:text-slate-400"
           />
           <kbd className="rounded border border-slate-200 px-1.5 text-[11px] text-slate-500">esc</kbd>

@@ -26,15 +26,50 @@
     {
       "idx": 3,
       "version": "7",
-      "when": 1794729577055,
-      "tag": "0003_voice_calls",
+      "when": 1794729854010,
+      "tag": "0003_resolveai_agents",
       "breakpoints": true
     },
     {
       "idx": 4,
       "version": "7",
-      "when": 1794735375926,
-      "tag": "0004_request_forms",
+      "when": 1794730944629,
+      "tag": "0004_calls_settings_board",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794734205481,
+      "tag": "0005_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794734892148,
+      "tag": "0006_chat_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794734988470,
+      "tag": "0007_support_calls",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794736007992,
+      "tag": "0008_photos_landing",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794738394935,
+      "tag": "0009_voice_calls_request_forms",
       "breakpoints": true
     }
   ]

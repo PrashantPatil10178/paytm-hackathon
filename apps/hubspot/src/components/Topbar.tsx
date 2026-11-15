@@ -1,7 +1,8 @@
+import { OWNER } from "@ph/shared";
 import { linkProps } from "@ph/shared/react";
 import { Avatar } from "./ui.tsx";
 
-export const ME = "Rahul – Sales";
+export const ME = OWNER.name;
 
 const tabCls = (active: boolean) =>
   `relative flex h-14 items-center px-4 text-[15px] text-white no-underline transition-colors hover:bg-navy-2 ${

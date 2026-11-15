@@ -1,6 +1,9 @@
 import { Agent, type AgentOptions, type Memory } from "@voltagent/core";
 import type { DemoAPI } from "../demo-api.ts";
 import { leadsTools } from "../tools/leads.ts";
+import { withPolicies, type PolicyBook } from "../policies.ts";
+import { withPersona, type SettingsSource } from "../settings.ts";
+import { policyTools } from "../tools/policies.ts";
 
 const INSTRUCTIONS = `You are Aria, ResolveAI's lead manager for ShopKart's business team. Someone answered one of
 ShopKart's marketing campaigns (Meta Ads, Google Ads, WhatsApp or email). You decide whether it becomes a
@@ -22,14 +25,14 @@ Rules
 - Your final message is one short line saying what you did and why.`;
 
 /** `memory` keeps each response's run (Postgres in the app); omitted, VoltAgent keeps it in memory. */
-export function createLeadsAgent(api: DemoAPI, model: AgentOptions["model"], memory?: Memory) {
+export function createLeadsAgent(api: DemoAPI, model: AgentOptions["model"], memory?: Memory, book?: PolicyBook, persona?: SettingsSource) {
   return new Agent({
     id: "leads",
     name: "Aria · Leads",
     purpose: "Turns marketing campaign responses into scored CRM leads and filters out spam and duplicates",
-    instructions: INSTRUCTIONS,
+    instructions: withPersona(withPolicies(INSTRUCTIONS, book), persona, false),
     model,
-    tools: leadsTools(api),
+    tools: [...leadsTools(api), ...policyTools(book)],
     maxSteps: 4,
     ...(memory && { memory }),
   });

@@ -1,23 +1,59 @@
 /**
- * Runs the real agents and service against an in-memory fake of the demo API and a scripted model,
- * so no other services or API keys are needed.
+ * Runs the real agents and service against an in-memory fake of the demo API (Zendesk, shop, CRM and
+ * ResolveAI's /resolveai records) and a scripted model, so no other services or API keys are needed.
+ *
+ * One scripted model plays every agent in turn: the main agent's triage (a JSON text), then the level
+ * agent's tool calls and reply.
  */
 import { beforeEach, expect, test } from "bun:test";
 import { APICallError } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
+import { createLevelAgents } from "../src/agents/levels.ts";
+import { createMainAgent, createWriterAgent, type Triage } from "../src/agents/main.ts";
 import { createAnalysisAgent } from "../src/agents/analysis.ts";
 import { createLeadsAgent } from "../src/agents/leads.ts";
 import { createSalesAgent } from "../src/agents/sales.ts";
-import { createSupportAgent } from "../src/agents/support.ts";
+import { assessCriticality } from "../src/criticality.ts";
 import { createDemoAPI } from "../src/demo-api.ts";
+import { createPlatform } from "../src/platform.ts";
 import { analysisNote, analysisThread, createAgentMemory } from "../src/memory.ts";
 import { indianRupees } from "../src/tools/analysis.ts";
 import { createService } from "../src/service.ts";
+import { createVisionAgent, type PhotoVerdict } from "../src/evidence.ts";
+import { schedule, DEFAULT_SETTINGS } from "../src/settings.ts";
+import { ticketSolver } from "@ph/shared";
 
 /* ───── Fake demo API ───── */
 
 type Json = Record<string, any>;
-let db: { tickets: Json[]; comments: Json[]; orders: Json[]; contacts: Json[]; deals: Json[]; notes: Json[]; meetings: Json[]; responses: Json[]; reports: Json[]; requests: Json[] };
+let db: {
+  tickets: Json[];
+  comments: Json[];
+  orders: Json[];
+  contacts: Json[];
+  deals: Json[];
+  notes: Json[];
+  meetings: Json[];
+  channels: Json[];
+  connectors: Json[];
+  runs: Json[];
+  steps: Json[];
+  approvals: Json[];
+  cases: Json[];
+  responses: Json[];
+  reports: Json[];
+  /** The Control Room settings (GET /control-room/settings) */
+  settings: Json;
+  /** Photos customers attached (attachments): id, customer_id, ticket_id, order_id, sha256 */
+  attachments: Json[];
+  /** Request forms sent into the chat (POST /info/requests) */
+  requests: Json[];
+};
+
+const TOKEN = "rai_test_token";
+const DAY_MS = 86_400_000;
+/** An ISO time `n` days ago: orders are delivered "yesterday", inside POL-DMG's 48-hour report window. */
+const daysAgo = (n: number) => new Date(Date.now() - n * DAY_MS).toISOString();
 
 const response = (id: number, x: Json) => ({
   id, campaign: { id: 1, name: "Diwali bulk gifting", channel: "meta_ads" }, phone: "", need: "bulk_order", start_when: "", budget: null,
@@ -29,21 +65,35 @@ beforeEach(() => {
     tickets: [],
     comments: [],
     orders: [
-      { id: 1023, customer_id: 101, status: "delivered", payment_status: "paid", amount: 500, items: [{ name: "Mug", qty: 2 }], placed_at: "2026-11-10", updated_at: "2026-11-13" },
-      { id: 1030, customer_id: 101, status: "delivered", payment_status: "paid", amount: 4200, items: [{ name: "Lamp", qty: 1 }], placed_at: "2026-11-09", updated_at: "2026-11-12" },
-      { id: 1040, customer_id: 102, status: "delivered", payment_status: "paid", amount: 300, items: [{ name: "Tea", qty: 1 }], placed_at: "2026-11-09", updated_at: "2026-11-12" },
+      { id: 1023, customer_id: 101, status: "delivered", payment_status: "paid", amount: 500, items: [{ name: "Mug", qty: 2 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1030, customer_id: 101, status: "delivered", payment_status: "paid", amount: 4200, items: [{ name: "Lamp", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1040, customer_id: 102, status: "delivered", payment_status: "paid", amount: 300, items: [{ name: "Tea", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1050, customer_id: 101, status: "shipped", payment_status: "paid", amount: 900, items: [{ name: "Kettle", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1060, customer_id: 101, status: "placed", payment_status: "failed_debited", amount: 15000, items: [{ name: "Phone", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1070, customer_id: 101, status: "delivered", payment_status: "paid", amount: 250, items: [{ name: "Spoon", qty: 4 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1080, customer_id: 103, status: "delivered", payment_status: "paid", amount: 700, items: [{ name: "Vase", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
     ],
     contacts: [],
     deals: [],
     notes: [],
     meetings: [],
+    channels: [{ id: "shopkart", name: "ShopKart chat", kind: "chat", enabled: true, token: TOKEN }],
+    connectors: ["zendesk", "shop", "hubspot"].map((id) => ({ id, base_url: `http://demo/${id === "hubspot" ? "crm" : id}`, token: null, enabled: true })),
+    runs: [],
+    steps: [],
+    approvals: [],
+    cases: [],
     responses: [
       response(1, { name: "Meera Joshi", email: "meera@joshisweets.example", company: "Joshi Sweets", budget: 90000, start_when: "This week", message: "Need 500 Diwali hampers with our logo." }),
       response(2, { name: "Promo Blast", email: "noreply@promo.example", company: "", need: "other", message: "WIN a FREE iPhone!!! bit.ly/xx" }),
       response(3, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, message: "Still interested in billing." }),
     ],
     reports: [],
+    attachments: [],
     requests: [],
+    // Always in business hours (00:00–24:00 every day), so replies don't depend on when the tests run. Photos
+    // are only required where POL-DMG asks (above ₹1,000); the photo tests switch the setting on.
+    settings: { agentName: "Aria", refundLimit: 1000, requireDamagePhotos: false, hours: { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], from: "00:00", to: "24:00", afterHours: "autonomous" } },
   };
 });
 
@@ -54,12 +104,14 @@ const METRICS = {
 };
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+const ticketView = (t: Json) => ({ ...t, comments: db.comments.filter((c) => c.ticket_id === t.id) });
+const runView = (r: Json) => ({ ...r, steps: db.steps.filter((s) => s.run_id === r.id) });
 
 const FORMS = [
   {
     id: "damaged_item", title: "Damaged or wrong item", ask: "Tell us which order it is and what went wrong.", active: true,
-    use_for: "A damaged item when it isn't clear which order.",
-    fields: [{ key: "order", kind: "order", label: "Which order?", enabled: true, required: true }, { key: "photo", kind: "photo", label: "Photo of the item", enabled: false, required: false }],
+    use_for: "Something went wrong with an order and the customer didn't say what.",
+    fields: [{ key: "what", kind: "text", label: "What went wrong?", enabled: true, required: true }, { key: "photo", kind: "photo", label: "Photo of the item", enabled: false, required: false }],
   },
   { id: "payment_problem", title: "Payment problem", ask: "Pick the order.", active: false, use_for: "Payments.", fields: [{ key: "utr", kind: "text", label: "Bank reference (UTR)", enabled: true, required: false }] },
 ];
@@ -71,10 +123,11 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   const p = url.pathname;
   let m: RegExpMatchArray | null;
 
+  /* Zendesk */
   if (method === "POST" && p === "/zendesk/tickets") {
-    const t = { id: 2041 + db.tickets.length, requester: { id: body.requester_id, name: "Ananya Iyer" }, escalated_by_ai: false, created_at: new Date().toISOString(), ...body };
+    const t = { id: 2041 + db.tickets.length, requester: { id: body.requester_id, name: "Ananya Iyer" }, escalated_by_ai: false, level: null, handled_by: null, created_at: new Date().toISOString(), ...body };
     db.tickets.push(t);
-    return json(t, 201);
+    return json(ticketView(t), 201);
   }
   if ((m = p.match(/^\/zendesk\/tickets\/(\d+)$/))) {
     const t = db.tickets.find((x) => x.id === Number(m![1]));
@@ -83,12 +136,33 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
       if (body.assignee && t.assignee === "ResolveAI Bot" && body.assignee !== "ResolveAI Bot") t.escalated_by_ai = true;
       Object.assign(t, body);
     }
-    return json(t);
+    return json(ticketView(t));
   }
   if ((m = p.match(/^\/zendesk\/tickets\/(\d+)\/comments$/))) {
-    db.comments.push({ ticket_id: Number(m[1]), ...body });
+    const ticketId = Number(m[1]);
+    db.comments.push({ ticket_id: ticketId, ...body });
+    // Photos ride on the comment: they join the ticket (and its order, from the subject) like the demo API does.
+    const t = db.tickets.find((x) => x.id === ticketId);
+    for (const id of body.attachment_ids ?? []) {
+      const a = db.attachments.find((x) => x.id === id && x.customer_id === t?.requester.id);
+      if (a) Object.assign(a, { ticket_id: ticketId, order_id: Number(String(t?.subject ?? "").match(/order #(\d+)/)?.[1]) || a.order_id });
+    }
     return json({ id: db.comments.length }, 201);
   }
+  if ((m = p.match(/^\/zendesk\/tickets\/(\d+)\/attachments$/))) {
+    const tid = Number(m[1]);
+    const mine = db.attachments.filter((a) => a.ticket_id === tid);
+    return json({
+      attachments: mine.map((a) => ({ ...a, url: `/attachments/${a.id}`, reused: db.attachments.filter((x) => x.sha256 === a.sha256 && x.id !== a.id && x.ticket_id !== tid) })),
+    });
+  }
+  if ((m = p.match(/^\/zendesk\/attachments\/(\d+)$/))) return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), { headers: { "content-type": "image/jpeg" } });
+  if ((m = p.match(/^\/zendesk\/users\/(\d+)\/tickets$/))) {
+    return json({ tickets: db.tickets.filter((t) => t.requester.id === Number(m![1])).sort((a, b) => b.id - a.id) });
+  }
+
+  /* Shop */
+  if (p === "/shop/products") return json({ products: [{ id: 8, name: "Mug", category: "Home" }, { id: 9, name: "Lamp", category: "Home" }, { id: 1, name: "Headphones", category: "Audio" }] });
   if ((m = p.match(/^\/shop\/customers\/(\d+)\/orders$/))) {
     return json({ customer: { id: Number(m[1]), name: "Ananya Iyer" }, orders: db.orders.filter((o) => o.customer_id === Number(m![1])) });
   }
@@ -98,6 +172,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     if (m[2]) Object.assign(o, { status: "damaged", payment_status: "refund_initiated" });
     return json(o);
   }
+
+  /* CRM */
   if (method === "POST" && p === "/crm/contacts") {
     const c = { id: 9 + db.contacts.length, ...body };
     db.contacts.push(c);
@@ -119,10 +195,58 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   }
   if (p === "/crm/slots") return json({ slots: [{ start: "2026-11-17T05:30:00.000Z", end: "2026-11-17T06:00:00.000Z" }] });
   if (method === "POST" && p === "/crm/meetings") {
-    const mt = { id: 1, title: "Intro call", attendees: ["Meera Shah", "Rahul – Sales"], ...body };
+    const mt = { id: 1, title: "Intro call", attendees: ["Meera Shah", "Kabir Malhotra"], ...body };
     db.meetings.push(mt);
     return json(mt, 201);
   }
+
+  /* ResolveAI records */
+  if (p === "/resolveai/channels/authenticate") {
+    const c = db.channels.find((x) => x.token === body.token);
+    if (!c) return json({ error: "Unknown channel token" }, 401);
+    if (!c.enabled) return json({ error: `Channel ${c.name} is turned off` }, 403);
+    return json({ channel: c });
+  }
+  if (p === "/resolveai/connectors/access") return json({ connectors: db.connectors });
+  if (p === "/resolveai/runs" && method === "POST") {
+    const r = { id: db.runs.length + 1, kind: "request", status: "triaging", plan: [], ticket_id: null, level: null, handled_by: null, intent: null, reply: null, ...body };
+    db.runs.push(r);
+    return json(runView(r), 201);
+  }
+  if (p === "/resolveai/runs" && method === "GET") {
+    const session = url.searchParams.get("session_id");
+    const tid = Number(url.searchParams.get("ticket_id"));
+    const mine = session ? db.runs.filter((r) => r.session_id === session) : db.runs.filter((r) => r.ticket_id === tid);
+    return json({ runs: mine.sort((a, b) => b.id - a.id).map(runView) });
+  }
+  if ((m = p.match(/^\/resolveai\/runs\/(\d+)$/))) {
+    const r = db.runs.find((x) => x.id === Number(m![1]));
+    if (!r) return json({ error: "Run not found" }, 404);
+    if (method === "PATCH") Object.assign(r, body);
+    return json(runView(r));
+  }
+  if ((m = p.match(/^\/resolveai\/runs\/(\d+)\/steps$/))) {
+    const s = { id: db.steps.length + 1, run_id: Number(m[1]), ...body };
+    db.steps.push(s);
+    return json(s, 201);
+  }
+  if (p === "/resolveai/approvals" && method === "POST") {
+    const a = { id: db.approvals.length + 1, status: "pending", decided_by: null, note: null, ...body };
+    db.approvals.push(a);
+    return json(a, 201);
+  }
+  if (p === "/resolveai/approvals" && method === "GET") {
+    const status = url.searchParams.get("status");
+    return json({ approvals: db.approvals.filter((a) => !status || a.status === status) });
+  }
+  if ((m = p.match(/^\/resolveai\/approvals\/(\d+)$/))) return json(db.approvals.find((a) => a.id === Number(m![1])));
+  if (p === "/resolveai/cases" && method === "POST") {
+    const c = { id: db.cases.length + 1, ...body };
+    db.cases.push(c);
+    return json(c, 201);
+  }
+  if (p === "/resolveai/cases") return json({ cases: db.cases.slice(-3) });
+
   if (p === "/campaigns/responses" && url.searchParams.get("status") === "new") return json({ responses: db.responses.filter((r) => r.status === "new") });
   if ((m = p.match(/^\/campaigns\/responses\/(\d+)(\/convert|\/skip)?$/))) {
     const r = db.responses.find((x) => x.id === Number(m![1]));
@@ -138,6 +262,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     Object.assign(r, { status: "converted", deal_id: deal.id, note: body.note });
     return json({ response: r, contact: { id: 20 + db.deals.length }, deal, existing_contact: false }, 201);
   }
+  if (p === "/control-room/settings") return json(db.settings);
   if (p === "/info/forms") return json({ forms: FORMS });
   if (method === "POST" && p === "/info/requests") {
     const f = FORMS.find((x) => x.id === body.form_id);
@@ -161,7 +286,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
 type Step = { tool: string; args?: Json } | { text: string };
 const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
-/** A model that plays the given steps in order: tool calls, then a final text. */
+/** A model that plays the given steps in order: tool calls and texts, across every agent that uses it. */
 function scripted(steps: Step[]) {
   let i = 0;
   return new MockLanguageModelV3({
@@ -177,6 +302,20 @@ function scripted(steps: Step[]) {
       };
     },
   });
+}
+
+/** The main agent's triage, as the JSON text the model returns. */
+function triage(t: Partial<Triage> & Pick<Triage, "intent">): Step {
+  const full: Triage = {
+    kind: "new_request",
+    order_id: null,
+    summary: "Customer needs help with an order",
+    signals: { angry: false, urgent: false, fraud: false, legal: false, wants_human: false },
+    confidence: 0.9,
+    plan: ["Check the order", "Resolve and reply"],
+    ...t,
+  };
+  return { text: JSON.stringify(full) };
 }
 
 const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], finishReason: { unified: "stop" as const, raw: undefined }, usage, warnings: [] });
@@ -213,110 +352,557 @@ const failing = () =>
     },
   });
 
-function service(model: ReturnType<typeof scripted>) {
-  const api = createDemoAPI("http://demo", fakeFetch);
+function service(model: MockLanguageModelV3, baseUrl = "http://demo", fetchImpl: typeof fetch = fakeFetch, ackAfterMs = 0) {
+  const platform = createPlatform(baseUrl, fetchImpl);
+  const api = createDemoAPI(baseUrl, fetchImpl, () => platform.connectors());
   const quiet = { warn() {}, error() {} };
-  return createService({
-    api,
-    support: createSupportAgent(api, model),
-    sales: createSalesAgent(api, model),
-    analysis: createAnalysisAgent(api, model),
-    leads: createLeadsAgent(api, model),
-    log: quiet,
-  });
+  // The same scripted model plays the photo checker too (its verdict is one scripted JSON text).
+  const levels = createLevelAgents(api, model, platform, undefined, undefined, { vision: createVisionAgent(model) });
+  return createService({ api, platform, main: createMainAgent(model), writer: createWriterAgent(model), levels, sales: createSalesAgent(api, model), analysis: createAnalysisAgent(api, model), leads: createLeadsAgent(api, model), log: quiet, ackAfterMs });
 }
 
-/* ───── Tests ───── */
+/** Sends a chat, then waits for the level agent working in the background, like the customer would. */
+async function chat(svc: ReturnType<typeof service>, session: string, message: string, customer = 101) {
+  const res = await svc.intake(TOKEN, { session_id: session, customer_id: customer, message });
+  await svc.settled();
+  return res;
+}
+/** Sends a raw chat body (e.g. an answer to "which order?"). */
+async function chat2(svc: ReturnType<typeof service>, session: string, b: Json, customer = 101) {
+  const res = await svc.intake(TOKEN, { session_id: session, customer_id: customer, ...b });
+  await svc.settled();
+  return res;
+}
+const ACK = "Thanks, Ananya. I'm on it: this is ticket #2041, and I'll get back to you here in a few minutes.";
 
-test("chat: refunds a small damaged order, solves the ticket and posts the reply", async () => {
+/* ───── Criticality rules ───── */
+
+const calm = { angry: false, urgent: false, fraud: false, legal: false, wants_human: false };
+
+test("criticality: hard rules for money and risk, signals push it up", () => {
+  const paid = { status: "delivered", payment_status: "paid" } as const;
+  expect(assessCriticality({ intent: "order_tracking", signals: calm, confidence: 0.9, recentTickets: 0 }).level).toBe("low");
+  expect(assessCriticality({ intent: "damaged_item", signals: calm, confidence: 0.9, order: { ...paid, amount: 500 }, recentTickets: 0 }).level).toBe("medium");
+  expect(assessCriticality({ intent: "damaged_item", signals: calm, confidence: 0.9, order: { ...paid, amount: 4200 }, recentTickets: 0 }).level).toBe("high");
+  expect(assessCriticality({ intent: "question", signals: calm, confidence: 0.9, order: { status: "placed", payment_status: "failed_debited", amount: 15000 }, recentTickets: 0 })).toMatchObject({ level: "critical", handled_by: "human" });
+  expect(assessCriticality({ intent: "refund", signals: { ...calm, fraud: true }, confidence: 0.9, recentTickets: 0 }).level).toBe("critical");
+  expect(assessCriticality({ intent: "order_tracking", signals: calm, confidence: 0.4, recentTickets: 0 }).level).toBe("medium");
+  expect(assessCriticality({ intent: "order_tracking", signals: { ...calm, angry: true }, confidence: 0.9, recentTickets: 2 }).level).toBe("medium");
+  expect(assessCriticality({ intent: "order_tracking", signals: { ...calm, wants_human: true }, confidence: 0.9, recentTickets: 0 }).level).toBe("high");
+});
+
+/* ───── Channel token ───── */
+
+test("intake: needs a valid token from an enabled channel", async () => {
+  const svc = service(scripted([]));
+  const body = { session_id: "t", customer_id: 101, message: "hi" };
+  expect((await svc.intake(undefined, body)).status).toBe(401);
+  expect((await svc.intake("rai_wrong", body)).status).toBe(401);
+  db.channels[0]!.enabled = false;
+  expect((await svc.intake(TOKEN, body)).status).toBe(403);
+  expect(db.runs).toHaveLength(0);
+});
+
+/* ───── Routing by level ───── */
+
+test("low: a tracking question is answered in the chat; no ticket, the run is recorded and the case saved", async () => {
   const svc = service(
     scripted([
+      triage({ intent: "order_tracking", order_id: 1050, summary: "Asks where the kettle order is" }),
+      { tool: "get_order", args: { order_id: 1050 } },
+      { text: "Your kettle has shipped and arrives in 1–2 days." },
+    ]),
+  );
+  const res = await chat(svc, "s-low", "Where is my kettle?");
+
+  expect(res).toEqual({ status: 200, body: { reply: "Your kettle has shipped and arrives in 1–2 days." } });
+  expect(db.tickets).toHaveLength(0);
+  expect(db.comments).toHaveLength(0);
+  expect(db.runs[0]).toMatchObject({ level: "low", handled_by: "low", status: "resolved", ticket_id: null, reply: "Your kettle has shipped and arrives in 1–2 days." });
+  expect(db.steps.map((s) => `${s.agent}:${s.step}`)).toEqual(["main:Receive request", "main:Triage", "main:Set level", "low:Check order", "main:Answer", "main:Save to memory"]);
+  expect(db.cases[0]).toMatchObject({ ticket_id: null, intent: "order_tracking", level: "low", handled_by: "low", outcome: "resolved" });
+});
+
+test("low: when the direct agent can't answer, it hands over and the ticket is opened then, with the chat so far", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "order_tracking", order_id: 1050 }),
+      { text: "Your kettle has shipped." },
+      triage({ intent: "question", summary: "Asks if the headphones come in blue" }),
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "normal", note: "Asks whether the headphones come in blue; colours aren't in my tools." } },
+      { text: "Our team will check and get back to you here (ticket #2041)." },
+    ]),
+  );
+  await chat(svc, "s-lazy", "Where is my kettle?");
+  const res = await chat(svc, "s-lazy", "Do the headphones come in blue?");
+
+  expect(res.body).toEqual({ reply: "Our team will check and get back to you here (ticket #2041).", ticket_id: 2041 });
+  expect(db.tickets).toHaveLength(1);
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human", level: "low", escalated_by_ai: true, comment: "Where is my kettle?" });
+  expect(db.comments.filter((c) => c.public).map((c) => c.body)).toEqual([
+    "Your kettle has shipped.",
+    "Do the headphones come in blue?",
+    "Our team will check and get back to you here (ticket #2041).",
+  ]);
+  expect(db.runs[0]).toMatchObject({ ticket_id: null, status: "resolved" });
+  expect(db.runs[1]).toMatchObject({ ticket_id: 2041, status: "escalated", handled_by: "human" });
+  expect(db.steps.find((s) => s.run_id === 2 && s.step === "Open ticket")!.detail).toContain("opened to hand over");
+  expect(db.cases.at(-1)).toMatchObject({ ticket_id: 2041, outcome: "escalated" });
+});
+
+test("low: 'any update?' after an answer without a ticket is answered from that answer; still no ticket", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "order_tracking", order_id: 1050 }),
+      { text: "Your kettle has shipped and arrives in 1–2 days." },
+      triage({ kind: "status_check", intent: "order_tracking" }),
+      { text: "As I said, your kettle is on its way and should arrive in 1–2 days." },
+    ]),
+  );
+  await chat(svc, "s-upd", "Where is my kettle?");
+  const res = await chat(svc, "s-upd", "Any update?");
+
+  expect(res.body).toEqual({ reply: "As I said, your kettle is on its way and should arrive in 1–2 days." });
+  expect(db.tickets).toHaveLength(0);
+  expect(db.runs[1]).toMatchObject({ kind: "status_check", status: "resolved", ticket_id: null });
+  expect(db.steps.at(-1)).toMatchObject({ step: "Status update", detail: expect.stringContaining("run #1") });
+});
+
+test("low: an upset follow-up asking for a person opens the ticket with the earlier exchange and goes up a level", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "order_tracking", order_id: 1050 }),
+      { text: "Your kettle has shipped and arrives in 1–2 days." },
+      triage({ kind: "status_check", intent: "order_tracking", signals: { angry: true, urgent: true, fraud: false, legal: false, wants_human: true } }),
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "high", note: "Upset about the kettle delivery, wants a person." } },
+      { text: "I've passed this to Kabir, who'll reply here (ticket #2041)." },
+    ]),
+  );
+  await chat(svc, "s-upset", "Where is my kettle?");
+  const res = await chat(svc, "s-upset", "Still nothing?! I want to talk to a real person");
+
+  expect(res.body).toMatchObject({ ticket_id: 2041 });
+  expect(db.tickets[0]).toMatchObject({ level: "high", comment: "Where is my kettle?", assignee: "Kabir Malhotra" });
+  expect(db.comments.filter((c) => c.public).map((c) => c.body).slice(0, 2)).toEqual(["Your kettle has shipped and arrives in 1–2 days.", "Still nothing?! I want to talk to a real person"]);
+  expect(db.runs[1]).toMatchObject({ ticket_id: 2041, level: "high" });
+});
+
+test("medium: when the agent asks the customer a question, the ticket waits on them and the run isn't left working", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "other", summary: "Something is wrong, no detail" }),
       { tool: "get_customer_orders" },
+      { text: "Could you tell me a bit more: which order, and what went wrong?" },
+    ]),
+  );
+  await chat(svc, "s-ask", "Something is wrong");
+  expect(db.tickets[0]).toMatchObject({ status: "pending", assignee: "ResolveAI Bot" });
+  expect(db.runs[0]).toMatchObject({ status: "resolved", reply: "Could you tell me a bit more: which order, and what went wrong?" });
+  expect(db.cases).toHaveLength(0); // not solved: nothing to remember yet
+});
+
+test("a fast level agent's answer is the reply: no 'I'm on it' first", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023 }),
+      { tool: "start_refund", args: { order_id: 1023, reason: "mugs broken" } },
+      { tool: "update_ticket", args: { status: "solved" } },
+      { text: "Refund of ₹500 started." },
+    ]),
+    "http://demo",
+    fakeFetch,
+    5_000,
+  );
+  const res = await svc.intake(TOKEN, { session_id: "s-fast", customer_id: 101, message: "My mugs arrived broken" });
+  expect(res.body).toEqual({ reply: "Refund of ₹500 started.", ticket_id: 2041 });
+  expect(db.comments.some((c) => c.body === ACK)).toBe(false);
+});
+
+/* ───── Which order (never guessed) and which ticket ───── */
+
+test("which order: a damage claim that names no order is asked about, not guessed; the answer carries the order", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023 }), // the model guesses; code doesn't take it
+      triage({ intent: "damaged_item", order_id: 1030 }),
+    ]),
+  );
+  const asked = await chat(svc, "s-which", "My item arrived broken, I want a refund");
+  const body = asked.body as { reply: string; ask: { choices: { value: string }[]; original: string }; ticket_id?: number };
+  expect(body.ask.choices.map((c) => c.value).sort()).toEqual(["1023", "1030", "1070"]);
+  expect(body.ask.original).toBe("My item arrived broken, I want a refund");
+  expect(body.ticket_id).toBeUndefined();
+  expect(db.tickets).toHaveLength(0);
+  expect(db.orders.every((o) => o.payment_status !== "refund_initiated")).toBe(true);
+  expect(db.steps.at(-1)).toMatchObject({ step: "Ask which order" });
+
+  const next = await chat(svc, "s-which", "The lamp", 101);
+  // A typed answer naming one order right after the question is taken as the answer. ₹4,200 is above POL-DMG's
+  // ₹1,000 photo threshold, so before anything else Aria asks for photos (in code: no agent, no approval yet).
+  expect(db.tickets).toHaveLength(1);
+  expect(db.tickets[0]!.subject).toContain("order #1030");
+  expect((next.body as { ask: { kind: string } }).ask.kind).toBe("photos");
+  expect(db.approvals).toHaveLength(0);
+});
+
+test("which order: a picked choice is worked as the original request plus that order", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023 }),
+      { tool: "start_refund", args: { order_id: 1023, reason: "mugs broken" } },
+      { tool: "update_ticket", args: { status: "solved" } },
+      { text: "Refund of ₹500 started." },
+    ]),
+  );
+  const res = await chat2(svc, "s-pick2", { message: "Mug (order #1023)", answer: { kind: "order", original: "Item damaged, I want a refund", value: "1023", text: "Mug (order #1023)" } });
+  expect(res.body).toMatchObject({ ticket_id: 2041 });
+  expect(db.orders[0]!.payment_status).toBe("refund_initiated");
+  expect(db.runs[0]!.message).toContain("Item damaged, I want a refund");
+});
+
+test("which order: the refund tool refuses an order the customer didn't name, whatever the model asks", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023 }),
+      { tool: "start_refund", args: { order_id: 1070, reason: "broken" } },
+      { text: "Which item was it?" },
+    ]),
+  );
+  await chat(svc, "s-unnamed", "My mugs arrived broken");
+  expect(db.orders.find((o) => o.id === 1070)!.payment_status).toBe("paid");
+  expect(db.steps.find((s) => s.step === "Refund")).toMatchObject({ result: "blocked", detail: expect.stringContaining("wasn't named") });
+});
+
+test("which order: a customer with a single order needn't name it", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item" }),
+      { tool: "start_refund", args: { order_id: 1040, reason: "tea leaked" } },
+      { tool: "update_ticket", args: { status: "solved" } },
+      { text: "Refund of ₹300 started." },
+    ]),
+  );
+  await chat(svc, "s-single", "My order arrived damaged", 102);
+  expect(db.orders.find((o) => o.id === 1040)!.payment_status).toBe("refund_initiated");
+});
+
+test("a new problem after the chat's ticket is solved gets its own ticket, not the solved one", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023 }),
+      { tool: "start_refund", args: { order_id: 1023, reason: "mugs broken" } },
+      { tool: "update_ticket", args: { status: "solved" } },
+      { text: "Refund of ₹500 started." },
+      triage({ intent: "damaged_item", order_id: 1030 }),
+      { tool: "request_approval", args: { order_id: 1030, reason: "lamp broken", summary: "Delivered lamp arrived broken.", suggestion: "Refund ₹4,200" } },
+      { text: "With a teammate for approval." },
+    ]),
+  );
+  await chat(svc, "s-new-issue", "My mugs arrived broken");
+  const res = await chat(svc, "s-new-issue", "Now my lamp arrived broken too");
+
+  expect(res.body).toMatchObject({ ticket_id: 2042 });
+  expect(db.tickets[0]).toMatchObject({ id: 2041, status: "solved" });
+  expect(db.tickets[1]!.subject).toContain("order #1030");
+  expect(db.comments.filter((c) => c.ticket_id === 2041).some((c) => String(c.body).includes("lamp"))).toBe(false);
+});
+
+test("medium: the medium agent refunds a small damaged order", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023, summary: "Mugs arrived broken" }),
       { tool: "start_refund", args: { order_id: 1023, reason: "mugs arrived broken" } },
-      { tool: "update_ticket", args: { subject: "Damaged item, refund requested – order #1023", status: "solved", tags: ["chat", "refund"] } },
+      { tool: "update_ticket", args: { status: "solved" } },
       { text: "Sorry about the mugs! I've started a refund of ₹500." },
     ]),
   );
-  const res = await svc.chat({ session_id: "s1", customer_id: 101, message: "My mugs arrived broken" });
+  await chat(svc, "s-med", "My mugs arrived broken");
 
-  expect(res).toEqual({ status: 200, body: { reply: "Sorry about the mugs! I've started a refund of ₹500.", ticket_id: 2041 } });
   expect(db.orders[0]!.payment_status).toBe("refund_initiated");
-  expect(db.tickets[0]).toMatchObject({ status: "solved", subject: "Damaged item, refund requested – order #1023" });
-  expect(db.comments.filter((c) => !c.public)[0]!.body).toContain("Refund of ₹500 started");
-  expect(db.comments.at(-1)).toEqual({ ticket_id: 2041, body: "Sorry about the mugs! I've started a refund of ₹500.", public: true });
+  expect(db.tickets[0]).toMatchObject({ status: "solved", level: "medium", handled_by: "medium" });
+  expect(db.comments.filter((c) => !c.public).map((c) => c.body).join("\n")).toContain("ResolveAI triage: Medium → medium agent");
+  expect(db.cases[0]).toMatchObject({ level: "medium", outcome: "resolved" });
 });
 
-test("chat: the refund tool refuses above the limit, whatever the model asks", async () => {
+test("medium: the refund tool still refuses above the limit, whatever the model asks", async () => {
   const svc = service(
     scripted([
+      triage({ intent: "damaged_item", order_id: null }),
       { tool: "start_refund", args: { order_id: 1030, reason: "lamp broken" } },
-      { tool: "escalate_to_human", args: { assignee: "Priya – Support", priority: "high", note: "Lamp refund of ₹4,200 needs approval." } },
-      { text: "A teammate will approve your refund within a day." },
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "high", note: "Lamp refund of ₹4,200 needs approval." } },
+      { text: "A teammate will look at your refund." },
     ]),
   );
-  await svc.chat({ session_id: "s2", customer_id: 101, message: "Lamp broken, refund please" });
+  // Both named, the ₹500 mugs first: the medium agent works it, then tries the ₹4,200 lamp.
+  await chat(svc, "s-lim", "My mugs and my lamp arrived broken");
 
   expect(db.orders[1]!.payment_status).toBe("paid");
-  expect(db.tickets[0]).toMatchObject({ assignee: "Priya – Support", escalated_by_ai: true });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", escalated_by_ai: true, handled_by: "human" });
+  expect(db.runs[0]).toMatchObject({ status: "escalated", handled_by: "human" });
+  expect(db.steps.find((s) => s.step === "Refund")).toMatchObject({ result: "blocked" });
 });
 
-test("chat: tools can't touch another customer's order", async () => {
-  const svc = service(scripted([{ tool: "start_refund", args: { order_id: 1040, reason: "x" } }, { text: "ok" }]));
-  await svc.chat({ session_id: "s3", customer_id: 101, message: "refund order 1040" });
+test("refund limit: a limit lowered in the Control Room sends a small refund to approval", async () => {
+  db.settings.refundLimit = 300;
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023, summary: "Mugs arrived broken" }),
+      { tool: "request_approval", args: { order_id: 1023, reason: "mugs broken", summary: "Delivered mugs arrived broken; ₹500 paid.", suggestion: "Refund ₹500 to the original payment method" } },
+      { text: "Your refund is with a teammate for a quick approval (ticket #2041)." },
+    ]),
+  );
+  await chat(svc, "s-limit", "My mugs arrived broken");
+
+  expect(db.orders[0]!.payment_status).toBe("paid");
+  expect(db.tickets[0]).toMatchObject({ level: "high", handled_by: "high", status: "pending" });
+  expect(db.steps.find((s) => s.step === "Set level")!.detail).toContain("above the ₹300 auto-refund limit");
+  expect(db.approvals[0]).toMatchObject({ status: "pending", amount: 500, order_id: 1023 });
+});
+
+test("refund limit: the refund tool enforces the lowered limit too, whatever the model asks", async () => {
+  db.settings.refundLimit = 300;
+  const svc = service(
+    scripted([
+      // The ₹250 spoons are named first, so it goes to the medium agent, which then tries the ₹500 mugs.
+      triage({ intent: "damaged_item", order_id: null }),
+      { tool: "start_refund", args: { order_id: 1023, reason: "mugs broken" } },
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "high", note: "Refund of ₹500 needs approval." } },
+      { text: "A teammate will look at your refund." },
+    ]),
+  );
+  await chat(svc, "s-limit-tool", "My spoons and my mugs arrived broken");
+
+  expect(db.tickets[0]).toMatchObject({ level: "medium", assignee: "Kabir Malhotra" });
+  expect(db.orders[0]!.payment_status).toBe("paid");
+  expect(db.steps.find((s) => s.step === "Refund")).toMatchObject({ result: "blocked", detail: expect.stringContaining("₹300") });
+});
+
+test("tools can't touch another customer's order", async () => {
+  const svc = service(scripted([triage({ intent: "refund" }), { tool: "start_refund", args: { order_id: 1040, reason: "x" } }, { text: "ok" }]));
+  await chat(svc, "s-other", "refund order 1040");
   expect(db.orders[2]!.payment_status).toBe("paid");
 });
 
-test("chat: a phone call opens its ticket via voice and tells the agent the reply is spoken", async () => {
-  let seen = "";
-  const model = new MockLanguageModelV3({
-    doGenerate: async ({ prompt }) => {
-      seen = JSON.stringify(prompt);
-      return textResult("Order 1023 was delivered on 13 November.");
-    },
-  });
-  const res = await service(model).chat({ session_id: "voice-abc", customer_id: 101, message: "Where is my order?", channel: "voice" });
+test("high: the high agent asks for approval; once approved the refund runs, the customer is told and the case is saved", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "refund", order_id: 1030, summary: "Wants a refund on the lamp" }),
+      { tool: "get_order", args: { order_id: 1030 } },
+      { tool: "request_approval", args: { order_id: 1030, reason: "doesn't want the lamp", summary: "Delivered lamp; ₹4,200 paid.", suggestion: "Refund ₹4,200 to the original payment method" } },
+      { text: "Your refund is with a teammate for a quick approval (ticket #2041)." },
+    ]),
+  );
+  await chat(svc, "s-high", "I don't want the lamp, refund please");
 
-  expect(res.body).toMatchObject({ ticket_id: 2041 });
-  expect(db.tickets[0]).toMatchObject({ via: "voice", tags: ["voice"] });
-  expect(seen).toContain("phone call: your reply is spoken aloud");
+  expect(db.orders[1]!.payment_status).toBe("paid");
+  expect(db.approvals[0]).toMatchObject({ status: "pending", amount: 4200, order_id: 1030, ticket_id: 2041, run_id: 1 });
+  expect(db.tickets[0]).toMatchObject({ status: "pending", level: "high", handled_by: "high" });
+  expect(db.runs[0]).toMatchObject({ status: "waiting_approval" });
+  expect(db.cases).toHaveLength(0);
+
+  // A person approves in the Control Room; the demo API records it and tells the agent.
+  Object.assign(db.approvals[0]!, { status: "approved", decided_by: "Kabir Malhotra" });
+  const res = await svc.approvalDecided(1);
+
+  expect(res.status).toBe(200);
+  expect(db.orders[1]!.payment_status).toBe("refund_initiated");
+  expect(db.tickets[0]!.status).toBe("solved");
+  expect(db.runs[0]).toMatchObject({ status: "resolved" });
+  expect(db.comments.at(-1)).toMatchObject({ public: true, body: expect.stringContaining("refund of ₹4,200 for order #1030 is approved") });
+  expect(db.cases[0]).toMatchObject({ level: "high", handled_by: "high", outcome: "resolved" });
 });
 
-test("chat: when the order isn't clear, Aria sends the team's form; the prompt lists only active forms", async () => {
-  let seen = "";
-  const steps: Step[] = [
-    { tool: "get_customer_orders" },
-    { tool: "request_details", args: { form_id: "damaged_item", order_ids: [1023, 1030] } },
-    { text: "Sorry about that! Pick the order below and tell me what went wrong." },
+test("high: a second chat about an order already waiting for approval doesn't queue another approval", async () => {
+  db.approvals.push({ id: 1, status: "pending", order_id: 1030, ticket_id: 2099, run_id: 99, amount: 4200, decided_by: null, note: null });
+  const svc = service(
+    scripted([
+      triage({ intent: "refund", order_id: 1030 }),
+      { tool: "request_approval", args: { order_id: 1030, reason: "doesn't want it", summary: "Delivered lamp, wants a refund.", suggestion: "Refund ₹4,200" } },
+      { text: "It's already with a teammate for approval." },
+    ]),
+  );
+  await chat(svc, "s-dup", "Refund my lamp please");
+  expect(db.approvals).toHaveLength(1);
+  expect(db.steps.find((s) => s.step === "Request approval")!.detail).toContain("already waiting");
+});
+
+test("high: a rejected approval goes to a person and is remembered as rejected", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "refund", order_id: 1030 }),
+      { tool: "request_approval", args: { order_id: 1030, reason: "changed mind", summary: "Wants a refund on a delivered lamp.", suggestion: "Refund ₹4,200" } },
+      { text: "A teammate will confirm shortly." },
+    ]),
+  );
+  await chat(svc, "s-rej", "I want my money back for the lamp");
+  Object.assign(db.approvals[0]!, { status: "rejected", decided_by: "Kabir Malhotra", note: "Outside the return window" });
+  await svc.approvalDecided(1);
+
+  expect(db.orders[1]!.payment_status).toBe("paid");
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
+  expect(db.cases[0]).toMatchObject({ outcome: "rejected" });
+});
+
+test("critical: a failed payment goes straight to a person with a brief; no level agent runs", async () => {
+  const svc = service(scripted([triage({ intent: "payment_failed", order_id: 1060, summary: "₹15,000 debited but the order failed" })]));
+  const res = await chat(svc, "s-crit", "₹15,000 debited but payment failed!");
+
+  expect(res.body).toMatchObject({ reply: expect.stringContaining("payments team"), ticket_id: 2041 });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", priority: "urgent", level: "critical", handled_by: "human" });
+  expect(db.comments.find((c) => !c.public && c.body.startsWith("Critical"))!.body).toContain("Order #1060");
+  expect(db.runs[0]).toMatchObject({ status: "escalated", level: "critical" });
+  expect(db.cases[0]).toMatchObject({ level: "critical", outcome: "escalated" });
+});
+
+test("the main agent answers at once while the level agent works in the background", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const steps: Parameters<typeof scripted>[0] = [
+    triage({ intent: "damaged_item", order_id: 1023 }),
+    { tool: "start_refund", args: { order_id: 1023, reason: "broken" } },
+    { tool: "update_ticket", args: { status: "solved" } },
+    { text: "Refund of ₹500 started." },
   ];
   let i = 0;
   const model = new MockLanguageModelV3({
-    doGenerate: async ({ prompt }) => {
-      if (i === 0) seen = JSON.stringify(prompt);
-      const step = steps[i++]!;
-      if ("text" in step) return textResult(step.text);
-      return { content: [{ type: "tool-call", toolCallId: `call-${i}`, toolName: step.tool, input: JSON.stringify(step.args ?? {}) }], finishReason: { unified: "tool-calls", raw: undefined }, usage, warnings: [] };
+    doGenerate: async (opts) => {
+      if (i === 1) await gate; // hold the level agent's first call until we've checked the reply
+      return scripted(steps.slice(i++, i)).doGenerate(opts);
     },
   });
-  const res = await service(model).chat({ session_id: "s-form", customer_id: 101, message: "Item damaged, I want a refund" });
+  const svc = service(model);
+  const res = await svc.intake(TOKEN, { session_id: "s-bg", customer_id: 101, message: "Mugs broken" });
+
+  expect(res.body).toEqual({ reply: ACK, ticket_id: 2041 });
+  expect(db.orders[0]!.payment_status).toBe("paid"); // not yet: the medium agent is still working
+  release();
+  await svc.settled();
+  expect(db.orders[0]!.payment_status).toBe("refund_initiated");
+  expect(db.comments.at(-1)).toMatchObject({ public: true, body: "Refund of ₹500 started." });
+  expect(db.runs[0]).toMatchObject({ status: "resolved", reply: "Refund of ₹500 started." });
+});
+
+/* ───── Phone line and request forms ───── */
+
+/** A scripted model that also keeps every prompt it was given (JSON), to check what the agents were told. */
+function recording(steps: Step[]) {
+  const prompts: string[] = [];
+  const inner = scripted(steps);
+  const model = new MockLanguageModelV3({
+    doGenerate: async (opts) => {
+      prompts.push(JSON.stringify(opts.prompt));
+      return inner.doGenerate(opts);
+    },
+  });
+  return { model, prompts };
+}
+
+test("voice: a phone call opens its ticket via voice and tells the agent the reply is spoken", async () => {
+  const { model, prompts } = recording([
+    triage({ intent: "refund", order_id: 1023 }),
+    { tool: "get_order", args: { order_id: 1023 } },
+    { text: "Your mugs order was delivered; a teammate will look at the refund." },
+  ]);
+  const res = await chat2(service(model), "voice-abc", { message: "I want a refund for order 1023", channel: "voice" });
+
+  expect(res.body).toMatchObject({ ticket_id: 2041 });
+  expect(db.tickets[0]).toMatchObject({ via: "voice" });
+  expect(db.tickets[0]!.tags).toContain("voice");
+  expect(db.tickets[0]!.tags).not.toContain("chat");
+  expect(prompts.at(-1)).toContain("phone call: your reply is spoken aloud");
+  expect(prompts.at(-1)).not.toContain("Forms you can send"); // a caller can't fill in a form
+});
+
+test("voice: 'which order?' is asked out loud, with no card to tap", async () => {
+  const svc = service(scripted([triage({ intent: "damaged_item" })]));
+  const res = await chat2(svc, "voice-which", { message: "My item arrived broken", channel: "voice" });
+  const body = res.body as { reply: string; ask?: unknown };
+
+  expect(body.ask).toBeUndefined();
+  expect(body.reply).toContain("order 1023");
+  expect(body.reply).toContain("order 1030");
+  expect(db.tickets).toHaveLength(0);
+  expect(db.steps.at(-1)).toMatchObject({ step: "Ask which order", detail: expect.stringContaining("asked on the call") });
+});
+
+test("forms: request_details sends the team's form; the prompt lists only active forms", async () => {
+  const { model, prompts } = recording([
+    triage({ intent: "other", summary: "Something is wrong with an order, no detail" }),
+    { tool: "request_details", args: { form_id: "damaged_item", order_ids: [1023, 1030] } },
+    { text: "Sorry about that! Please tell me what went wrong in the form below." },
+  ]);
+  const res = await chat(service(model), "s-form", "Something is wrong with my order");
 
   expect(res.body).toMatchObject({ ticket_id: 2041 });
   expect(db.requests).toEqual([expect.objectContaining({ ticket_id: 2041, form_id: "damaged_item", order_ids: [1023, 1030] })]);
-  expect(seen).toContain("damaged_item");
-  expect(seen).toContain("asks for which order");
-  expect(seen).not.toContain("payment_problem"); // switched off in the Control Room
+  expect(db.steps.find((x) => x.step === "Request details")).toMatchObject({ result: "success", detail: expect.stringContaining("Damaged or wrong item") });
+  const levelPrompt = prompts.at(-2)!; // the level agent's first call
+  expect(levelPrompt).toContain("damaged_item");
+  expect(levelPrompt).toContain("asks for what went wrong");
+  expect(levelPrompt).not.toContain("payment_problem"); // switched off in the Control Room
   expect(db.orders[0]!.payment_status).toBe("paid"); // nothing refunded on a guess
 });
 
-test("chat: on a phone call no form is sent; the tool tells Aria to ask out loud", async () => {
-  const svc = service(scripted([{ tool: "request_details", args: { form_id: "damaged_item" } }, { text: "Which order is it?" }]));
-  await svc.chat({ session_id: "voice-x", customer_id: 101, message: "Something arrived broken", channel: "voice" });
+test("forms: on a phone call no form is sent; the tool tells Aria to ask out loud", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "other", summary: "Something is wrong, no detail" }),
+      { tool: "request_details", args: { form_id: "damaged_item" } },
+      { text: "What went wrong with the order?" },
+    ]),
+  );
+  const res = await chat2(svc, "voice-x", { message: "Something is wrong with my order", channel: "voice" });
   expect(db.requests).toHaveLength(0);
+  expect(res.body).toMatchObject({ reply: "What went wrong with the order?", ticket_id: 2041 });
 });
 
-test("chat: one ticket per session; follow-ups are added as customer comments", async () => {
-  const svc = service(scripted([{ text: "Which order is it?" }, { text: "Thanks, looking now." }]));
-  const first = await svc.chat({ session_id: "s4", customer_id: 101, message: "Something is wrong" });
-  const second = await svc.chat({ session_id: "s4", customer_id: 101, message: "Order 1023" });
+/* ───── Status checks and follow-ups ───── */
+
+test("status check: answers from the ticket and pending approval, without opening a new ticket", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "refund", order_id: 1030 }),
+      { tool: "request_approval", args: { order_id: 1030, reason: "doesn't want it", summary: "Wants a refund on the lamp.", suggestion: "Refund ₹4,200" } },
+      { text: "It's with a teammate for approval." },
+      triage({ kind: "status_check", intent: "refund", order_id: 1030 }),
+      { text: "Your ₹4,200 refund is waiting for a quick approval (ticket #2041)." },
+    ]),
+  );
+  await chat(svc, "s-status", "Refund the lamp please");
+  const res = await chat(svc, "s-status", "Any update on my refund?");
+
+  expect(res.body).toEqual({ reply: "Your ₹4,200 refund is waiting for a quick approval (ticket #2041).", ticket_id: 2041 });
+  expect(db.tickets).toHaveLength(1);
+  expect(db.runs[1]).toMatchObject({ kind: "status_check", status: "resolved", ticket_id: 2041 });
+  expect(db.steps.at(-1)).toMatchObject({ step: "Status update", detail: expect.stringContaining("waiting for approval") });
+});
+
+test("status check: a JSON answer from the model never reaches the customer", async () => {
+  db.tickets.push({ id: 2041, requester: { id: 101, name: "Ananya Iyer" }, subject: "Refund", status: "open", assignee: "ResolveAI Bot", tags: [], level: "high", handled_by: "high", created_at: new Date().toISOString() });
+  const svc = service(scripted([triage({ kind: "status_check", intent: "refund" }), { text: '{"kind":"status_check"}' }]));
+  const res = await chat(svc, "s-json", "any update?");
+  expect((res.body as { reply: string }).reply).toBe("Your request (ticket #2041) is being handled by ResolveAI. You'll get an update here as soon as there's progress.");
+});
+
+test("status check from a new chat finds the customer's open ticket", async () => {
+  db.tickets.push({ id: 2041, requester: { id: 101, name: "Ananya Iyer" }, subject: "Refund", status: "pending", assignee: "ResolveAI Bot", tags: [], level: "high", handled_by: "high", created_at: new Date().toISOString() });
+  const svc = service(scripted([triage({ kind: "status_check", intent: "refund" }), { text: "Ticket #2041 is still being worked on." }]));
+  const res = await chat(svc, "s-new-chat", "what's happening with my request?");
+  expect(res.body).toMatchObject({ ticket_id: 2041 });
+  expect(db.tickets).toHaveLength(1);
+});
+
+test("one ticket per session; follow-ups are added as customer comments", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "other", confidence: 0.9 }),
+      { text: "Which order is it?" },
+      triage({ intent: "damaged_item", order_id: 1023 }),
+      { text: "Thanks, looking now." },
+    ]),
+  );
+  const first = await chat(svc, "s-follow", "Something is wrong");
+  const second = await chat(svc, "s-follow", "Order 1023");
 
   expect(first.body).toMatchObject({ ticket_id: 2041 });
   expect(second.body).toMatchObject({ ticket_id: 2041 });
@@ -324,14 +910,135 @@ test("chat: one ticket per session; follow-ups are added as customer comments", 
   expect(db.comments).toContainEqual({ ticket_id: 2041, body: "Order 1023", public: true, author: "Ananya Iyer", author_type: "customer" });
 });
 
-test("chat: if the model fails, the customer still gets an answer and the ticket goes to a person", async () => {
-  const res = await service(failing()).chat({ session_id: "s5", customer_id: 101, message: "Hello?" });
+test("a ticket a person already owns: the message is passed on, the AI doesn't act", async () => {
+  const svc = service(scripted([triage({ intent: "payment_failed", order_id: 1060 }), triage({ intent: "refund", order_id: 1023 })]));
+  await chat(svc, "s-owned", "₹15,000 debited!");
+  const res = await chat(svc, "s-owned", "Also refund my mugs");
+
+  expect(res.body).toMatchObject({ reply: expect.stringContaining("Kabir") });
+  expect(db.orders[0]!.payment_status).toBe("paid");
+  expect(db.runs[1]).toMatchObject({ status: "escalated", handled_by: "human" });
+});
+
+test("after a demo reset, an open chat gets a new ticket instead of reusing a recycled ticket number", async () => {
+  const svc = service(scripted([triage({ intent: "other" }), { text: "Hi!" }, triage({ intent: "other" }), { text: "Hello again." }]));
+  await chat(svc, "s-reset", "First message");
+
+  // `bun run reset` wipes tickets and someone else's new chat gets #2041.
+  db.tickets = [{ id: 2041, requester: { id: 104, name: "Sneha Kulkarni" }, created_at: "2030-01-01T00:00:00.000Z", status: "open", tags: [] }];
+  db.comments = [];
+  const res = await chat(svc, "s-reset", "Still there?");
+
+  expect(res.body).toMatchObject({ ticket_id: 2042 });
+  expect(db.comments.filter((c) => c.ticket_id === 2041)).toEqual([]);
+});
+
+/* ───── Out of scope and missing data ───── */
+
+test("out of scope: a polite answer, no ticket, no agent, nobody pulled in", async () => {
+  const svc = service(scripted([triage({ intent: "out_of_scope", summary: "Asks for a joke" })]));
+  const res = await chat(svc, "s-oos", "Tell me a joke");
+
+  expect(res).toEqual({ status: 200, body: { reply: expect.stringContaining("I can only help with ShopKart orders") } });
+  expect(db.tickets).toHaveLength(0);
+  expect(db.runs[0]).toMatchObject({ intent: "out_of_scope", status: "resolved", ticket_id: null });
+  expect(db.steps.at(-1)).toMatchObject({ step: "Out of scope", agent: "main" });
+  expect(db.cases).toHaveLength(0);
+});
+
+test("out of scope in a chat that already has a ticket: the exchange is added there, nothing else changes", async () => {
+  const svc = service(scripted([triage({ intent: "other" }), { text: "Happy to help." }, triage({ intent: "out_of_scope" })]));
+  await chat(svc, "s-oos2", "Hi there");
+  const res = await chat(svc, "s-oos2", "What's the weather in Pune?");
+
+  expect(res.body).toMatchObject({ ticket_id: 2041 });
+  expect(db.tickets).toHaveLength(1);
+  expect(db.comments.at(-2)).toMatchObject({ body: "What's the weather in Pune?", author_type: "customer" });
+  expect(db.comments.at(-1)!.body).toContain("I can only help with ShopKart");
+});
+
+test("no data: a status check with no earlier request goes to the team, and the customer is told", async () => {
+  const svc = service(scripted([triage({ kind: "status_check", intent: "refund" })]));
+  const res = await chat(svc, "s-nodata", "Any update on my refund?");
+
+  expect(res.body).toMatchObject({ reply: expect.stringContaining("passed it to our support team (ticket #2041)"), ticket_id: 2041 });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human", status: "open" });
+  expect(db.tickets[0]!.tags).toContain("needs-data");
+  expect(db.comments.find((c) => !c.public)!.body).toContain("no earlier request");
+  expect(db.runs[0]).toMatchObject({ status: "escalated", handled_by: "human" });
+});
+
+test("no data: an order question from a customer with no orders goes to the team without an agent", async () => {
+  const svc = service(scripted([triage({ intent: "order_tracking" })]));
+  const res = await chat(svc, "s-noorders", "Where is my order?", 105);
+
+  expect(res.body).toMatchObject({ reply: expect.stringContaining("They're looking into it") });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
+  expect(db.steps.map((s) => s.step)).toEqual(["Receive request", "Triage", "Hand to team"]);
+});
+
+test("no data: an order number that isn't on the customer's account goes to the team in code, not to an agent", async () => {
+  const svc = service(scripted([triage({ intent: "order_tracking", order_id: 9999 })]));
+  const res = await chat(svc, "s-9999-code", "Where is my order 9999?");
+
+  expect(res.body).toMatchObject({ reply: expect.stringContaining("passed it to our support team") });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
+  expect(db.comments.find((c) => !c.public)!.body).toContain("order #9999, which isn't on their account");
+});
+
+test("no data: an unknown order number in the message is caught in code even if the model leaves it out", async () => {
+  const svc = service(scripted([triage({ intent: "order_tracking", order_id: null })]));
+  await chat(svc, "s-9999-regex", "Where is my order no. #9999?");
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
+});
+
+test("no data: when the level agent can't find what it needs, it hands over and says the team is on it", async () => {
+  const svc = service(
+    scripted([
+      triage({ intent: "question", order_id: null, summary: "Asks if the headphones come in blue" }),
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "normal", note: "Customer asks whether the headphones come in blue; product colours aren't in my tools." } },
+      { text: "I don't have that detail to hand, so our team is looking into it and will get back to you here (ticket #2041)." },
+    ]),
+  );
+  await chat(svc, "s-colour", "Do the headphones come in blue?");
+
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human", escalated_by_ai: true });
+  expect(db.comments.at(-1)!.body).toContain("our team is looking into it");
+  expect(db.runs[0]).toMatchObject({ status: "escalated" });
+});
+
+/* ───── Failures ───── */
+
+test("if the model fails, the customer still gets an answer and the ticket goes to a person", async () => {
+  const res = await chat(service(failing()), "s-fail", "Hello?");
 
   expect(res.status).toBe(200);
   expect(res.body).toMatchObject({ ticket_id: 2041 });
-  expect(db.tickets[0]!.assignee).toBeNull();
-  expect(db.comments.find((c) => !c.public)!.body).toContain("401 invalid x-api-key");
+  expect(db.tickets[0]).toMatchObject({ assignee: null, handled_by: "human" });
+  expect(db.comments.find((c) => !c.public)!.body).toContain("couldn't read the request");
+  expect(db.runs[0]).toMatchObject({ status: "failed" });
 });
+
+test("a connector turned off in the Control Room stops the agent cleanly", async () => {
+  db.connectors.find((c) => c.id === "zendesk")!.enabled = false;
+  const res = await chat(service(scripted([triage({ intent: "other" }), { text: "hi" }])), "s-off", "Something is off with my account");
+  expect(res.status).toBe(502);
+  expect((res.body as { error: string }).error).toContain("Zendesk connector is turned off");
+});
+
+test("demo API down → 502", async () => {
+  const res = await chat(service(scripted([]), "http://127.0.0.1:1", fetch), "s-down", "hi");
+  expect(res.status).toBe(502);
+  expect((res.body as { error: string }).error).toContain("Can't reach the demo API");
+});
+
+test("bad input is rejected with 400", async () => {
+  const svc = service(scripted([]));
+  expect((await svc.intake(TOKEN, { session_id: "x", customer_id: 101 })).status).toBe(400);
+  expect((await svc.lead({ name: "A", email: "not-an-email" })).status).toBe(400);
+});
+
+/* ───── Sales ───── */
 
 test("lead: creates contact and deal, the agent scores it and books a call", async () => {
   const svc = service(
@@ -358,40 +1065,26 @@ test("lead: creates contact and deal, the agent scores it and books a call", asy
   expect(db.meetings).toHaveLength(1);
 });
 
-test("chat: after a demo reset, an open chat gets a new ticket instead of reusing a recycled ticket number", async () => {
-  const svc = service(scripted([{ text: "Hi!" }, { text: "Hello again." }]));
-  await svc.chat({ session_id: "s7", customer_id: 101, message: "First message" });
+test("lead: the pipeline rules hold even when the agent leaves the stage out or moves it back", async () => {
+  const svc = service(
+    scripted([
+      { tool: "update_deal", args: { score: "warm", next_step: "Qualify on a short call" } },
+      { text: "Thanks! We'll call you shortly." },
+    ]),
+  );
+  await svc.lead({ name: "Imran", phone: "9800000001", email: "imran@example.com", business_name: "Qureshi Electronics", need: "payment_setup", budget: 25000, start_when: "This month" });
+  expect(db.deals[0]).toMatchObject({ score: "warm", stage: "qualified" });
 
-  // `bun run reset` wipes tickets and someone else's new chat gets #2041.
-  db.tickets = [{ id: 2041, requester: { id: 104, name: "Sneha Kulkarni" }, created_at: "2030-01-01T00:00:00.000Z", status: "open" }];
-  db.comments = [];
-  const res = await svc.chat({ session_id: "s7", customer_id: 101, message: "Still there?" });
-
-  expect(res.body).toMatchObject({ ticket_id: 2042 });
-  expect(db.comments.filter((c) => c.ticket_id === 2041)).toEqual([]);
-});
-
-test("bad input is rejected with 400", async () => {
-  const svc = service(scripted([]));
-  expect((await svc.chat({ session_id: "x", customer_id: 101 })).status).toBe(400);
-  expect((await svc.lead({ name: "A", email: "not-an-email" })).status).toBe(400);
-});
-
-test("demo API down → 502", async () => {
-  const api = createDemoAPI("http://127.0.0.1:1");
-  const model = scripted([]);
-  const svc = createService({
-    api,
-    support: createSupportAgent(api, model),
-    sales: createSalesAgent(api, model),
-    analysis: createAnalysisAgent(api, model),
-    leads: createLeadsAgent(api, model),
-    log: { warn() {}, error() {} },
-  });
-  const res = await svc.chat({ session_id: "s6", customer_id: 101, message: "hi" });
-  expect(res.status).toBe(502);
-  expect((res.body as { error: string }).error).toContain("Can't reach the demo API");
-  expect((await svc.syncLeads({})).status).toBe(502);
+  const svc2 = service(
+    scripted([
+      { tool: "update_deal", args: { score: "hot", stage: "meeting_booked" } }, // before any call is booked
+      { tool: "book_meeting", args: { start: "2026-11-17T05:30:00.000Z" } },
+      { tool: "update_deal", args: { stage: "qualified", next_step: "Intro call Tue 11:00" } }, // backwards
+      { text: "Booked." },
+    ]),
+  );
+  await svc2.lead({ name: "Meera", phone: "9800000002", email: "meera2@example.com", business_name: "Shah Traders", need: "bulk_order", budget: 60000, start_when: "This week" });
+  expect(db.deals[1]).toMatchObject({ score: "hot", stage: "meeting_booked", next_step: "Intro call Tue 11:00" });
 });
 
 /* ───── Analysis agent ───── */
@@ -460,14 +1153,14 @@ test("analysis: a finding about an unknown chart is rejected, and no report mean
 /* ───── Leads agent ───── */
 
 /** Spam → skip, already in the CRM → skip, otherwise a hot lead. Tries to sneak in an amount too. */
-const triage = (prompt: string): Step => {
+const leadTriage = (prompt: string): Step => {
   if (/FREE iPhone/.test(prompt)) return { tool: "skip_response", args: { reason: "Spam: prize message with a link" } };
   if (/open deals/.test(prompt)) return { tool: "skip_response", args: { reason: "Already in the pipeline" } };
   return { tool: "create_lead", args: { score: "hot", deal_name: "Joshi Sweets – Bulk order", next_step: "Book a call this week", note: "₹90,000, this week.", amount: 9_999_999 } };
 };
 
 test("leads: converts real responses, skips spam and people already in the pipeline", async () => {
-  const res = await service(byPrompt(triage)).syncLeads({});
+  const res = await service(byPrompt(leadTriage)).syncLeads({});
 
   expect(res.status).toBe(200);
   expect(res.body).toMatchObject({ processed: 3, converted: 1, skipped: 2, failed: 0, remaining: 0 });
@@ -478,7 +1171,7 @@ test("leads: converts real responses, skips spam and people already in the pipel
 });
 
 test("leads: respects the limit and reports what is left", async () => {
-  const res = await service(byPrompt(triage)).syncLeads({ limit: 1 });
+  const res = await service(byPrompt(leadTriage)).syncLeads({ limit: 1 });
   expect(res.body).toMatchObject({ processed: 1, remaining: 2 });
   expect(db.responses.filter((r) => r.status === "new")).toHaveLength(2);
 });
@@ -516,9 +1209,13 @@ test("memory: the analysis agent sees a note about its last report, not the last
   ]);
   const api = createDemoAPI("http://demo", fakeFetch);
   const { analysisMemory } = createAgentMemory(undefined); // in process
+  const platform = createPlatform("http://demo", fakeFetch);
   const svc = createService({
     api,
-    support: createSupportAgent(api, model),
+    platform,
+    main: createMainAgent(model),
+    writer: createWriterAgent(model),
+    levels: createLevelAgents(api, model, platform),
     sales: createSalesAgent(api, model),
     analysis: createAnalysisAgent(api, model, analysisMemory),
     leads: createLeadsAgent(api, model),
@@ -544,7 +1241,7 @@ test("memory: the analysis agent sees a note about its last report, not the last
 
 test("memory: two replies from the same person share a thread and run one after another", async () => {
   db.responses.push(response(4, { name: "Meera Joshi", email: "MEERA@joshisweets.example ", company: "Joshi Sweets", budget: 20000, message: "Also need 50 small boxes." }));
-  const model = byPrompt(triage);
+  const model = byPrompt(leadTriage);
   await service(model).syncLeads({});
 
   const calls = model.doGenerateCalls.map((c) => (c.prompt as Json[]).map((m) => m.role as string));

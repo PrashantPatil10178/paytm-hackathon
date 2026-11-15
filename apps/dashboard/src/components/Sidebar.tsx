@@ -2,12 +2,13 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { Link, useLocation } from 'react-router-dom'
 import { Search, PanelLeftClose, Flame } from 'lucide-react'
 import { ResolveAIGlyph, ResolveAIMark } from '@ph/shared/brand'
-import { api, live } from '../api'
+import { live } from '../api'
 import { useApp } from '../store'
 import { STATUSES, STATUS_ORDER, type Icon } from '../meta'
-import { AREAS, PAGES, areaOf, byStage, type AreaId } from '../nav'
-import { cn, num, rupees } from '../lib'
-import type { Autonomy, Lead, Settings, Stats, Ticket } from '../types'
+import { AREAS, PAGES, areaOf, byStage, stageLabel, type AreaId } from '../nav'
+import { cn, initials, num, rupees } from '../lib'
+import { OWNER } from '@ph/shared'
+import type { Autonomy, Lead, Settings, Ticket } from '../types'
 
 const AUTONOMY: Record<Autonomy, string> = { suggest: 'Suggest only', approval: 'Act with approval', autonomous: 'Fully autonomous' }
 
@@ -99,13 +100,13 @@ export function Rail({ expandable = true, onNavigate }: { expandable?: boolean; 
           })}
         </nav>
 
-        <div className="flex h-10 shrink-0 items-center gap-3" title={open ? undefined : 'ShopKart support team'}>
+        <div className="flex h-10 shrink-0 items-center gap-3" title={open ? undefined : `${OWNER.name} · ${OWNER.role}, ${OWNER.business}`}>
           <span className="grid size-9 shrink-0 place-items-center">
-            <span className="grid size-7 place-items-center rounded-full border border-ink/10 bg-ink/[0.05] text-[11px] font-semibold text-slate-800">SK</span>
+            <span className="grid size-7 place-items-center rounded-full border border-ink/10 bg-ink/[0.05] text-[11px] font-semibold text-slate-800">{initials(OWNER.name)}</span>
           </span>
           <span className={cn('min-w-0 whitespace-nowrap transition-opacity duration-150', reveal)}>
-            <span className="block truncate text-[13px] leading-tight font-medium text-slate-950">ShopKart support</span>
-            <span className="block truncate text-[11px] leading-tight text-slate-500">Support lead</span>
+            <span className="block truncate text-[13px] leading-tight font-medium text-slate-950">{OWNER.name}</span>
+            <span className="block truncate text-[11px] leading-tight text-slate-500">{OWNER.role}, {OWNER.business}</span>
           </span>
         </div>
       </div>
@@ -211,12 +212,11 @@ function HotRow({ l, i, onNavigate }: { l: Lead; i: number; onNavigate?: () => v
 
 /** Aria's status and the share of queries the AI solved over the last two weeks. */
 function AriaCard({ settings, i, onNavigate }: { settings: Settings | null; i: number; onNavigate?: () => void }) {
-  const [stats, setStats] = useState<Stats | null>(null)
-  useEffect(() => { api.getStats().then(setStats) }, [])
+  const { stats } = useApp()
   if (!settings) return null
   const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0)
   const ai = stats ? sum(stats.daily.ai) : 0
-  const all = stats ? ai + sum(stats.daily.human) : 0
+  const all = stats ? ai + sum(stats.daily.aiApproved ?? []) + sum(stats.daily.human) : 0
   const c = cascade(i)
   return (
     <Link to="/settings" onClick={onNavigate} style={c.style} className={cn(c.className, 'mt-4 block rounded-xl border border-ink/[0.07] bg-surface p-3 transition-colors hover:border-ink/[0.12]')}>
@@ -249,30 +249,26 @@ function useAreaContent(areaId: AreaId): AreaContent {
   const { tickets, leads, approvals, settings } = useApp()
   const { pathname, search } = useLocation()
   const params = new URLSearchParams(search)
-  const [connected, setConnected] = useState<{ channels: number; apps: number } | null>(null)
-  // The phone line is live (demo API), polled only while the Connect panel shows.
+  const { data: ch } = live.useChannels(10000, areaId === 'connect')
+  const { data: co } = live.useConnectors(10000, areaId === 'connect')
+  const { data: chatList } = live.useChats(areaId === 'support')
+  const waiting = chatList?.chats.filter((c) => c.waiting).length ?? 0
+  const connected = ch && co
+    ? { channels: ch.channels.filter((c) => c.connected && c.enabled).length, apps: co.connectors.filter((c) => c.status === 'connected').length }
+    : null
+  // The inbound phone line and request forms, polled only while their panel shows.
   const voice = live.useVoiceLine(areaId === 'connect').data
   const formsWaiting = live.useInfoRequests(areaId === 'support').data?.requests.filter((r) => r.status === 'waiting').length
-
-  useEffect(() => {
-    if (areaId !== 'connect') return
-    Promise.all([api.getChannels(), api.getConnectors()]).then(([ch, co]) =>
-      setConnected({
-        channels: ch.channels.filter((c) => c.connected).length,
-        apps: co.connectors.filter((c) => c.status === 'connected').length,
-      }),
-    )
-  }, [areaId])
 
   const page = (to: string, extra?: Partial<NavItem>): NavItem => ({ to, label: PAGES[to]!.label, icon: PAGES[to]!.icon, active: pathname === to, ...extra })
 
   switch (areaId) {
     case 'support': {
       const status = pathname === '/tickets' ? params.get('status') ?? 'all' : null
-      const live = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress').length
-      const waiting = tickets.filter((t) => t.status === 'waiting').length
+      const working = tickets.filter((t) => t.status === 'in_progress').length
+      const open = tickets.filter((t) => t.status === 'open' || t.status === 'waiting').length
       return {
-        fact: `${live} live · ${waiting} waiting`,
+        fact: `${working} in progress · ${open} open`,
         groups: [
           {
             label: 'Tickets',
@@ -288,8 +284,17 @@ function useAreaContent(areaId: AreaId): AreaContent {
               })),
             ],
           },
-          { label: 'Views', items: [page('/board')] },
+          {
+            label: 'Chats',
+            items: [
+              // Amber: customers waiting on a reply in a chat you took over.
+              page('/chats', waiting ? { count: waiting, countTone: 'amber' } : { count: chatList?.chats.length }),
+              page('/conversations'),
+            ],
+          },
+          { label: 'Voice', items: [page('/support/calls')] },
           { label: 'Customers', items: [page('/forms', { count: formsWaiting || undefined, countTone: 'amber' })] },
+          { label: 'Views', items: [page('/board')] },
         ],
         extra: 'live',
       }
@@ -309,7 +314,7 @@ function useAreaContent(areaId: AreaId): AreaContent {
               page('/leads', { label: 'All leads', active: stage === 'all', count: leads.length }),
               ...stages.map((s): NavItem => ({
                 to: `/leads?stage=${encodeURIComponent(s)}`,
-                label: s,
+                label: stageLabel(s),
                 dot: 'bg-slate-400',
                 active: stage === s,
                 count: leads.filter((l) => l.stage === s).length,
@@ -317,7 +322,7 @@ function useAreaContent(areaId: AreaId): AreaContent {
             ],
           },
           // Live from the demo API: campaign replies the leads agent turns into CRM leads.
-          { label: 'Sources', items: [page('/campaigns')] },
+          { label: 'Sources', items: [page('/calls'), page('/campaigns')] },
         ],
         extra: 'hot',
       }
@@ -330,12 +335,14 @@ function useAreaContent(areaId: AreaId): AreaContent {
     case 'agent':
       return {
         fact: settings ? AUTONOMY[settings.autonomy] : 'Your AI teammate',
-        groups: [{ items: [page('/settings'), page('/audit')] }],
+        groups: [{ items: [page('/settings'), page('/policies'), page('/audit')] }],
       }
     case 'home': {
       const pending = approvals.pending.length
+      // Approvals plus open tickets Aria isn't working on (handed over, or waiting on a reply).
+      const onYou = pending + tickets.filter((t) => t.status === 'open' || t.status === 'waiting').length
       return {
-        fact: pending ? `${pending} waiting on you` : 'Nothing waiting on you',
+        fact: onYou ? `${onYou} waiting on you` : 'Nothing waiting on you',
         groups: [{ items: [page('/'), page('/analytics'), page('/approvals', { count: pending, countTone: 'amber' })] }],
         extra: 'live',
       }
@@ -380,7 +387,7 @@ export function AreaPanel({ onSearch, onCollapse, onNavigate }: { onSearch: () =
   ))
   const liveList = live.length > 0 && (
     <div>
-      <SectionLabel label="Live now" meta={live.length} i={listAt} />
+      <SectionLabel label="Open tickets" meta={live.length} i={listAt} />
       <ul className="space-y-px">{live.map((t, k) => <LiveRow key={t.id} t={t} i={rowsAt[k]!} onNavigate={onNavigate} />)}</ul>
     </div>
   )
@@ -431,6 +438,21 @@ export function AreaPanel({ onSearch, onCollapse, onNavigate }: { onSearch: () =
       </nav>
 
       <AriaCard settings={settings} i={card} onNavigate={onNavigate} />
+      <OwnerBlock i={card + 1} onNavigate={onNavigate} />
     </div>
+  )
+}
+
+/** The signed-in person: the business owner. */
+function OwnerBlock({ i, onNavigate }: { i: number; onNavigate?: () => void }) {
+  const c = cascade(i)
+  return (
+    <Link to="/settings" onClick={onNavigate} style={c.style} className={cn(c.className, 'mt-2 flex items-center gap-2.5 rounded-xl px-2 py-2 transition-colors hover:bg-ink/[0.04]')} title={OWNER.email}>
+      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-human/15 text-[11px] font-semibold text-human" aria-hidden>{initials(OWNER.name)}</span>
+      <span className="min-w-0">
+        <span className="block truncate text-[13px] font-medium text-slate-950">{OWNER.name}</span>
+        <span className="block truncate text-[11px] text-slate-500">{OWNER.role} · {OWNER.business}</span>
+      </span>
+    </Link>
   )
 }

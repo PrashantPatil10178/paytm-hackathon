@@ -1,15 +1,14 @@
 import { useState } from 'react'
-import { Megaphone, Inbox, LoaderCircle, Flame, Ban, ArrowUpRight, CircleAlert } from 'lucide-react'
+import { Megaphone, Inbox, LoaderCircle, Flame, Ban, ArrowUpRight, CircleAlert, Copy, Check, Eye } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { CAMPAIGN_CHANNELS, ENQUIRY_NEEDS, type CampaignResponse, type CampaignResponseStatus, type CampaignSummary, type LeadSyncResponse, type LeadSyncResult } from '@ph/shared'
 import { api, live } from '../api'
 import { useApp } from '../store'
 import { Panel, PageHeader, Button, Skeleton, EmptyState, Tabs, type Tab } from '../components/ui'
 import type { Icon } from '../meta'
-import { ago, cn, num, rupees } from '../lib'
+import { ago, cn, num, rupees, HUBSPOT_URL, SHOP_URL, hostOf } from '../lib'
 
 // The HubSpot look-alike, where converted leads land (deal pages live at /deals/:id).
-const HUBSPOT_URL: string = import.meta.env.VITE_HUBSPOT_URL || 'http://localhost:3002'
 
 const channelLabel = (id: string) => CAMPAIGN_CHANNELS.find((c) => c.id === id)?.label ?? id
 const needLabel = (id: string) => ENQUIRY_NEEDS.find((x) => x.id === id)?.label ?? id
@@ -17,15 +16,58 @@ const pct = (a: number, b: number) => (b ? `${((a / b) * 100).toFixed(1)}%` : '�
 
 /* ───────── Campaign table ───────── */
 
+/** Copies text. navigator.clipboard needs a secure page; over plain http on the network IP, a hidden textarea does it. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch { /* fall through */ }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand('copy')
+  ta.remove()
+  return ok
+}
+
+/** The campaign's public landing page in ShopKart, with a copy button and how many people opened it. */
+function LandingLink({ c }: { c: CampaignSummary }) {
+  const [copied, setCopied] = useState(false)
+  const url = `${SHOP_URL}/c/${c.slug}`
+  return (
+    <div className="min-w-0">
+      <span className="flex items-center gap-1">
+        <a href={url} target="_blank" rel="noreferrer" className="ref truncate text-xs text-slate-800 underline-offset-2 hover:underline" title={url}>{hostOf(url)}</a>
+        <button
+          type="button"
+          onClick={async () => { if (await copyText(url)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }}
+          aria-label={`Copy the landing page link for ${c.name}`}
+          className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-slate-500 hover:bg-ink/[0.06] hover:text-slate-950"
+        >
+          {copied ? <Check className="size-3.5 text-brand-600" /> : <Copy className="size-3.5" />}
+        </button>
+      </span>
+      <span className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500"><Eye className="size-3" aria-hidden /><span className="ref">{num(c.landing_visits)}</span> visits · <span className="ref">{num(c.responses)}</span> replies</span>
+    </div>
+  )
+}
+
 function CampaignTable({ campaigns }: { campaigns?: CampaignSummary[] }) {
   return (
     <Panel icon={Megaphone} title="Campaigns" meta={campaigns && `${campaigns.length} running or recent`}>
       {!campaigns ? <div className="p-4"><Skeleton className="h-32" /></div> : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-left text-[13px]">
+          <table className="w-full min-w-[960px] text-left text-[13px]">
             <thead className="text-xs text-slate-500">
               <tr className="border-b border-ink/[0.06]">
                 <th className="px-4 py-2.5 font-medium">Campaign</th>
+                <th className="px-4 py-2.5 font-medium">Landing page</th>
                 <th className="px-4 py-2.5 font-medium">Spend</th>
                 <th className="px-4 py-2.5 text-right font-medium">Clicks</th>
                 <th className="px-4 py-2.5 text-right font-medium">CTR</th>
@@ -41,6 +83,7 @@ function CampaignTable({ campaigns }: { campaigns?: CampaignSummary[] }) {
                     <p className="font-medium text-slate-950">{c.name}</p>
                     <p className="mt-0.5 text-xs text-slate-500">{channelLabel(c.channel)} · {c.status} · since <span className="ref">{new Date(c.started_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span></p>
                   </td>
+                  <td className="max-w-[16rem] px-4 py-3"><LandingLink c={c} /></td>
                   <td className="px-4 py-3">
                     <p className="ref text-slate-950">{rupees(c.spend)} <span className="text-slate-500">/ {rupees(c.budget)}</span></p>
                     <div className="mt-1.5 h-1 w-28 overflow-hidden rounded-full bg-ink/[0.06]" aria-hidden>
@@ -131,7 +174,7 @@ function Responses({ campaigns }: { campaigns?: CampaignSummary[] }) {
         <EmptyState
           icon={Inbox}
           title={view === 'new' ? 'Inbox zero' : 'Nothing here yet'}
-          text={view === 'new' ? 'Every campaign response has been handled. New ones show up here as they arrive.' : 'Fetch new leads and Aria will work through the new responses.'}
+          text={view === 'new' ? "No new replies. Each campaign's landing page (link in the table above) adds one here when someone fills in its form." : 'Fetch new leads and Aria will work through the new responses.'}
         />
       ) : (
         <ul className="divide-y divide-ink/[0.06]">{list.map((r) => <ResponseRow key={r.id} r={r} />)}</ul>

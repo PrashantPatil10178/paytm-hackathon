@@ -15,6 +15,7 @@ import {
   type SaveQuoteBody,
   type Slot,
   type UpdateDealBody,
+  OWNER,
 } from "@ph/shared";
 import { desc, eq, schema as s, toActivity, toContact, toDeal, toMeeting, type Tx } from "@ph/db";
 import { db } from "./db.ts";
@@ -130,18 +131,36 @@ export async function updateDeal(id: number, b: UpdateDealBody): Promise<Deal> {
   });
 }
 
+/** Renames a contact or their company (the Control Room's lead table edits these). */
+export async function updateContact(id: number, b: { name?: string; company?: string }): Promise<Contact> {
+  const next: Partial<typeof s.contacts.$inferInsert> = {};
+  if (b.name !== undefined) {
+    if (!b.name.trim()) throw bad("name can't be empty");
+    next.name = b.name.trim();
+  }
+  if (b.company !== undefined) next.company = b.company.trim();
+  if (!Object.keys(next).length) return findContact(id);
+  const [row] = await db.update(s.contacts).set(next).where(eq(s.contacts.id, id)).returning();
+  if (!row) throw notFound(`Contact ${id}`);
+  return toContact(row);
+}
+
+/** Sales call hours, IST. The server may run in any timezone (UTC in most setups), so slots are built in IST. */
+const IST = "Asia/Kolkata";
+const SLOT_HOURS = [10, 11, 12, 14, 15, 16, 17];
+const istDate = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: IST }); // YYYY-MM-DD
+const istWeekday = (d: Date) => new Intl.DateTimeFormat("en-US", { timeZone: IST, weekday: "short" }).format(d);
+
 export async function freeSlots(): Promise<Slot[]> {
   const booked = new Set((await db.select({ start: s.meetings.start }).from(s.meetings)).map((m) => m.start.getTime()));
   const slots: Slot[] = [];
-  const day = new Date();
-  day.setMinutes(0, 0, 0);
-  for (let added = 0; added < 3; ) {
-    day.setDate(day.getDate() + 1);
-    if (day.getDay() === 0 || day.getDay() === 6) continue;
+  // The next 3 working days in IST, starting tomorrow.
+  for (let ahead = 1, added = 0; added < 3; ahead++) {
+    const day = new Date(Date.now() + ahead * 86_400_000);
+    if (["Sat", "Sun"].includes(istWeekday(day))) continue;
     added++;
-    for (const hour of [10, 11, 12, 14, 15, 16, 17]) {
-      const t = new Date(day);
-      t.setHours(hour, 0, 0, 0);
+    for (const hour of SLOT_HOURS) {
+      const t = new Date(`${istDate(day)}T${String(hour).padStart(2, "0")}:00:00+05:30`);
       if (booked.has(t.getTime())) continue;
       slots.push({ start: t.toISOString(), end: new Date(t.getTime() + 30 * 60_000).toISOString() });
     }
@@ -159,11 +178,11 @@ async function bookMeeting(b: BookMeetingBody): Promise<Meeting> {
       title: b.title ?? `${d.name.split("–")[1]?.trim() ?? "Intro"} call – ${contact.company}`,
       start: new Date(b.start),
       duration_min: b.duration_min ?? 30,
-      attendees: [contact.name, d.owner === BOT ? "Rahul – Sales" : d.owner],
+      attendees: [contact.name, d.owner === BOT ? OWNER.name : d.owner],
     };
     // One meeting per deal: booking again moves it.
     const [row] = await tx.insert(s.meetings).values(values).onConflictDoUpdate({ target: s.meetings.deal_id, set: values }).returning();
-    const when = row!.start.toLocaleString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+    const when = `${row!.start.toLocaleString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: IST })} IST`;
     await logActivity(d.id, { type: "meeting", body: `Booked "${row!.title}" for ${when}.`, author: BOT, ai: true }, tx);
     return toMeeting(row!);
   });

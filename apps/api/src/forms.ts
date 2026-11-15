@@ -27,6 +27,7 @@ import {
   type UpdateInfoFormBody,
 } from "@ph/shared";
 import { and, asc, desc, eq, schema as s, toInfoForm, toInfoRequest } from "@ph/db";
+import { chatOfTicket, record } from "./chats.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, HttpError, intParam, notFound, ok, oneOf } from "./http.ts";
 import { customerOrders } from "./shop.ts";
@@ -206,8 +207,14 @@ async function answerRequest(id: number, b: AnswerInfoRequestBody): Promise<Answ
   const ticket = await findTicket(request.ticket_id);
   const to_aria = request.requested_by === BOT && ticket.assignee === BOT;
   if (!to_aria) {
-    // A person asked: the answers go straight on the ticket for them, and it's theirs to pick up again.
-    await addComment(ticket.id, { public: true, author: ticket.requester.name, author_type: "customer", body: summary });
+    // A person asked: the answers go straight on the ticket for them, and it's theirs to pick up again. A
+    // customer comment isn't mirrored into the chat (mirrorComment skips those), so the chat line is stored here,
+    // once. When Aria asked, ShopKart sends the answers on to /chat, which stores the line itself.
+    const chat = await chatOfTicket(ticket.id);
+    await Promise.all([
+      addComment(ticket.id, { public: true, author: ticket.requester.name, author_type: "customer", body: summary }),
+      chat && record(chat, { sender: "customer", author: ticket.requester.name, body: summary, ticket_id: ticket.id }),
+    ]);
     await updateTicket(ticket.id, { status: "open" });
   }
   return { request: await findRequest(id), summary, to_aria };

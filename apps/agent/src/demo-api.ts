@@ -47,8 +47,10 @@ export class DemoAPIError extends Error {
 
 export type DemoAPI = ReturnType<typeof createDemoAPI>;
 
-const PREFIX: Record<ConnectorId, string> = { zendesk: "/zendesk", shop: "/shop", hubspot: "/crm" };
-const NAMES: Record<ConnectorId, string> = { zendesk: "Zendesk", shop: "ShopKart + Paytm", hubspot: "HubSpot CRM" };
+/** The connectors this client calls. Sarvam (voice) is a connector too, but the demo API places calls, not this client. */
+type ToolConnector = Exclude<ConnectorId, "sarvam">;
+const PREFIX: Record<ToolConnector, string> = { zendesk: "/zendesk", shop: "/shop", hubspot: "/crm" };
+const NAMES: Record<ToolConnector, string> = { zendesk: "Zendesk", shop: "ShopKart + Paytm", hubspot: "HubSpot CRM" };
 const CACHE_MS = 10_000;
 
 /**
@@ -62,7 +64,7 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
   let cache: { at: number; list: ConnectorAccess[] } | null = null;
 
   // Campaigns and analytics are ResolveAI's own records in the demo API, not a connector.
-  async function access(id: ConnectorId | undefined): Promise<ConnectorAccess> {
+  async function access(id: ToolConnector | undefined): Promise<ConnectorAccess> {
     if (!id) return { id: "zendesk", base_url: baseUrl, token: null, enabled: true };
     if (!connectors) return { id, base_url: `${baseUrl}${PREFIX[id]}`, token: null, enabled: true };
     if (!cache || Date.now() - cache.at > CACHE_MS) cache = { at: Date.now(), list: await connectors() };
@@ -72,7 +74,7 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
   }
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const id = (Object.keys(PREFIX) as ConnectorId[]).find((k) => path.startsWith(`${PREFIX[k]}/`));
+    const id = (Object.keys(PREFIX) as ToolConnector[]).find((k) => path.startsWith(`${PREFIX[k]}/`));
     const c = await access(id);
     const name = id ? NAMES[id] : "the demo API";
     if (!c.enabled) throw new DemoAPIError(503, `The ${name} connector is turned off in the Control Room`);

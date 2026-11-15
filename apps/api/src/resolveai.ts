@@ -6,15 +6,16 @@
  * credentials the agent must send, so they are stored as is but only ever returned by
  * /resolveai/connectors/access (the agent's route), never by the list the browser reads.
  */
-import type {
-  ConnectorId,
-  CreateApprovalBody,
-  CreateCaseBody,
-  CreateRunBody,
-  CreateStepBody,
-  DecideApprovalBody,
-  UpdateConnectorBody,
-  UpdateRunBody,
+import {
+  OWNER,
+  type ConnectorId,
+  type CreateApprovalBody,
+  type CreateCaseBody,
+  type CreateRunBody,
+  type CreateStepBody,
+  type DecideApprovalBody,
+  type UpdateConnectorBody,
+  type UpdateRunBody,
 } from "@ph/shared";
 import { and, desc, eq, schema as s, sql, toApproval, toCase, toChannel, toConnector, toRun, toStep } from "@ph/db";
 import { db } from "./db.ts";
@@ -34,9 +35,9 @@ const OUTCOMES = ["resolved", "escalated", "rejected"] as const;
 /* ───── Tokens ───── */
 
 const sha256 = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
-const newToken = () => `rai_${Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url")}`;
+export const newToken = () => `rai_${Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url")}`;
 
-async function setChannelToken(id: string, token: string) {
+export async function setChannelToken(id: string, token: string) {
   const [row] = await db
     .update(s.channels)
     .set({ token_hash: sha256(token), token_hint: token.slice(-4) })
@@ -71,8 +72,13 @@ function requireAgent(req: Request) {
 
 /* ───── Connector health ───── */
 
-/** A cheap read per connector that proves its base URL answers. */
-const PROBE: Record<string, string> = { zendesk: "/agents", shop: "/products", hubspot: "/slots" };
+/**
+ * A cheap read per connector that proves its base URL answers. Sarvam: the base URL itself (any HTTP
+ * answer counts as reachable); its API key is required, see checkConnector.
+ */
+const PROBE: Record<string, string> = { zendesk: "/agents", shop: "/products", hubspot: "/slots", sarvam: "" };
+/** Connectors that can't work without a token. */
+const NEEDS_TOKEN: Partial<Record<ConnectorId, string>> = { sarvam: "Add the Sarvam API key" };
 const CHECK_EVERY_MS = 15_000;
 
 async function checkConnector(id: string) {
@@ -80,14 +86,19 @@ async function checkConnector(id: string) {
   if (!c) throw notFound(`Connector ${id}`);
   let status: "connected" | "error" | "disabled" = "disabled";
   let error: string | null = null;
-  if (c.enabled) {
+  if (c.enabled && !c.token && NEEDS_TOKEN[c.id]) {
+    status = "error";
+    error = NEEDS_TOKEN[c.id]!;
+  } else if (c.enabled) {
     try {
       const res = await fetch(`${c.base_url.replace(/\/$/, "")}${PROBE[c.id] ?? ""}`, {
         headers: c.token ? { authorization: `Bearer ${c.token}` } : undefined,
         signal: AbortSignal.timeout(3000),
       });
-      status = res.ok ? "connected" : "error";
-      if (!res.ok) error = `HTTP ${res.status} from ${c.base_url}`;
+      // Sarvam: reaching the base URL is enough (no API path is probed yet).
+      const reachable = res.ok || c.id === "sarvam";
+      status = reachable ? "connected" : "error";
+      if (!reachable) error = `HTTP ${res.status} from ${c.base_url}`;
     } catch (e) {
       status = "error";
       error = `Can't reach ${c.base_url}: ${(e as Error).message}`;
@@ -101,7 +112,7 @@ async function checkConnector(id: string) {
   return toConnector(row!);
 }
 
-async function listConnectors() {
+export async function listConnectors() {
   const rows = await db.select().from(s.connectors).orderBy(s.connectors.id);
   const stale = rows.filter((c) => !c.last_checked_at || Date.now() - c.last_checked_at.getTime() > CHECK_EVERY_MS);
   if (stale.length) await Promise.all(stale.map((c) => checkConnector(c.id)));
@@ -145,6 +156,22 @@ async function notifyAgent(approvalId: number) {
   } catch (e) {
     return `agent unreachable: ${(e as Error).message}`;
   }
+}
+
+/**
+ * A person decides a pending approval (Control Room, or POST /resolveai/approvals/:id/decide). The agent
+ * is then told and carries out (or drops) the action; `warning` says why it couldn't be told.
+ */
+export async function decideApproval(id: number, b: DecideApprovalBody) {
+  const decision = oneOf(b.decision, ["approved", "rejected"] as const, "decision");
+  const [row] = await db
+    .update(s.approvals)
+    .set({ status: decision, decided_by: b.decided_by?.trim() || OWNER.name, note: b.note?.trim() || null, decided_at: new Date() })
+    .where(and(eq(s.approvals.id, id), eq(s.approvals.status, "pending")))
+    .returning();
+  if (!row) throw bad(`Approval ${id} doesn't exist or was already decided`);
+  const warning = await notifyAgent(id);
+  return { approval: toApproval(row), ...(warning && { warning }) };
 }
 
 /* ───── Routes ───── */
@@ -293,19 +320,7 @@ export const resolveaiRoutes = {
   },
   "/resolveai/approvals/:id/decide": {
     /** A person decides. The agent is then told, and carries out (or drops) the action. */
-    POST: handle(async (req) => {
-      const id = intParam(req.params.id, "Approval id");
-      const b = await body<DecideApprovalBody>(req);
-      const decision = oneOf(b.decision, ["approved", "rejected"] as const, "decision");
-      const [row] = await db
-        .update(s.approvals)
-        .set({ status: decision, decided_by: b.decided_by?.trim() || "Support lead", note: b.note?.trim() || null, decided_at: new Date() })
-        .where(and(eq(s.approvals.id, id), eq(s.approvals.status, "pending")))
-        .returning();
-      if (!row) throw bad(`Approval ${id} doesn't exist or was already decided`);
-      const warning = await notifyAgent(id);
-      return ok({ approval: toApproval(row), ...(warning && { warning }) });
-    }),
+    POST: handle(async (req) => ok(await decideApproval(intParam(req.params.id, "Approval id"), await body<DecideApprovalBody>(req)))),
   },
 
   /* Resolved cases (the main agent's memory) */

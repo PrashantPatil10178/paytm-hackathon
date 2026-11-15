@@ -6,10 +6,9 @@ import { api, live } from '../api'
 import { useApp } from '../store'
 import { Panel, PageHeader, Button, Skeleton, EmptyState, Tabs, type Tab } from '../components/ui'
 import type { Icon } from '../meta'
-import { ago, cn, num, rupees } from '../lib'
+import { ago, cn, num, rupees, HUBSPOT_URL } from '../lib'
 
 // The HubSpot look-alike, where converted leads land (deal pages live at /deals/:id).
-const HUBSPOT_URL: string = import.meta.env.VITE_HUBSPOT_URL || 'http://localhost:3002'
 
 const channelLabel = (id: string) => CAMPAIGN_CHANNELS.find((c) => c.id === id)?.label ?? id
 const needLabel = (id: string) => ENQUIRY_NEEDS.find((x) => x.id === id)?.label ?? id

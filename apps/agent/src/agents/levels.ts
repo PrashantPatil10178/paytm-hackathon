@@ -2,9 +2,8 @@
  * The three level agents. The main agent has already opened the ticket, set its level and written a
  * plan; one of these carries it out with only the tools its level allows (see ../tools/support.ts).
  */
-import { rupees, SUPPORT_AGENTS } from "@ph/shared";
+import { SUPPORT_AGENTS } from "@ph/shared";
 import { Agent, type AgentOptions, type Memory } from "@voltagent/core";
-import { AUTO_REFUND_LIMIT } from "../criticality.ts";
 import type { DemoAPI } from "../demo-api.ts";
 import type { Platform } from "../platform.ts";
 import { supportTools, type Level } from "../tools/support.ts";
@@ -32,14 +31,15 @@ const BY_LEVEL: Record<Level, string> = {
 - When answered, update_ticket to solved. Ask the customer a question (and set the ticket to pending) only
   when they have several orders and didn't say which one. If an order can't be found, don't ask them to
   re-check: escalate_to_human so the team follows up.
-- If it turns out to need a refund, a change or a judgement call, escalate_to_human (${SUPPORT_AGENTS[1]}) with a clear note.`,
+- If it turns out to need a refund, a change or a judgement call, escalate_to_human (${SUPPORT_AGENTS[0]}, the owner) with a clear note.`,
   medium: `You are the MEDIUM-level agent: actions within limits, such as small refunds.
-- Damaged or broken item on a delivered order up to ${rupees(AUTO_REFUND_LIMIT)}: start_refund. Refunds reach the
-  original payment method in 3–5 working days; nothing needs to be sent back. Then update_ticket to solved.
-- Anything above ${rupees(AUTO_REFUND_LIMIT)}, a failed payment, or anything you can't resolve: escalate_to_human
-  (${SUPPORT_AGENTS[0]} for payments and refunds, ${SUPPORT_AGENTS[1]} otherwise) with a clear note.
+- The auto-refund limit is in the message (a Control Room setting). Damaged or broken item on a delivered order
+  up to that limit: start_refund. Refunds reach the original payment method in 3–5 working days; nothing
+  needs to be sent back. Then update_ticket to solved.
+- Anything above the limit, a failed payment, or anything you can't resolve: escalate_to_human
+  (${SUPPORT_AGENTS[0]}, the owner) with a clear note.
 - start_refund and escalate_to_human write their own notes; use add_internal_note only for other decisions.`,
-  high: `You are the HIGH-level agent: actions a person must approve, such as refunds above ${rupees(AUTO_REFUND_LIMIT)}.
+  high: `You are the HIGH-level agent: actions a person must approve, such as refunds above the auto-refund limit (in the message).
 - You never refund directly. Check the order, then request_approval with a summary of what you checked and
   the exact action you propose. Do it in this same turn: don't ask the customer for photos or other proof
   first; the approver decides what evidence is enough and can ask for it. Tell the customer their request is with a teammate for a quick approval and

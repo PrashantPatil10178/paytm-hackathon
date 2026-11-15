@@ -21,7 +21,20 @@ export const LEVEL_TO_PRIORITY: Record<AgentLevel, TicketPriority> = {
   critical: "urgent",
 };
 
-export const SUPPORT_AGENTS = ["Priya – Support", "Karan – Support"] as const;
+/**
+ * The one person running the business: the signed-in user in every app (Control Room, Zendesk, HubSpot),
+ * the person tickets are handed to, who approves refunds, owns deals and hosts sales calls.
+ */
+export const OWNER = {
+  name: "Kabir Malhotra",
+  first: "Kabir",
+  role: "Founder",
+  business: "ShopKart",
+  email: "kabir@shopkart.example",
+} as const;
+
+/** People a ticket can be handed to (besides the bot). Just the owner: a small business. */
+export const SUPPORT_AGENTS = [OWNER.name] as const;
 
 export interface ZdUser {
   id: number;
@@ -125,7 +138,8 @@ export const DEAL_STAGES: { id: DealStage; label: string; probability: number }[
 export type LeadScore = "hot" | "warm" | "cold";
 export type LeadStatus = "New" | "Open" | "In progress" | "Open deal" | "Unqualified" | "Connected";
 
-export const SALES_REPS = ["Rahul – Sales", "Meera – Sales"] as const;
+/** People who can own a deal (besides the bot). */
+export const SALES_REPS = [OWNER.name] as const;
 
 export interface Contact {
   id: number;
@@ -135,7 +149,7 @@ export interface Contact {
   company: string;
   lead_status: LeadStatus;
   owner: string;
-  source: "Business enquiry form" | "Chat" | "Referral" | "Import" | "Campaign";
+  source: "Business enquiry form" | "Chat" | "Referral" | "Import" | "Campaign" | "Voice call";
   created_at: string;
 }
 

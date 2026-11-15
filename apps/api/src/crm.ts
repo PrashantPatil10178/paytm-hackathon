@@ -15,6 +15,7 @@ import {
   type SaveQuoteBody,
   type Slot,
   type UpdateDealBody,
+  OWNER,
 } from "@ph/shared";
 import { desc, eq, schema as s, toActivity, toContact, toDeal, toMeeting, type Tx } from "@ph/db";
 import { db } from "./db.ts";
@@ -130,6 +131,20 @@ export async function updateDeal(id: number, b: UpdateDealBody): Promise<Deal> {
   });
 }
 
+/** Renames a contact or their company (the Control Room's lead table edits these). */
+export async function updateContact(id: number, b: { name?: string; company?: string }): Promise<Contact> {
+  const next: Partial<typeof s.contacts.$inferInsert> = {};
+  if (b.name !== undefined) {
+    if (!b.name.trim()) throw bad("name can't be empty");
+    next.name = b.name.trim();
+  }
+  if (b.company !== undefined) next.company = b.company.trim();
+  if (!Object.keys(next).length) return findContact(id);
+  const [row] = await db.update(s.contacts).set(next).where(eq(s.contacts.id, id)).returning();
+  if (!row) throw notFound(`Contact ${id}`);
+  return toContact(row);
+}
+
 export async function freeSlots(): Promise<Slot[]> {
   const booked = new Set((await db.select({ start: s.meetings.start }).from(s.meetings)).map((m) => m.start.getTime()));
   const slots: Slot[] = [];
@@ -159,7 +174,7 @@ async function bookMeeting(b: BookMeetingBody): Promise<Meeting> {
       title: b.title ?? `${d.name.split("–")[1]?.trim() ?? "Intro"} call – ${contact.company}`,
       start: new Date(b.start),
       duration_min: b.duration_min ?? 30,
-      attendees: [contact.name, d.owner === BOT ? "Rahul – Sales" : d.owner],
+      attendees: [contact.name, d.owner === BOT ? OWNER.name : d.owner],
     };
     // One meeting per deal: booking again moves it.
     const [row] = await tx.insert(s.meetings).values(values).onConflictDoUpdate({ target: s.meetings.deal_id, set: values }).returning();

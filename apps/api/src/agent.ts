@@ -24,9 +24,11 @@ import {
   type LeadSyncResult,
   type Order,
   type Ticket,
+  SUPPORT_AGENTS,
 } from "@ph/shared";
 import { eq, schema as s } from "@ph/db";
 import { computeMetrics, saveReport } from "./analytics.ts";
+import { refundLimit } from "./controlroom.ts";
 import { contactForEmail, convertResponse, listResponses, skipResponse } from "./campaigns.ts";
 import { createContact, createDeal, logActivity } from "./crm.ts";
 import { db } from "./db.ts";
@@ -36,7 +38,6 @@ import { customerOrders, findCustomer, refundOrder } from "./shop.ts";
 import { addComment, createTicket, findTicket, ticketExists, updateTicket } from "./zendesk.ts";
 
 const AGENT_URL = process.env.AGENT_URL?.replace(/\/$/, "");
-const AUTO_REFUND_LIMIT = 1000;
 
 async function forward(path: string, payload: unknown, { token, timeoutMs = 110_000 }: { token?: string; timeoutMs?: number } = {}): Promise<Response | null> {
   if (!AGENT_URL) return null;
@@ -142,13 +143,15 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
 
   await sleep(900 + Math.random() * 900); // let the typing indicator breathe
 
+  // The auto-refund limit is a Control Room setting (₹1,000 unless someone changed it).
+  const AUTO_REFUND_LIMIT = await refundLimit();
   let reply: string;
   if (intent === "payment" && order) {
     await addComment(ticket.id, {
       public: false,
       body: `Checked the payment gateway: ${rupees(order.amount)} captured from the customer's bank, but order #${order.id} never got a payment confirmation. That's above the ${rupees(AUTO_REFUND_LIMIT)} auto-refund limit, so handing to Payments for a manual reconcile.`,
     });
-    await updateTicket(ticket.id, { assignee: "Priya – Support", priority: "urgent", status: "open", escalated_by_ai: true });
+    await updateTicket(ticket.id, { assignee: SUPPORT_AGENTS[0], priority: "urgent", status: "open", escalated_by_ai: true });
     reply = `I can see ${rupees(order.amount)} left your bank for order #${order.id}, but the payment never reached us. Amounts this large need a person to check, so I've passed this to Priya on our payments team with all the details. You'll hear back within 2 hours. Your ticket number is #${ticket.id}.`;
   } else if (intent === "refund" && order) {
     const refundable = (order.status === "damaged" || order.status === "delivered") && (order.payment_status === "paid" || order.payment_status === "cod");
@@ -164,7 +167,7 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
       return { reply, ticket_id: ticket.id };
     }
     await addComment(ticket.id, { public: false, body: `Refund of ${rupees(order.amount)} is above the auto-refund limit. Needs approval from a person.` });
-    await updateTicket(ticket.id, { assignee: "Priya – Support", status: "pending", escalated_by_ai: true });
+    await updateTicket(ticket.id, { assignee: SUPPORT_AGENTS[0], status: "pending", escalated_by_ai: true });
     reply = `I've raised a refund request for order #${order.id}. As it's ${rupees(order.amount)}, a teammate needs to approve it. You'll hear back within a day.`;
   } else if (intent === "track" && order) {
     reply = trackingReply(order);

@@ -1,7 +1,8 @@
 # ResolveAI · Control Room (UI)
 
 Frontend-only dashboard for ResolveAI, an AI teammate that resolves support and
-sales work inside your own tools. All data is mock JSON; there is no backend yet.
+sales work inside your own tools. Every page reads live data from the demo API (`apps/api`, Postgres);
+run it with `bun run dev:dashboard`, which starts the API too.
 
 ## Run
 
@@ -20,35 +21,21 @@ React 19 + Vite, Tailwind CSS v4, React Router, Recharts, lucide-react, dnd-kit.
 
 ```
 src/
-  api.js              ← the ONLY data layer. Swap each function for fetch() later.
-  data/*.json         ← mock tickets, leads, approvals, stats, integrations, settings
-  store.jsx           ← shared state (tickets, approvals, settings, toasts) + audit log
-  meta.js             ← labels/colours/icons for channels, levels, statuses, tools
-  lib.js              ← formatting (₹, times, durations)
-  components/
-    Layout.jsx        ← sidebar, topbar, ⌘K palette, toasts
-    ui.jsx            ← Card, Button, Badge, Drawer, Modal, Tabs, Toggle…
-    Trace.jsx         ← step-by-step agent trace timeline
-    CommandPalette.jsx
-  pages/              ← Home, Audit, Tickets, Approvals, Board, Channels, Connectors, Settings
+  api.ts              ← the ONLY data layer: polls the demo API's /control-room/*, /resolveai/*, /analytics, /campaigns
+  store.tsx           ← shared live state (tickets, leads, approvals, settings, stats), toasts, audit log
+  types.ts            ← re-exports the API contract from @ph/shared/controlroom
+  meta.ts             ← labels/colours/icons for channels, levels, statuses, tools
+  lib.ts              ← formatting (₹, times, durations)
+  components/         ← Layout, Sidebar, ui, Trace, DataTable, Calls, AgentAccess, CommandPalette…
+  pages/              ← Home, Analytics, Audit, Tickets, Approvals, Board, Leads, Calls, Campaigns, Channels, Connectors, Settings
+  copilot/            ← Ask Aria (CopilotKit, lazy chunk)
 ```
 
-## Wiring the backend later
+## Demo flow, start to end (after `bun run reset` the Control Room is empty)
 
-Pages never import JSON directly; they call `api.*`. Replace the bodies in
-`src/api.js` with real requests (same return shapes) and the UI keeps working.
-Write calls (`updateTicketStatus`, `decideApproval`, `saveSettings`, `connect`)
-are already called at the right moments; today they are no-ops.
-
-Mock timestamps are shifted at load so the newest event always looks recent,
-whatever time you run the demo.
-
-## Demo flow that works end to end
-
-1. **Home**: KPIs, AI vs human chart, the "4 actions waiting" banner
-2. **Approvals**: approve Rahul's ₹4,250 refund, then use Undo in the toast
-3. **Tickets**: RA-1047 is now *Solved by AI* with the new steps in its trace
-4. **Board**: drag a ticket between columns; it "syncs" to Zendesk/Freshdesk
-5. **Connectors**: *Make primary* on Freshdesk (helpdesk swap, no code), *Add connector*
-6. **Settings**: change autonomy or the refund limit; the save bar appears and the sidebar updates
-7. Press **⌘K** anywhere to jump to a ticket or page
+1. **ShopKart** (:3003): chat about a broken item → Aria refunds it; ask for a refund above the limit → it waits for approval
+2. **Approvals**: approve it as Kabir → Aria refunds and the customer is told in the chat; the ticket is *Solved by AI*
+3. **Tickets / Board / Audit**: every step Aria took, from the real runs; status changes sync to Zendesk (:3001)
+4. **ShopKart business enquiry** → a scored lead in **Leads** and HubSpot (:3002); **Call with Aria** places a Sarvam call
+5. **Settings**: change the refund limit; the agent uses it on the next chat
+6. Press **⌘K** anywhere to jump to a ticket or page

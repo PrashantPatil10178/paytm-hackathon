@@ -15,8 +15,8 @@ sales enquiries, analytics and campaign leads:
 | --- | --- | --- | --- |
 | `main` | heavy | Every request: new or status check, intent, signals, confidence, plan | none (it decides, others act) |
 | `low` | heavy | Information: where is my order, questions | `get_customer_orders`, `get_order`, `search_past_cases`, `add_internal_note`, `update_ticket`, `escalate_to_human` |
-| `medium` | heavy | Actions within limits: refunds up to ₹1,000 | the low tools plus `start_refund` |
-| `high` | heavy | Refunds above ₹1,000: plan it, a person approves | lookups, `search_past_cases`, `request_approval`, `escalate_to_human` (no direct refunds) |
+| `medium` | heavy | Actions within limits: refunds up to the auto-refund limit (Control Room setting, default ₹1,000) | the low tools plus `start_refund` |
+| `high` | heavy | Refunds above the limit: plan it, a person approves | lookups, `search_past_cases`, `request_approval`, `escalate_to_human` (no direct refunds) |
 | critical | – | Failed payments, fraud or legal | none: code assigns a person and writes the brief |
 | `writer` | lite | Short status updates from the ticket's facts | none |
 | `sales` | lite | Business enquiries | `update_deal`, `add_deal_note`, `get_free_slots`, `book_meeting` |
@@ -47,7 +47,7 @@ What is code and what is the model:
 - **Decided by the agents**: what the customer needs, which order, the plan, and how the level agent resolves it; for
   leads the score, stage, next step and whether to book a call.
 - **Guard rails in the tools**, not just the prompt: tools act only on the request's own ticket, customer, deal or
-  campaign response (operation context, never model arguments); `start_refund` refuses above ₹1,000; the high agent
+  campaign response (operation context, never model arguments); `start_refund` refuses above the auto-refund limit (`refundLimit` in the Control Room settings, read through `platform.refundLimit()`, cached 10 s, ₹1,000 when unreachable); the high agent
   has no refund tool at all; `publish_report` accepts only known chart datasets and publishes once per run;
   `create_lead` takes the deal amount from the response's stated budget, and the API refuses to decide a response twice.
 - **Connectors**: Zendesk, shop and CRM calls go to the base URL and token set on Control Room → Connectors. A
@@ -79,7 +79,7 @@ Models (`src/models.ts`), as `provider/model` from the repo-root `.env`:
 | `src/models.ts` | The heavy and lite model tiers, key lookup |
 | `src/memory.ts` | Conversation memory, the analysis working-memory note, thread keys, retention |
 | `src/service.ts` | Intake, triage → level → routing, status checks, approvals, case memory, fallbacks; leads, analysis, campaign sync |
-| `src/criticality.ts` | The level rules (low / medium / high / critical) and the ₹1,000 auto-refund limit |
+| `src/criticality.ts` | The level rules (low / medium / high / critical) and the default ₹1,000 auto-refund limit (the live one comes from the Control Room settings) |
 | `src/agents/` | `main.ts` (triage schema, writer), `levels.ts` (low / medium / high), `sales.ts`, `analysis.ts`, `leads.ts` |
 | `src/tools/` | `support.ts` (level tools, each records a step), `sales.ts`, `analysis.ts`, `leads.ts`, `context.ts` (per-request ids) |
 | `src/platform.ts` | Client for `/resolveai/*`: channel tokens, connectors, runs, steps, approvals, cases |

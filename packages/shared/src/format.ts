@@ -57,7 +57,7 @@ export const fullDate = (iso: string) => fullFmt.format(new Date(iso));
 export const shortDay = (iso: string) => longDay.format(new Date(iso));
 export const clock = (iso: string) => timeFmt.format(new Date(iso));
 
-/** "Ananya Iyer" → "AI"; "Priya – Support" → "PS" (name + team, like an agent badge) */
+/** "Ananya Iyer" → "AI"; "Kabir – Owner" → "KO" (name + team, like an agent badge) */
 export function initials(name: string): string {
   const parts = name.split(/[\s–-]+/).filter(Boolean);
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase();

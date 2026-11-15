@@ -1,7 +1,9 @@
 import { resetDemoData } from "@ph/db";
 import { agentMode, agentRoutes } from "./agent.ts";
 import { analyticsRoutes } from "./analytics.ts";
+import { callRoutes } from "./calls.ts";
 import { campaignRoutes } from "./campaigns.ts";
+import { controlRoomRoutes } from "./controlroom.ts";
 import { crmRoutes } from "./crm.ts";
 import { prepareShopkartToken, resolveaiRoutes } from "./resolveai.ts";
 import { db, prepare } from "./db.ts";
@@ -31,6 +33,8 @@ const server = Bun.serve({
     ...analyticsRoutes,
     ...agentRoutes,
     ...resolveaiRoutes,
+    ...callRoutes,
+    ...controlRoomRoutes,
   },
   fetch(req) {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });

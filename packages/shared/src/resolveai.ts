@@ -258,4 +258,6 @@ export interface PlaceCallBody {
   business_name?: string;
   /** Call about an existing CRM deal (its contact is used when phone/name are omitted) */
   deal_id?: number;
+  /** Place it even outside 09:00–21:00 IST (never overrides the do-not-call list) */
+  force?: boolean;
 }

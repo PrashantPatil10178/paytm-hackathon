@@ -2,19 +2,20 @@ import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Search, Flame, ScrollText, Users, Hand, Building2, UserRound, MessageSquareText, Gauge, Columns3, IndianRupee, Clock,
-  PenLine, Trash2, ArrowUpRight,
+  PenLine, ArrowUpRight, ExternalLink,
 } from 'lucide-react'
 import { useApp } from '../store'
 import { PageHeader, Tabs, Drawer, Button, Badge, EmptyState, ChannelTag } from '../components/ui'
-import DataTable, { type Column } from '../components/DataTable'
+import DataTable, { type Change, type Column } from '../components/DataTable'
+import { CallWithAria } from '../components/Calls'
 import Trace from '../components/Trace'
 import ToolChain from '../components/ToolChain'
-import { LEAD_STAGES, byStage } from '../nav'
-import { ago, cn, duration, rupees } from '../lib'
+import { LEAD_STAGES, byStage, stageLabel } from '../nav'
+import { ago, cn, duration, rupees, HUBSPOT_URL, SHOP_URL, hostOf } from '../lib'
 import type { Lead } from '../types'
 
 const STAGE_BADGE = 'bg-slate-100 text-slate-700 ring-slate-200'
-const StageBadge = ({ stage }: { stage: string }) => <Badge className={STAGE_BADGE}>{stage}</Badge>
+const StageBadge = ({ stage }: { stage: string }) => <Badge className={STAGE_BADGE}>{stageLabel(stage)}</Badge>
 
 function Source({ lead }: { lead: Lead }) {
   if (lead.channel !== 'manual') return <ChannelTag channel={lead.channel} compact />
@@ -24,8 +25,6 @@ function Source({ lead }: { lead: Lead }) {
     </span>
   )
 }
-
-const nextId = (leads: Lead[]) => `L-${Math.max(300, ...leads.map((l) => Number(l.id.replace(/\D/g, '')) || 0)) + 1}`
 
 /** Opens the lead's drawer. Shown on row hover, and always on the open row. */
 function OpenButton({ lead, onOpen }: { lead: Lead; onOpen: (l: Lead) => void }) {
@@ -79,11 +78,10 @@ const columns = (onOpen: (l: Lead) => void): Column<Lead>[] => [
     className: 'w-full max-w-0',
     render: (l) => (
       <>
-        <span className={cn('block truncate', l.need ? 'text-slate-700' : 'text-slate-400')} title={l.need}>{l.need || 'What do they want?'}</span>
+        <span className={cn('block truncate', l.need ? 'text-slate-700' : 'text-slate-400')} title={l.need}>{l.need || 'No need recorded'}</span>
         {l.steps.length > 0 && <ToolChain steps={l.steps} className="mt-1.5" />}
       </>
     ),
-    edit: { type: 'text', placeholder: 'What do they want?', get: (l) => l.need, set: (_, v) => ({ need: v.trim() }) },
   },
   {
     key: 'score',
@@ -106,13 +104,13 @@ const columns = (onOpen: (l: Lead) => void): Column<Lead>[] => [
     header: 'Stage',
     icon: Columns3,
     className: 'whitespace-nowrap',
-    sort: (l) => LEAD_STAGES.indexOf(l.stage),
+    sort: (l) => LEAD_STAGES.findIndex((s) => s.id === l.stage || s.label === l.stage),
     render: (l) => <StageBadge stage={l.stage} />,
     edit: {
       type: 'select',
-      options: LEAD_STAGES.map((s) => ({ value: s, label: s })),
+      options: LEAD_STAGES.map((s) => ({ value: s.id, label: s.label })),
       renderOption: (s) => <StageBadge stage={s} />,
-      get: (l) => l.stage,
+      get: (l) => LEAD_STAGES.find((s) => s.label === l.stage)?.id ?? l.stage,
       set: (_, v) => ({ stage: v }),
     },
   },
@@ -146,13 +144,14 @@ const columns = (onOpen: (l: Lead) => void): Column<Lead>[] => [
 
 /** Sales: every enquiry the agent qualified, filtered by pipeline stage from the URL (?stage=). */
 export default function Leads() {
-  const { leads, setLeads, approvals, loading } = useApp()
+  const { leads, updateLead, approvals, loading, toast } = useApp()
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
   const [q, setQ] = useState('')
 
   const stage = params.get('stage') ?? 'all'
   const stages = useMemo(() => [...new Set(leads.map((l) => l.stage))].sort(byStage), [leads])
+  const sameStage = (a: string, b: string) => a === b || stageLabel(a) === stageLabel(b)
 
   // Change one query param, keep the rest (stage filter and open lead are independent).
   const patch = useCallback((key: string, value: string | null) =>
@@ -167,17 +166,22 @@ export default function Leads() {
     const s = q.trim().toLowerCase()
     return !s || [l.id, l.name, l.company, l.need].some((f) => f.toLowerCase().includes(s))
   }, [q])
-  const filter = useCallback((l: Lead) => matches(l) && (stage === 'all' || l.stage === stage), [matches, stage])
+  const filter = useCallback((l: Lead) => matches(l) && (stage === 'all' || l.stage === stage || stageLabel(l.stage) === stageLabel(stage)), [matches, stage])
   const searched = leads.filter(matches)
 
-  const addLead = (): Lead => {
-    // The new row must be visible to be edited: drop the filters it might not match.
-    setQ('')
-    patch('stage', null)
-    return {
-      id: nextId(leads), name: '', company: '', need: '', channel: 'manual', score: 0, value: 0, stage: 'New', hot: false,
-      createdAt: new Date().toISOString(), steps: [],
-    }
+  // Each edited row is PATCHed (stage, value, name, company update the CRM deal); undo and redo send the
+  // reverse change. The rows come back from the next poll.
+  const save = async (_next: Lead[], change: Change<Lead>) => {
+    const sent = change.updates.map((u) => {
+      const body: Partial<Pick<Lead, 'stage' | 'value' | 'name' | 'company'>> = {}
+      if (u.after.stage !== undefined) body.stage = u.after.stage
+      if (u.after.value !== undefined) body.value = u.after.value
+      if (u.after.name !== undefined) body.name = u.after.name
+      if (u.after.company !== undefined) body.company = u.after.company
+      return Object.keys(body).length ? updateLead(u.id, body) : Promise.resolve(false)
+    })
+    const ok = (await Promise.all(sent)).filter(Boolean).length
+    if (ok) toast({ title: ok === 1 ? `Lead ${change.updates[0]!.id} updated` : `${ok} leads updated`, desc: 'Saved to the CRM deal' })
   }
 
   const open = useCallback((l: Lead) => patch('id', l.id), [patch])
@@ -190,7 +194,7 @@ export default function Leads() {
     <div>
       <PageHeader
         title="Leads"
-        description="Business enquiries Aria qualified, scored and logged as deals in HubSpot. Edit any cell; every change can be undone."
+        description="Business enquiries Aria qualified, scored and logged as deals in HubSpot. Edit the company, contact, stage or value; it saves to the deal, and every change can be undone."
       />
 
       <DataTable
@@ -203,18 +207,15 @@ export default function Leads() {
         columns={cols}
         filter={filter}
         loading={loading}
-        onRowsChange={(next) => setLeads(next)}
+        onRowsChange={save}
         onOpen={open}
         openId={selected?.id}
-        onAddRow={addLead}
-        addLabel="Add lead"
-        bulkActions={[{ label: 'Delete', icon: Trash2, tone: 'danger', apply: () => ({ remove: true }) }]}
         toolbar={(
           <>
             <Tabs
               value={stage}
               onChange={(v: string) => patch('stage', v === 'all' ? null : v)}
-              tabs={[{ value: 'all', label: 'All', count: searched.length }, ...stages.map((s) => ({ value: s, label: s, count: searched.filter((l) => l.stage === s).length }))]}
+              tabs={[{ value: 'all', label: 'All', count: searched.length }, ...stages.map((s) => ({ value: s, label: stageLabel(s), count: searched.filter((l) => sameStage(l.stage, s)).length }))]}
             />
             <div className="relative ml-auto">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" />
@@ -228,7 +229,9 @@ export default function Leads() {
             </div>
           </>
         )}
-        empty={<EmptyState icon={Users} title="No leads match" text="Pick another stage or clear the search." />}
+        empty={leads.length === 0
+          ? <EmptyState icon={Users} title="No leads yet" text={<>Send a business enquiry from ShopKart (<a className="ref text-slate-700 underline-offset-2 hover:underline" href={SHOP_URL} target="_blank" rel="noreferrer">{hostOf(SHOP_URL)}</a>) or fetch leads in Campaigns, and Aria's qualified leads show up here.</>} action={<Link to="/campaigns"><Button size="sm">Open Campaigns</Button></Link>} />
+          : <EmptyState icon={Users} title="No leads match" text="Pick another stage or clear the search." />}
       />
 
       <Drawer
@@ -261,13 +264,22 @@ export default function Leads() {
                 <Link to="/approvals" className="mt-2 inline-block text-sm font-medium text-amber-800 underline-offset-2 hover:underline">Review in Approvals</Link>
               </div>
             )}
+            {Number.isFinite(Number(selected.id)) && (
+              <div className="mb-6"><CallWithAria dealId={Number(selected.id)} name={selected.name || selected.company} /></div>
+            )}
             {selected.steps.length ? (
               <>
                 <Trace steps={selected.steps} />
-                <Button size="sm" className="mt-6" icon={ScrollText} onClick={() => navigate(`/audit?ref=${selected.id}`)}>Open in audit log</Button>
+                <div className="mt-6 flex flex-wrap gap-2">
+                  <Button size="sm" icon={ScrollText} onClick={() => navigate(`/audit?ref=${selected.id}`)}>Open in audit log</Button>
+                  <HubSpotButton id={selected.id} />
+                </div>
               </>
             ) : (
-              <p className="text-sm text-slate-500">Added by hand, so Aria hasn't worked on it yet.</p>
+              <>
+                <p className="text-sm text-slate-500">Aria hasn't recorded any steps on this lead yet.</p>
+                <div className="mt-4"><HubSpotButton id={selected.id} /></div>
+              </>
             )}
           </div>
         )}
@@ -275,6 +287,12 @@ export default function Leads() {
     </div>
   )
 }
+
+const HubSpotButton = ({ id }: { id: string }) => (
+  <a href={`${HUBSPOT_URL}/deals/${id}`} target="_blank" rel="noreferrer" className="inline-flex h-7 items-center gap-1.5 rounded-full border border-ink/10 bg-ink/[0.03] px-3 text-xs font-medium text-slate-800 transition-colors hover:border-ink/15 hover:bg-ink/[0.07] hover:text-slate-950">
+    <ExternalLink className="size-3.5" aria-hidden />Open deal in HubSpot
+  </a>
+)
 
 const Stat = ({ label, value }: { label: string; value: string | number }) => (
   <div className="rounded-lg border border-slate-200 px-3 py-2.5">

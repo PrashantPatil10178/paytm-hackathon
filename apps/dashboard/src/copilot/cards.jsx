@@ -2,18 +2,19 @@
 // filter; every card reads the live record from the store, so what it shows is always real and
 // stays in sync (approve a request here and the Approvals page updates too).
 // Props arrive partially while the tool call streams in, so every prop is optional.
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Frame, Loading, NotFound, OpenLink } from './frame'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { Check, Flame, Hand, X } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
-import { api } from '../api'
+import { OWNER } from '@ph/shared'
 import { useApp } from '../store'
 import { useTheme } from '../theme'
 import { Button, ChannelTag, LevelBadge, SolvedBy, StatusBadge } from '../components/ui'
 import ToolChain from '../components/ToolChain'
-import { CHANNELS, CHART, LEVELS, STATUSES } from '../meta'
+import { CHART, LEVELS, STATUSES, channelMeta } from '../meta'
+import { stageLabel } from '../nav'
 import { cn, num, rupees, secondsLabel } from '../lib'
 
 const MONO = '"Geist Mono Variable", ui-monospace, monospace'
@@ -58,7 +59,7 @@ export function TicketListCard({ status, level, channel, solvedBy, limit }) {
     [tickets, status, level, channel, solvedBy, limit],
   )
   if (loading) return <Loading title="Tickets" />
-  const filters = [STATUSES[status]?.label, LEVELS[level]?.label, CHANNELS[channel]?.label, solvedBy && `by ${solvedBy === 'ai' ? 'AI' : 'human'}`].filter(Boolean)
+  const filters = [STATUSES[status]?.label, LEVELS[level]?.label, channel && channelMeta(channel).label, solvedBy && `by ${solvedBy === 'ai' ? 'AI' : 'human'}`].filter(Boolean)
   return (
     <Frame title={filters.length ? filters.join(' · ') : 'All tickets'} meta={rows.length} action={<OpenLink to="/tickets">Tickets</OpenLink>}>
       {rows.length === 0 ? (
@@ -105,7 +106,7 @@ export function ApprovalsCard({ approvalId }) {
         {decided.map((a) => (
           <li key={a.id} className="flex items-center gap-2 px-3 py-2.5 text-xs text-slate-600">
             {a.decision === 'approved' ? <Check className="size-3.5 text-brand-600" /> : <X className="size-3.5 text-red-600" />}
-            <span className="ref">{a.id}</span> {a.decision} by {a.by}
+            <span className="ref">{a.id}</span> {a.decision} by {!a.by || a.by === 'You' ? OWNER.name : a.by}
           </li>
         ))}
       </ul>
@@ -128,7 +129,7 @@ function ApprovalRow({ a }) {
       </p>
       <div className="flex gap-2 pt-0.5">
         <Button size="sm" variant="primary" icon={Check} onClick={() => decideApproval(a.id, 'approved')}>Approve</Button>
-        <Button size="sm" variant="ghost" icon={X} onClick={() => decideApproval(a.id, 'rejected', 'Rejected from Ask Aria')}>Reject</Button>
+        <Button size="sm" variant="ghost" icon={X} onClick={() => decideApproval(a.id, 'rejected', `Rejected by ${OWNER.first} from Ask Aria`)}>Reject</Button>
       </div>
     </li>
   )
@@ -139,17 +140,18 @@ function ApprovalRow({ a }) {
 export function MetricsCard() {
   const { resolved } = useTheme()
   const c = CHART[resolved]
-  const [stats, setStats] = useState(null)
-  useEffect(() => { api.getStats().then(setStats) }, [])
+  const { stats } = useApp()
   if (!stats) return <Loading title="Last 14 days" />
   const ai = stats.daily.ai.reduce((s, v) => s + v, 0)
   const human = stats.daily.human.reduce((s, v) => s + v, 0)
-  const days = stats.daily.ai.map((v, i) => ({ day: 14 - i, ai: v, human: stats.daily.human[i] }))
+  const n = stats.daily.ai.length
+  const days = stats.daily.ai.map((v, i) => ({ day: n - i, ai: v, human: stats.daily.human[i] ?? 0 }))
+  const d = (v) => (Number.isFinite(v) ? v : 0)
   const kpis = [
-    ['Queries', num(ai + human), stats.deltas.queries, '%'],
-    ['Solved by AI', `${((ai / (ai + human)) * 100).toFixed(1)}%`, stats.deltas.aiRate, ' pt'],
-    ['Escalated', num(stats.escalated.value), stats.deltas.escalated, '%', true],
-    ['Avg. solve', secondsLabel(stats.solveTime.seconds), stats.deltas.solveTime, '%', true],
+    ['Queries', num(ai + human), d(stats.deltas.queries), '%'],
+    ['Solved by AI', ai + human ? `${((ai / (ai + human)) * 100).toFixed(1)}%` : '—', d(stats.deltas.aiRate), ' pt'],
+    ['Escalated', num(stats.escalated.value), d(stats.deltas.escalated), '%', true],
+    ['Avg. solve', stats.solveTime.seconds > 0 ? secondsLabel(stats.solveTime.seconds) : '—', d(stats.deltas.solveTime), '%', true],
   ]
   return (
     <Frame title="Last 14 days" meta={`${num(ai + human)} queries`} action={<OpenLink to="/">Overview</OpenLink>}>
@@ -159,8 +161,8 @@ export function MetricsCard() {
             <dt className="text-[11px] text-slate-500">{label}</dt>
             <dd className="mt-0.5 flex items-baseline justify-between gap-2">
               <span className="ref text-[15px] font-medium text-slate-950">{value}</span>
-              <span className={cn('ref text-[11px]', (down ? delta < 0 : delta > 0) ? 'text-brand-600' : 'text-red-600')}>
-                {delta > 0 ? '+' : '−'}{Math.abs(delta)}{unit}
+              <span className={cn('ref text-[11px]', delta === 0 ? 'text-slate-500' : (down ? delta < 0 : delta > 0) ? 'text-brand-600' : 'text-red-600')}>
+                {delta < 0 ? '−' : '+'}{Math.abs(delta)}{unit}
               </span>
             </dd>
           </div>
@@ -196,18 +198,18 @@ export function LeadCard({ leadId }) {
   const l = leads.find((x) => x.id.toLowerCase() === leadId.trim().toLowerCase())
   if (!l) return <NotFound title="Lead">No lead {leadId} in this workspace.</NotFound>
   return (
-    <Frame title={l.company} meta={l.id} action={<OpenLink to={`/leads?id=${l.id}`}>Lead</OpenLink>}>
+    <Frame title={l.company || l.name || 'Lead'} meta={l.id} action={<OpenLink to={`/leads?id=${l.id}`}>Lead</OpenLink>}>
       <div className="space-y-3 p-3">
-        <p className="text-xs leading-relaxed text-slate-700">{l.name} · {l.need}</p>
+        <p className="text-xs leading-relaxed text-slate-700">{[l.name, l.need].filter(Boolean).join(' · ')}</p>
         <dl className="grid grid-cols-3 gap-2 text-xs">
           <div><dt className="text-slate-500">Value</dt><dd className="ref text-slate-950">{rupees(l.value)}</dd></div>
-          <div><dt className="text-slate-500">Stage</dt><dd className="text-slate-950">{l.stage}</dd></div>
+          <div><dt className="text-slate-500">Stage</dt><dd className="text-slate-950">{stageLabel(l.stage)}</dd></div>
           <div>
             <dt className="text-slate-500">Score</dt>
             <dd className={cn('ref inline-flex items-center gap-1', l.hot ? 'text-amber-700' : 'text-slate-950')}>{l.hot && <Flame className="size-3" aria-hidden />}{l.score}</dd>
           </div>
         </dl>
-        <ToolChain steps={l.steps} labels />
+        {l.steps.length > 0 && <ToolChain steps={l.steps} labels />}
       </div>
     </Frame>
   )

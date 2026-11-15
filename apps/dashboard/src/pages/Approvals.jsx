@@ -1,10 +1,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, X, PartyPopper, Clock, ShieldAlert, Wallet, Handshake } from 'lucide-react'
+import { Check, X, PartyPopper, Clock, ShieldAlert, Wallet, Handshake, History } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
+import { OWNER } from '@ph/shared'
 import { useApp } from '../store'
 import { Card, PageHeader, Tabs, Button, Badge, Modal, EmptyState } from '../components/ui'
 import { ago, cn, rupees } from '../lib'
+
+/** 0–1, clamped; a missing confidence reads as 0. */
+const conf = (a) => (Number.isFinite(a.confidence) ? Math.min(1, Math.max(0, a.confidence)) : 0)
 
 const TONE = {
   amber: { badge: 'bg-amber-50 text-amber-800 ring-amber-200', icon: Wallet },
@@ -31,7 +35,7 @@ export default function Approvals() {
     <div>
       <PageHeader
         title="Approvals"
-        description="The agent pauses here when an action crosses a guardrail. You decide, and it carries on."
+        description={`Aria pauses here when an action crosses a guardrail. ${OWNER.first}, you decide, and it carries on.`}
       />
       <Tabs
         className="mb-5"
@@ -42,11 +46,11 @@ export default function Approvals() {
 
       {tab === 'pending' && (
         approvals.pending.length === 0 ? (
-          <Card><EmptyState icon={PartyPopper} title="All caught up" text="No actions are waiting for you. The agent will ping you when something needs a human." /></Card>
+          <Card><EmptyState icon={PartyPopper} title="All caught up" text="No actions are waiting for you. When Aria wants to do something above its limits, such as a refund over the auto-refund limit, it waits here for your decision." /></Card>
         ) : (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             {approvals.pending.map((a) => {
-              const tone = TONE[a.tone]
+              const tone = TONE[a.tone] ?? TONE.amber
               return (
                 <Card
                   key={a.id}
@@ -61,17 +65,17 @@ export default function Approvals() {
                     </div>
                     <div className="mt-3 flex items-baseline justify-between gap-3">
                       <h3 className="text-[17px] font-semibold tracking-[-0.01em] text-slate-900">{a.customer}</h3>
-                      <span className="text-xl font-semibold tracking-[-0.02em] text-slate-900 tabular">{rupees(a.amount)}</span>
+                      <span className="ref text-xl font-semibold tracking-[-0.02em] text-slate-900">{rupees(a.amount)}</span>
                     </div>
                     <p className="mt-1.5 text-sm text-slate-600">{a.summary}</p>
 
-                    <div className="mt-4 rounded-lg border border-brand-100 bg-brand-50/50 p-3">
+                    {a.suggestion && <div className="mt-4 rounded-lg border border-brand-100 bg-brand-50/50 p-3">
                       <p className="flex items-center gap-1.5 text-xs font-medium text-brand-700"><ResolveAIGlyph className="size-3.5" />Suggested action</p>
                       <p className="mt-1 text-sm text-slate-800">{a.suggestion}</p>
-                    </div>
+                    </div>}
 
                     <ul className="mt-3 space-y-1">
-                      {a.evidence.map((e) => (
+                      {(a.evidence ?? []).map((e) => (
                         <li key={e} className="flex items-start gap-2 text-xs text-slate-500"><span className="mt-1.5 size-1 shrink-0 rounded-full bg-slate-300" />{e}</li>
                       ))}
                     </ul>
@@ -82,9 +86,9 @@ export default function Approvals() {
                       <p className="text-[11px] text-slate-500">AI confidence</p>
                       <div className="mt-1 flex items-center gap-2">
                         <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200">
-                          <div className="h-full rounded-full bg-brand-500" style={{ width: `${a.confidence * 100}%` }} />
+                          <div className="h-full rounded-full bg-brand-500" style={{ width: `${conf(a) * 100}%` }} />
                         </div>
-                        <span className="text-xs font-medium text-slate-700 tabular">{Math.round(a.confidence * 100)}%</span>
+                        <span className="ref text-xs font-medium text-slate-700">{Math.round(conf(a) * 100)}%</span>
                       </div>
                     </div>
                     <Button variant="danger" size="sm" icon={X} onClick={() => { setRejecting(a); setNote('') }}>Reject</Button>
@@ -99,6 +103,7 @@ export default function Approvals() {
 
       {tab === 'history' && (
         <Card>
+          {approvals.history.length === 0 && <EmptyState icon={History} title="No decisions yet" text="Every approve or reject, with who decided and their note, is kept here." />}
           <ul className="divide-y divide-slate-100">
             {approvals.history.map((h) => (
               <li key={h.id + h.decidedAt} className="flex flex-wrap items-center gap-3 px-5 py-3.5 text-sm">
@@ -108,10 +113,10 @@ export default function Approvals() {
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-slate-900">{h.customer} <span className="font-normal text-slate-500">· <span className="ref">{h.ref}</span> · {h.reason}</span></p>
                   <p className="text-xs text-slate-500">
-                    {h.decision === 'approved' ? 'Approved' : 'Rejected'} by {h.by} · {ago(h.decidedAt)}{h.note ? ` · "${h.note}"` : ''}
+                    {h.decision === 'approved' ? 'Approved' : 'Rejected'} by {!h.by || h.by === 'You' ? OWNER.name : h.by} · {ago(h.decidedAt)}{h.note ? ` · "${h.note}"` : ''}
                   </p>
                 </div>
-                <span className="font-medium text-slate-900 tabular">{rupees(h.amount)}</span>
+                <span className="ref font-medium text-slate-900">{rupees(h.amount)}</span>
               </li>
             ))}
           </ul>
@@ -122,7 +127,7 @@ export default function Approvals() {
         open={!!rejecting}
         onClose={() => setRejecting(null)}
         title={`Reject ${rejecting?.id}?`}
-        subtitle="The ticket goes to a human agent. Add a note so the agent learns from it."
+        subtitle="Aria won't carry out the action; a person takes it from here. Add a note for the record."
         footer={<>
           <Button onClick={() => setRejecting(null)}>Cancel</Button>
           <Button variant="destructive" onClick={() => { decide(rejecting.id, 'rejected', note.trim()); setRejecting(null) }}>Reject action</Button>

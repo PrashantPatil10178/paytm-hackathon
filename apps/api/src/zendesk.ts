@@ -11,6 +11,7 @@ import {
   type UpdateTicketBody,
   type ZdComment,
   type ZdUser,
+  SUPPORT_AGENTS,
 } from "@ph/shared";
 import { eq, schema as s, sql, toComment, toTicket, toTicketSummary, toZdUser, type Tx } from "@ph/db";
 import { db } from "./db.ts";
@@ -208,6 +209,6 @@ export const zendeskRoutes = {
     }),
   },
   "/zendesk/agents": {
-    GET: handle(() => ok({ agents: [BOT, "Priya – Support", "Karan – Support"] })),
+    GET: handle(() => ok({ agents: [BOT, ...SUPPORT_AGENTS] })),
   },
 };

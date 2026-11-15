@@ -10,13 +10,14 @@ import { PageHeader, Tabs, Select, LevelBadge, StatusBadge, SolvedBy, ChannelTag
 import DataTable, { type Change, type Column } from '../components/DataTable'
 import Trace from '../components/Trace'
 import ToolChain from '../components/ToolChain'
-import { api } from '../api'
-import { CHANNELS, LEVELS, STATUSES, STATUS_ORDER } from '../meta'
-import { ago, clock, cn, rupees } from '../lib'
+import { CHANNELS, LEVELS, STATUSES, STATUS_ORDER, channelMeta } from '../meta'
+import { ago, clock, cn, rupees, SHOP_URL, ZENDESK_URL, hostOf } from '../lib'
 import type { Level, Status, Ticket } from '../types'
 
-const DESK = { zendesk: 'Zendesk', freshdesk: 'Freshdesk' } as const
+const DESK = { zendesk: 'Zendesk' } as const
+/** The Zendesk look-alike, where the ticket lives. */
 const LEVEL_ORDER = Object.keys(LEVELS) as Level[]
+const zendeskLink = (t: Ticket) => `${ZENDESK_URL}/tickets/${t.helpdeskId.replace(/\D/g, '') || t.id}`
 
 const columns = (onOpen: (t: Ticket) => void): Column<Ticket>[] => [
   {
@@ -53,7 +54,7 @@ const columns = (onOpen: (t: Ticket) => void): Column<Ticket>[] => [
     render: (t) => (
       <>
         <span className="flex items-center gap-2 font-medium text-slate-800">{t.customer.name}<ChannelTag channel={t.channel} compact /></span>
-        <span className="block text-xs text-slate-500">{t.customer.city} · {CHANNELS[t.channel].label}</span>
+        <span className="block text-xs text-slate-500">{[t.customer.city, channelMeta(t.channel).label].filter(Boolean).join(' · ')}</span>
       </>
     ),
   },
@@ -68,21 +69,14 @@ const columns = (onOpen: (t: Ticket) => void): Column<Ticket>[] => [
         <ToolChain steps={t.steps} max={7} className="mt-1.5" live={t.status === 'open' || t.status === 'in_progress'} />
       </>
     ),
-    edit: { type: 'text', get: (t) => t.issue, set: (_, v) => (v.trim() ? { issue: v.trim() } : null) },
   },
   {
     key: 'level',
     header: 'Level',
     icon: Gauge,
     sort: (t) => LEVEL_ORDER.indexOf(t.level),
+    // Set by Aria's triage on intake; changing it isn't something the helpdesk sync supports.
     render: (t) => <LevelBadge level={t.level} />,
-    edit: {
-      type: 'select',
-      options: LEVEL_ORDER.map((l) => ({ value: l, label: LEVELS[l].label })),
-      renderOption: (l) => <LevelBadge level={l as Level} />,
-      get: (t) => t.level,
-      set: (_, v) => ({ level: v as Level }),
-    },
   },
   {
     key: 'status',
@@ -113,7 +107,7 @@ const columns = (onOpen: (t: Ticket) => void): Column<Ticket>[] => [
     sort: (t) => t.helpdeskId,
     render: (t) => (
       <>
-        <span className="ref inline-flex items-center gap-1 text-xs font-medium text-slate-700">{t.helpdeskId}<ExternalLink className="size-3" aria-hidden /></span>
+        <a href={zendeskLink(t)} target="_blank" rel="noreferrer" tabIndex={-1} className="ref inline-flex items-center gap-1 text-xs font-medium text-slate-700 hover:text-slate-950 hover:underline">{t.helpdeskId}<ExternalLink className="size-3" aria-hidden /></a>
         <span className="block text-xs text-slate-500">{DESK[t.helpdesk]}</span>
       </>
     ),
@@ -121,7 +115,7 @@ const columns = (onOpen: (t: Ticket) => void): Column<Ticket>[] => [
 ]
 
 export default function Tickets() {
-  const { tickets, setTickets, loading, toast } = useApp()
+  const { tickets, setTicketStatus, loading, toast } = useApp()
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
   const [level, setLevel] = useState('all')
@@ -151,16 +145,17 @@ export default function Tickets() {
   const open = useCallback((t: Ticket) => patch('id', t.id), [patch])
   const cols = useMemo(() => columns(open), [open])
 
-  // Status changes sync back to the helpdesk, including undo and redo.
-  const sync = (next: Ticket[], change: Change<Ticket>) => {
-    setTickets(next)
+  // Status changes PATCH the ticket (the API syncs Zendesk), including undo and redo, which send the
+  // reverse change. The rows themselves come from the next poll.
+  const sync = async (_next: Ticket[], change: Change<Ticket>) => {
     const moved = change.updates.filter((u) => u.after.status && u.after.status !== u.before.status)
-    for (const u of moved) api.updateTicketStatus(u.id, u.after.status!)
-    if (moved.length === 1) {
-      const t = next.find((x) => x.id === moved[0]!.id)
-      if (t) toast({ title: `${t.id} moved to ${STATUSES[t.status].label}`, desc: `Synced to ${DESK[t.helpdesk]} (${t.helpdeskId})` })
-    } else if (moved.length > 1) {
-      toast({ title: `${moved.length} tickets updated`, desc: 'Synced to Zendesk and Freshdesk' })
+    const results = await Promise.all(moved.map((u) => setTicketStatus(u.id, u.after.status!)))
+    const ok = moved.filter((_, i) => results[i])
+    if (ok.length === 1) {
+      const t = tickets.find((x) => x.id === ok[0]!.id)
+      toast({ title: `${ok[0]!.id} moved to ${STATUSES[ok[0]!.after.status!].label}`, desc: t ? `Synced to Zendesk (${t.helpdeskId})` : 'Synced to Zendesk' })
+    } else if (ok.length > 1) {
+      toast({ title: `${ok.length} tickets updated`, desc: 'Synced to Zendesk' })
     }
   }
 
@@ -168,7 +163,7 @@ export default function Tickets() {
 
   return (
     <div>
-      <PageHeader title="Tickets" description="Every ticket the AI created or touched, synced with your helpdesk. Edit a cell to change it there too." />
+      <PageHeader title="Tickets" description="Every ticket Aria opened or worked on, live from Zendesk. Change a status here and it changes there too." />
 
       <DataTable
         title="Helpdesk"
@@ -205,7 +200,9 @@ export default function Tickets() {
             </div>
           </>
         )}
-        empty={<EmptyState icon={TicketIcon} title="No tickets match" text="Try clearing a filter or searching by ticket ID." />}
+        empty={tickets.length === 0
+          ? <EmptyState icon={TicketIcon} title="No tickets yet" text={<>Start a chat in ShopKart (<a className="ref text-slate-700 underline-offset-2 hover:underline" href={SHOP_URL} target="_blank" rel="noreferrer">{hostOf(SHOP_URL)}</a>) and Aria's work shows up here.</>} />
+          : <EmptyState icon={TicketIcon} title="No tickets match" text="Try clearing a filter or searching by ticket ID." />}
       />
 
       <Drawer
@@ -238,14 +235,14 @@ function TicketDetail({ t, onAudit }: { t: Ticket; onAudit: () => void }) {
         {solved ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-brand-600" /> : <Clock className="mt-0.5 size-5 shrink-0 text-amber-600" />}
         <div>
           <p className="text-sm font-semibold text-slate-900">{solved ? `Resolved by ${t.solvedBy === 'ai' ? 'the AI' : 'a human'}` : 'In flight'}</p>
-          <p className="mt-0.5 text-sm text-slate-700">{t.result}</p>
+          {t.result && <p className="mt-0.5 text-sm text-slate-700">{t.result}</p>}
         </div>
       </div>
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
         <Field label="Customer" value={t.customer.name} />
-        <Field label="Contact" value={t.customer.contact} />
-        <Field label="City" value={t.customer.city} />
+        <Field label="Contact" value={t.customer.contact || '—'} />
+        <Field label="City" value={t.customer.city || '—'} />
         <Field label="Amount" value={rupees(t.amount)} />
         <Field label="Solved by" value={<SolvedBy by={solved ? t.solvedBy : null} />} />
         <Field label="Helpdesk" value={<>{DESK[t.helpdesk]} · <span className="ref">{t.helpdeskId}</span></>} />
@@ -254,13 +251,14 @@ function TicketDetail({ t, onAudit }: { t: Ticket; onAudit: () => void }) {
       <section>
         <SectionTitle>Conversation</SectionTitle>
         <div className="space-y-3 rounded-xl bg-slate-50 p-4">
+          {t.conversation.length === 0 && <p className="text-sm text-slate-500">No messages on this ticket yet.</p>}
           {t.conversation.map((m, i) => {
             const mine = m.from !== 'customer'
             return (
               <div key={i} className={cn('flex gap-2', mine && 'flex-row-reverse')}>
                 <span className={cn('grid size-7 shrink-0 place-items-center rounded-full text-[11px] font-semibold',
                   m.from === 'customer' ? 'bg-slate-200 text-slate-600' : m.from === 'ai' ? 'bg-brand-500 text-canvas' : 'bg-human text-canvas')}>
-                  {m.from === 'customer' ? t.customer.name[0] : m.from === 'ai' ? <ResolveAIGlyph className="size-4" /> : <UserRound className="size-3.5" />}
+                  {m.from === 'customer' ? (t.customer.name[0] ?? '?') : m.from === 'ai' ? <ResolveAIGlyph className="size-4" /> : <UserRound className="size-3.5" />}
                 </span>
                 <div className={cn('max-w-[78%] rounded-2xl px-3.5 py-2 text-sm', mine ? 'rounded-tr-sm bg-surface shadow-sm ring-1 ring-slate-200' : 'rounded-tl-sm bg-ink/[0.03] ring-1 ring-slate-200/70')}>
                   <p className="text-slate-800">{m.text}</p>
@@ -276,12 +274,18 @@ function TicketDetail({ t, onAudit }: { t: Ticket; onAudit: () => void }) {
         <SectionTitle action={<button onClick={onAudit} className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"><ScrollText className="size-3.5" aria-hidden />Open in audit log</button>}>
           What the agent did
         </SectionTitle>
-        <ToolChain steps={t.steps} size="md" className="mb-5 flex-wrap gap-y-2" />
-        <Trace steps={t.steps} />
+        {t.steps.length ? (
+          <>
+            <ToolChain steps={t.steps} size="md" className="mb-5 flex-wrap gap-y-2" />
+            <Trace steps={t.steps} />
+          </>
+        ) : <p className="text-sm text-slate-500">No agent steps recorded on this ticket.</p>}
       </section>
 
       <div className="flex gap-2 border-t border-slate-100 pt-4">
-        <Button variant="primary" icon={ExternalLink}>Open in {DESK[t.helpdesk]}</Button>
+        <a href={zendeskLink(t)} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-1.5 rounded-full bg-slate-950 px-3.5 text-[13px] font-medium text-canvas transition-colors hover:bg-slate-800">
+          <ExternalLink className="size-4" aria-hidden />Open in {DESK[t.helpdesk]}
+        </a>
         <Button onClick={onAudit} icon={ScrollText}>Full audit trail</Button>
       </div>
     </div>

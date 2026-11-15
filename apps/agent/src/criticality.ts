@@ -5,12 +5,16 @@
  *
  *   critical → a person (the AI only writes the brief)
  *   high     → the high agent plans it, a person approves before anything happens
- *   medium   → the medium agent acts within limits (refunds up to AUTO_REFUND_LIMIT)
+ *   medium   → the medium agent acts within limits (refunds up to the auto-refund limit)
  *   low      → the low agent answers and closes
  */
 import type { AgentLevel, HandledBy, Order } from "@ph/shared";
 
-/** Refunds up to this amount need no person. Same limit the refund tool enforces. */
+/**
+ * Refunds up to the auto-refund limit need no person; the refund tool enforces the same limit. The limit is a
+ * Control Room setting (`refundLimit`, read through the platform client); this is the default and the
+ * fallback when the setting can't be read.
+ */
 export const AUTO_REFUND_LIMIT = 1000;
 /** Below this confidence the main agent's reading isn't trusted: one level up. */
 export const MIN_CONFIDENCE = 0.6;
@@ -49,6 +53,8 @@ export interface CriticalityInput {
   order?: Pick<Order, "amount" | "status" | "payment_status"> | null;
   /** This customer's other tickets opened in the last 30 days */
   recentTickets: number;
+  /** ₹ the medium agent may refund alone (Control Room setting). Default AUTO_REFUND_LIMIT. */
+  refundLimit?: number;
 }
 
 export interface Criticality {
@@ -67,6 +73,7 @@ const rupee = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
 export function assessCriticality(i: CriticalityInput): Criticality {
   const reasons: string[] = [];
+  const limit = i.refundLimit ?? AUTO_REFUND_LIMIT;
   let level: AgentLevel;
 
   // 1. Hard rules: risk and money.
@@ -76,9 +83,9 @@ export function assessCriticality(i: CriticalityInput): Criticality {
   } else if (i.order?.payment_status === "failed_debited" || i.intent === "payment_failed") {
     level = "critical";
     reasons.push(i.order ? `money debited (${rupee(i.order.amount)}) but the payment failed` : "says money was debited but the payment failed");
-  } else if ((i.intent === "refund" || i.intent === "damaged_item") && i.order && i.order.amount > AUTO_REFUND_LIMIT) {
+  } else if ((i.intent === "refund" || i.intent === "damaged_item") && i.order && i.order.amount > limit) {
     level = "high";
-    reasons.push(`refund of ${rupee(i.order.amount)} is above the ${rupee(AUTO_REFUND_LIMIT)} auto-refund limit`);
+    reasons.push(`refund of ${rupee(i.order.amount)} is above the ${rupee(limit)} auto-refund limit`);
   } else {
     // 2. The kind of request.
     switch (i.intent) {

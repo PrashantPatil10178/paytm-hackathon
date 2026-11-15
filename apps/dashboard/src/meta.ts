@@ -1,4 +1,4 @@
-import { MessageCircle, Mail, Globe, Smartphone, CheckCircle2, ShieldX, ArrowUpRight, ShieldCheck, CreditCard, LifeBuoy, Users, Truck, Inbox, Hand } from 'lucide-react'
+import { MessageCircle, MessagesSquare, Mail, Globe, Smartphone, Phone, ClipboardList, Webhook, CheckCircle2, ShieldX, ArrowUpRight, ShieldCheck, CreditCard, LifeBuoy, Users, Truck, Inbox, Hand, ShoppingBag, Megaphone } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import type { ComponentType } from 'react'
 import type { ChannelId, Level, Status, StepResult } from './types'
@@ -12,6 +12,10 @@ const AI_TILE = 'bg-brand-50 text-brand-600 ring-1 ring-inset ring-brand-200'
 const GATE_TILE = 'bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-200'
 
 export const CHANNELS: Record<ChannelId, { label: string; icon: Icon; tile: string }> = {
+  chat: { label: 'ShopKart chat', icon: MessagesSquare, tile: TILE },
+  voice: { label: 'Voice call', icon: Phone, tile: TILE },
+  form: { label: 'Enquiry form', icon: ClipboardList, tile: TILE },
+  api: { label: 'API', icon: Webhook, tile: TILE },
   whatsapp: { label: 'WhatsApp', icon: MessageCircle, tile: TILE },
   email: { label: 'Email', icon: Mail, tile: TILE },
   webchat: { label: 'Web chat', icon: Globe, tile: TILE },
@@ -53,7 +57,15 @@ export const TOOLS: Record<string, { icon: Icon; tile: string }> = {
   WhatsApp: { icon: MessageCircle, tile: TILE },
   'Web chat': { icon: Globe, tile: TILE },
   'App chat': { icon: Smartphone, tile: TILE },
+  ShopKart: { icon: ShoppingBag, tile: TILE },
+  Shop: { icon: ShoppingBag, tile: TILE },
+  CRM: { icon: Users, tile: TILE },
+  Sarvam: { icon: Phone, tile: TILE },
+  Voice: { icon: Phone, tile: TILE },
+  Campaigns: { icon: Megaphone, tile: TILE },
 }
+/** A channel's look; unknown ids (a newer API) fall back to a neutral inbox. */
+export const channelMeta = (id: string) => CHANNELS[id as ChannelId] ?? { label: id, icon: Inbox, tile: TILE }
 export const toolMeta = (t: string) => TOOLS[t] || { icon: Inbox, tile: TILE }
 
 // Chart colours per theme. They mirror the tokens in index.css: SVG attributes can't read CSS vars.

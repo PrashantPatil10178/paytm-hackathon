@@ -50,8 +50,13 @@ instructions), not as hidden background jobs.
 - **`packages/shared/src/types.ts` is the contract.** The agent imports it too; its zod request schemas are in
   `apps/agent/src/service.ts`, so change them together.
 - Data lives in Postgres (`DATABASE_URL` in the repo-root `.env`). See "Database" below.
-- Seed data: customers 101–105 (shared between ShopKart and Zendesk), tickets #2031–#2040 (new ones from #2041),
-  8 contacts and 8 deals, 4 campaigns with 10 responses (incl. spam, a test entry and a duplicate of contact 1). Demo stories are in `README.md` (refund handled by AI, payment escalation, hot sales lead).
+- Seed data is only the shop catalogue: customers 101–105 (also the Zendesk users), products, orders, and the 4 campaigns
+  (no responses). No tickets, contacts, deals, responses or reports are seeded: every record on every screen comes from a
+  real chat, enquiry, call or agent run. New tickets start at #2041, deals and contacts at 1. Demo stories are in
+  `README.md` (refund handled by AI, payment escalation, hot sales lead).
+- The Control Room reads everything from `/control-room/*` (`apps/api/src/controlroom.ts`, shapes in
+  `packages/shared/src/controlroom.ts`, imported as a namespace: `import type * as CR from "@ph/shared/controlroom"`).
+  Each GET is polled, so each handler is a couple of batched query rounds (`inArray`, `Promise.all`), never per row.
 
 ## Database (`packages/db`)
 
@@ -61,7 +66,10 @@ instructions), not as hidden background jobs.
   applies pending migrations on startup. Never edit an applied migration.
 - Rows map to the `@ph/shared` types in `src/map.ts` (timestamps are `Date` in the DB, ISO strings in the API).
   Import `eq`, `sql`, etc. from `@ph/db`, not `drizzle-orm`, so there's one copy of drizzle.
-- `reset` truncates the demo tables (`DEMO_TABLES`) and re-seeds with ids continuing from the old numbers (#2041…).
+- `reset` truncates the demo tables (`DEMO_TABLES`, incl. `rai_calls`) and re-seeds with ticket ids continuing at #2041.
+  Kept across resets: channels, connectors, `rai_settings`, `board_tasks`, `rai_cases`. `ensureResolveAIConfig` inserts
+  missing config rows on API start (channels `shopkart`, `sarvam_voice`, `enquiry_form`; connectors incl. `sarvam`; the
+  default settings), never overwriting what people changed.
   It also wipes the agent's tables (`voltagent_*`, `agent_chat_sessions`, found by name via `agentMemoryTables`) so a
   fresh demo has no remembered chats. The agent still checks recycled ticket numbers by `created_at`.
 - The DB is remote (~100 ms a round trip): run independent queries with `Promise.all`, avoid per-row queries.
@@ -79,9 +87,12 @@ instructions), not as hidden background jobs.
   agent acts, or a person gets a brief → the reply goes back and onto the ticket → finished cases are saved to
   memory (`rai_cases`). High-level refunds wait in `rai_approvals`; the demo API calls the agent's
   `POST /approvals/:id/decided` after a person decides, and the agent carries it out and tells the customer.
-- Levels: low = information (answers, closes); medium = actions within limits (refunds ≤ ₹1,000); high = refunds
-  above the limit (approval first); critical = failed payments, fraud/legal → a person. Signals (angry + repeat
+- Levels: low = information (answers, closes); medium = actions within limits (refunds up to the auto-refund
+  limit); high = refunds above the limit (approval first); critical = failed payments, fraud/legal → a person. Signals (angry + repeat
   contact, asks for a person) and confidence < 0.6 push a level up. Money and risk rules stay in code, never prompts.
+- The auto-refund limit is the Control Room setting `refundLimit` (default ₹1,000). The agent reads it with
+  `platform.refundLimit()` (`GET /control-room/settings`, cached 10 s, ₹1,000 if unreachable) for the level rules, the
+  level agent's prompt and `start_refund`; the API's stand-in reads it from the DB. The rule itself stays in code.
 - Tools read the ticket/customer/deal/run from the VoltAgent operation context (`src/tools/context.ts`), never from model
   arguments; each tool records a step on the run. Each level agent gets only its level's tools.
 - The agents reach tools through the **connectors** (base URL + token per tool, `rai_connectors`, Control Room →
@@ -132,18 +143,39 @@ shows the setting. Memory holds customer messages (names, emails, orders): don't
 To change memory: keep thread keys in `service.ts` built from `personKey` / `ANALYSIS_THREAD`, keep the note small
 (it is in every analysis prompt), and test with `createAgentMemory(undefined)` (in process) as `test/service.test.ts` does.
 
+## Voice calls (Sarvam)
+
+- The Control Room places outbound sales calls with the Sarvam voice agent "Aria · Sales Caller"
+  (`POST /resolveai/calls`); `apps/api/src/sarvam.ts` is the REST client, `apps/api/src/calls.ts` the routes, table `rai_calls`.
+  Channel `sarvam_voice`, connector `sarvam` (its token = the Sarvam API key, else `SARVAM_API_KEY`; never logged or returned).
+  Needs `SARVAM_ORG_ID` + `SARVAM_WORKSPACE_ID`; app, connection and caller number have defaults (`.env.example`).
+- Guards in code: Indian mobiles only (stored E.164), a number with a `do_not_call` outcome is never called again,
+  calls only 09:00–21:00 IST unless `force: true`, 503 when Sarvam isn't set up or the channel/connector is off.
+- Results: Sarvam's webhook `POST /sarvam/webhook/<call id>.<HMAC>` (only when `PUBLIC_API_URL` is set) and polling
+  Sarvam's analytics every 30 s for calls ringing > 60 s (gives up after 30 min: failed "No result from Sarvam").
+  Both go through `applyResult`, serialised per call, so repeats never create a second deal. The token secret is
+  `SARVAM_WEBHOOK_TOKEN`, else derived from `DATABASE_URL`, so tokens survive restarts without storing anything.
+- CRM: meeting_booked / send_details / callback → a call from a deal updates that deal (score, next step, amount if
+  it had none, meeting_booked moves New lead/Qualified on); a cold call reuses a contact by email or phone or creates one
+  (source "Campaign", the contact type has no voice source) plus a deal "<company> – <need>". Every call gets one
+  `call` activity per deal ending `(call #id)`, updated in place. Other outcomes and no-answer only log on a linked deal.
+- Never place real calls from tests: insert a `rai_calls` row and POST a webhook to it (token as in `calls.ts`).
+
 ## Dashboard (`apps/dashboard`)
 
-- Data comes **only** through `src/api.ts`. Most pages read mock JSON in `src/data/` (timestamps shifted so the newest
-  event is always recent); swap function bodies there, keep the return shapes. **Analytics** (`/analytics`, Home area),
-  **Sales analytics** (`/sales/analytics`) and **Campaigns** (`/campaigns`) are live: `live.use*()` in `api.ts` polls the
-  demo API through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Shapes come from `@ph/shared`.
+- Data comes **only** through `src/api.ts`, and all of it is live Postgres data (there is no mock JSON). Tickets, leads,
+  approvals, stats, channels, connectors, settings and the team board come from the demo API's `/control-room/*`
+  (`apps/api/src/controlroom.ts`, shapes in `@ph/shared/controlroom`); Analytics, Campaigns and Calls use `live.use*()`.
+  Everything polls through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Every page must
+  render an empty DB (fresh `bun run reset`) with an empty state that says what fills it.
+- The signed-in person is `OWNER` from `@ph/shared` (Kabir Malhotra, founder of ShopKart), in every app. Never invent
+  other staff names.
 - The Sales area holds every sales task: Sales analytics (its home: `AnalyticsView scope="sales"`, the sales charts and
-  the latest sales report), Leads (mock JSON) and Campaigns (live, runs the leads agent). A new sales page goes there.
+  the latest sales report), Leads (CRM deals, with "Call with Aria"), Calls (Sarvam voice calls) and Campaigns (runs the leads agent). A new sales page goes there.
 - Analytics charts: one y-axis per chart (a second measure goes in the tooltip), `ai`/`human` only for AI vs people,
   `bar` (neutral) for single series, `track` for the remainder of a part-of-whole bar; every chart has a Table view.
 - Shared state and the audit log are in `src/store.tsx`; labels/colours/icons per channel, level, status, tool in `src/meta.ts`.
-  Data shapes are in `src/types.ts` (keep them in step with `src/data/*.json`).
+  Data shapes are in `src/types.ts`, which re-exports `@ph/shared/controlroom` (the API contract).
 - TypeScript: new files are `.ts`/`.tsx`. The core (types, api, store, meta, lib, nav, theme, layout, sidebar, `ui`, `Trace`,
   `ToolChain`, Leads, Analytics, Campaigns) is typed; the older pages and `src/copilot/` are still `.jsx` (`allowJs`,
   unchecked). Moving a file to `.tsx` turns checking on for it. Restart Vite after renaming a file: it keeps resolving the old path.

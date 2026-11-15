@@ -1,5 +1,5 @@
 /** Rows → the API shapes in @ph/shared. The only real work is Date → ISO string. */
-import type { Activity, AgentRun, AnalysisReport, Campaign, CampaignResponse, AgentStep, Approval, Channel, Connector, ResolvedCase, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
+import type { Activity, AgentRun, AnalysisReport, Call, Campaign, CampaignResponse, AgentStep, Approval, Channel, Connector, ResolvedCase, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
 import type * as s from "./schema.ts";
 
 type Row<T extends { $inferSelect: unknown }> = T["$inferSelect"];
@@ -86,3 +86,10 @@ export function toCampaignResponse({ campaign_id: _, campaign, ...r }: ResponseR
 }
 
 export const toReport = (r: Row<typeof s.analysisReports>): AnalysisReport => ({ ...r, created_at: iso(r.created_at) });
+
+export const toCall = (r: Row<typeof s.calls>): Call => ({
+  ...r,
+  created_at: iso(r.created_at),
+  updated_at: iso(r.updated_at),
+  ended_at: r.ended_at ? iso(r.ended_at) : null,
+});

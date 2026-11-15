@@ -39,6 +39,8 @@ let db: {
   cases: Json[];
   responses: Json[];
   reports: Json[];
+  /** The Control Room settings (GET /control-room/settings): only refundLimit matters to the agent */
+  settings: Json;
 };
 
 const TOKEN = "rai_test_token";
@@ -75,6 +77,7 @@ beforeEach(() => {
       response(3, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, message: "Still interested in billing." }),
     ],
     reports: [],
+    settings: { agentName: "Aria", refundLimit: 1000 },
   };
 });
 
@@ -151,7 +154,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   }
   if (p === "/crm/slots") return json({ slots: [{ start: "2026-11-17T05:30:00.000Z", end: "2026-11-17T06:00:00.000Z" }] });
   if (method === "POST" && p === "/crm/meetings") {
-    const mt = { id: 1, title: "Intro call", attendees: ["Meera Shah", "Rahul – Sales"], ...body };
+    const mt = { id: 1, title: "Intro call", attendees: ["Meera Shah", "Kabir Malhotra"], ...body };
     db.meetings.push(mt);
     return json(mt, 201);
   }
@@ -216,6 +219,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     Object.assign(r, { status: "converted", deal_id: deal.id, note: body.note });
     return json({ response: r, contact: { id: 20 + db.deals.length }, deal, existing_contact: false }, 201);
   }
+  if (p === "/control-room/settings") return json(db.settings);
   if (p === "/analytics/metrics") return json(METRICS);
   if (p === "/analytics/reports" && method === "GET") return json({ reports: db.reports });
   if (p === "/analytics/reports" && method === "POST") {
@@ -383,16 +387,51 @@ test("medium: the refund tool still refuses above the limit, whatever the model 
     scripted([
       triage({ intent: "damaged_item", order_id: null }),
       { tool: "start_refund", args: { order_id: 1030, reason: "lamp broken" } },
-      { tool: "escalate_to_human", args: { assignee: "Priya – Support", priority: "high", note: "Lamp refund of ₹4,200 needs approval." } },
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "high", note: "Lamp refund of ₹4,200 needs approval." } },
       { text: "A teammate will look at your refund." },
     ]),
   );
   await chat(svc, "s-lim", "Something arrived broken");
 
   expect(db.orders[1]!.payment_status).toBe("paid");
-  expect(db.tickets[0]).toMatchObject({ assignee: "Priya – Support", escalated_by_ai: true, handled_by: "human" });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", escalated_by_ai: true, handled_by: "human" });
   expect(db.runs[0]).toMatchObject({ status: "escalated", handled_by: "human" });
   expect(db.steps.find((s) => s.step === "Refund")).toMatchObject({ result: "blocked" });
+});
+
+test("refund limit: a limit lowered in the Control Room sends a small refund to approval", async () => {
+  db.settings.refundLimit = 300;
+  const svc = service(
+    scripted([
+      triage({ intent: "damaged_item", order_id: 1023, summary: "Mugs arrived broken" }),
+      { tool: "request_approval", args: { order_id: 1023, reason: "mugs broken", summary: "Delivered mugs arrived broken; ₹500 paid.", suggestion: "Refund ₹500 to the original payment method" } },
+      { text: "Your refund is with a teammate for a quick approval (ticket #2041)." },
+    ]),
+  );
+  await chat(svc, "s-limit", "My mugs arrived broken");
+
+  expect(db.orders[0]!.payment_status).toBe("paid");
+  expect(db.tickets[0]).toMatchObject({ level: "high", handled_by: "high", status: "pending" });
+  expect(db.steps.find((s) => s.step === "Set level")!.detail).toContain("above the ₹300 auto-refund limit");
+  expect(db.approvals[0]).toMatchObject({ status: "pending", amount: 500, order_id: 1023 });
+});
+
+test("refund limit: the refund tool enforces the lowered limit too, whatever the model asks", async () => {
+  db.settings.refundLimit = 300;
+  const svc = service(
+    scripted([
+      // No order named at triage, so it goes to the medium agent, which then tries a ₹500 refund.
+      triage({ intent: "damaged_item", order_id: null }),
+      { tool: "start_refund", args: { order_id: 1023, reason: "mugs broken" } },
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "high", note: "Refund of ₹500 needs approval." } },
+      { text: "A teammate will look at your refund." },
+    ]),
+  );
+  await chat(svc, "s-limit-tool", "Something arrived broken");
+
+  expect(db.tickets[0]).toMatchObject({ level: "medium", assignee: "Kabir Malhotra" });
+  expect(db.orders[0]!.payment_status).toBe("paid");
+  expect(db.steps.find((s) => s.step === "Refund")).toMatchObject({ result: "blocked", detail: expect.stringContaining("₹300") });
 });
 
 test("tools can't touch another customer's order", async () => {
@@ -419,7 +458,7 @@ test("high: the high agent asks for approval; once approved the refund runs, the
   expect(db.cases).toHaveLength(0);
 
   // A person approves in the Control Room; the demo API records it and tells the agent.
-  Object.assign(db.approvals[0]!, { status: "approved", decided_by: "Riya" });
+  Object.assign(db.approvals[0]!, { status: "approved", decided_by: "Kabir Malhotra" });
   const res = await svc.approvalDecided(1);
 
   expect(res.status).toBe(200);
@@ -439,11 +478,11 @@ test("high: a rejected approval goes to a person and is remembered as rejected",
     ]),
   );
   await chat(svc, "s-rej", "I want my money back for the lamp");
-  Object.assign(db.approvals[0]!, { status: "rejected", decided_by: "Riya", note: "Outside the return window" });
+  Object.assign(db.approvals[0]!, { status: "rejected", decided_by: "Kabir Malhotra", note: "Outside the return window" });
   await svc.approvalDecided(1);
 
   expect(db.orders[1]!.payment_status).toBe("paid");
-  expect(db.tickets[0]).toMatchObject({ assignee: "Priya – Support", handled_by: "human" });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
   expect(db.cases[0]).toMatchObject({ outcome: "rejected" });
 });
 
@@ -452,7 +491,7 @@ test("critical: a failed payment goes straight to a person with a brief; no leve
   const res = await chat(svc, "s-crit", "₹15,000 debited but payment failed!");
 
   expect(res.body).toMatchObject({ reply: expect.stringContaining("payments team"), ticket_id: 2041 });
-  expect(db.tickets[0]).toMatchObject({ assignee: "Priya – Support", priority: "urgent", level: "critical", handled_by: "human" });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", priority: "urgent", level: "critical", handled_by: "human" });
   expect(db.comments.find((c) => !c.public && c.body.startsWith("Critical"))!.body).toContain("Order #1060");
   expect(db.runs[0]).toMatchObject({ status: "escalated", level: "critical" });
   expect(db.cases[0]).toMatchObject({ level: "critical", outcome: "escalated" });
@@ -545,7 +584,7 @@ test("a ticket a person already owns: the message is passed on, the AI doesn't a
   await chat(svc, "s-owned", "₹15,000 debited!");
   const res = await chat(svc, "s-owned", "Also refund my mugs");
 
-  expect(res.body).toMatchObject({ reply: expect.stringContaining("Priya") });
+  expect(res.body).toMatchObject({ reply: expect.stringContaining("Kabir") });
   expect(db.orders[0]!.payment_status).toBe("paid");
   expect(db.runs[1]).toMatchObject({ status: "escalated", handled_by: "human" });
 });
@@ -592,7 +631,7 @@ test("no data: a status check with no earlier request goes to the team, and the 
   const res = await chat(svc, "s-nodata", "Any update on my refund?");
 
   expect(res.body).toMatchObject({ reply: expect.stringContaining("passed it to our support team (ticket #2041)"), ticket_id: 2041 });
-  expect(db.tickets[0]).toMatchObject({ assignee: "Karan – Support", handled_by: "human", status: "open" });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human", status: "open" });
   expect(db.tickets[0]!.tags).toContain("needs-data");
   expect(db.comments.find((c) => !c.public)!.body).toContain("no earlier request");
   expect(db.runs[0]).toMatchObject({ status: "escalated", handled_by: "human" });
@@ -603,7 +642,7 @@ test("no data: an order question from a customer with no orders goes to the team
   const res = await chat(svc, "s-noorders", "Where is my order?", 105);
 
   expect(res.body).toMatchObject({ reply: expect.stringContaining("They're looking into it") });
-  expect(db.tickets[0]).toMatchObject({ assignee: "Karan – Support", handled_by: "human" });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
   expect(db.steps.map((s) => s.step)).toEqual(["Receive request", "Triage", "Hand to team"]);
 });
 
@@ -612,27 +651,27 @@ test("no data: an order number that isn't on the customer's account goes to the 
   const res = await chat(svc, "s-9999-code", "Where is my order 9999?");
 
   expect(res.body).toMatchObject({ reply: expect.stringContaining("passed it to our support team") });
-  expect(db.tickets[0]).toMatchObject({ assignee: "Karan – Support", handled_by: "human" });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
   expect(db.comments.find((c) => !c.public)!.body).toContain("order #9999, which isn't on their account");
 });
 
 test("no data: an unknown order number in the message is caught in code even if the model leaves it out", async () => {
   const svc = service(scripted([triage({ intent: "order_tracking", order_id: null })]));
   await chat(svc, "s-9999-regex", "Where is my order no. #9999?");
-  expect(db.tickets[0]).toMatchObject({ assignee: "Karan – Support", handled_by: "human" });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human" });
 });
 
 test("no data: when the level agent can't find what it needs, it hands over and says the team is on it", async () => {
   const svc = service(
     scripted([
       triage({ intent: "question", order_id: null, summary: "Asks if the headphones come in blue" }),
-      { tool: "escalate_to_human", args: { assignee: "Karan – Support", priority: "normal", note: "Customer asks whether the headphones come in blue; product colours aren't in my tools." } },
+      { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "normal", note: "Customer asks whether the headphones come in blue; product colours aren't in my tools." } },
       { text: "I don't have that detail to hand, so our team is looking into it and will get back to you here (ticket #2041)." },
     ]),
   );
   await chat(svc, "s-colour", "Do the headphones come in blue?");
 
-  expect(db.tickets[0]).toMatchObject({ assignee: "Karan – Support", handled_by: "human", escalated_by_ai: true });
+  expect(db.tickets[0]).toMatchObject({ assignee: "Kabir Malhotra", handled_by: "human", escalated_by_ai: true });
   expect(db.comments.at(-1)!.body).toContain("our team is looking into it");
   expect(db.runs[0]).toMatchObject({ status: "escalated" });
 });

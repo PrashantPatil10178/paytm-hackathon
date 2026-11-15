@@ -1,3 +1,4 @@
+import { OWNER } from "@ph/shared";
 /**
  * CopilotKit runtime for the Control Room's "Ask Aria" panel.
  *
@@ -19,9 +20,9 @@ const PROVIDER = MODEL.split(/[:/]/)[0]!.toLowerCase();
 const KEY_VAR = PROVIDER === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
 const HOST = PROVIDER === "openai" ? process.env.OPENAI_BASE_URL : process.env.ANTHROPIC_BASE_URL;
 
-const PROMPT = `You are Aria's control-room copilot inside ResolveAI, talking to the support lead at ShopKart.
+const PROMPT = `You are Aria's control-room copilot inside ResolveAI, talking to ${OWNER.name}, ${OWNER.role.toLowerCase()} and owner of ${OWNER.business} (call him ${OWNER.first}).
 Aria is the AI teammate that resolves support tickets and sales leads in the company's own tools
-(Zendesk, Freshdesk, HubSpot, Paytm, Shiprocket). The lead uses you to understand what Aria did and
+(Zendesk, HubSpot, ShopKart + Paytm, Sarvam voice calls). He uses you to understand what Aria did and
 what needs a human.
 
 How to answer

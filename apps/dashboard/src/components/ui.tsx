@@ -2,7 +2,7 @@ import { useEffect, type ComponentProps, type ReactNode } from 'react'
 import { X, CheckCircle2, Info, UserRound } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { cn } from '../lib'
-import { LEVELS, STATUSES, RESULTS, CHANNELS, toolMeta, type Icon as IconType } from '../meta'
+import { LEVELS, STATUSES, RESULTS, channelMeta, toolMeta, type Icon as IconType } from '../meta'
 import type { ChannelId, Level, Solver, Status, StepResult, Toast } from '../types'
 
 export function Card({ className, children, ...rest }: ComponentProps<'div'>) {
@@ -126,8 +126,8 @@ export function SolvedBy({ by }: { by?: Solver | null }) {
   )
 }
 
-export function ChannelTag({ channel, compact }: { channel: ChannelId; compact?: boolean }) {
-  const c = CHANNELS[channel]
+export function ChannelTag({ channel, compact }: { channel: ChannelId | string; compact?: boolean }) {
+  const c = channelMeta(channel)
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-slate-600" title={c.label}>
       <span className={cn('grid size-6 place-items-center rounded-md', c.tile)}><c.icon className="size-3.5" /></span>

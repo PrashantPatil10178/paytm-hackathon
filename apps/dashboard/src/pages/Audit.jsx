@@ -6,6 +6,21 @@ import { Card, PageHeader, Tabs, Select, ResultBadge, ToolTag, Drawer, Button, L
 import Trace from '../components/Trace'
 import { clockSec, cn, duration, rupees } from '../lib'
 
+const csvCell = (v) => {
+  const t = String(v ?? '')
+  return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t
+}
+
+/** Downloads the rows on screen as audit-log.csv. */
+function exportCsv(rows) {
+  const head = ['time', 'ref', 'kind', 'who', 'step', 'tool', 'result', 'detail']
+  const lines = [head.join(','), ...rows.map((a) => head.map((k) => csvCell(a[k])).join(','))]
+  const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }))
+  const link = Object.assign(document.createElement('a'), { href: url, download: 'audit-log.csv' })
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export default function Audit() {
   const audit = useAuditLog()
   const { tickets, leads, toast } = useApp()
@@ -42,7 +57,7 @@ export default function Audit() {
       <PageHeader
         title="Audit log"
         description="Every step the agent took, with the tool it used and the outcome. Nothing happens off the record."
-        actions={<Button icon={Download} onClick={() => toast({ title: 'Export started', desc: `${rows.length} rows · audit-log.csv` })}>Export CSV</Button>}
+        actions={<Button icon={Download} disabled={rows.length === 0} onClick={() => { exportCsv(rows); toast({ title: 'Exported audit-log.csv', desc: `${rows.length} rows` }) }}>Export CSV</Button>}
       />
 
       <Card>
@@ -102,7 +117,9 @@ export default function Audit() {
               ))}
             </tbody>
           </table>
-          {rows.length === 0 && <EmptyState icon={ScrollText} title="No matching actions" text="Try a different ticket ID or clear the filters." />}
+          {audit.length === 0
+            ? <EmptyState icon={ScrollText} title="No agent activity yet" text="Every step Aria takes on a ticket or lead (the tool it used and the outcome) is recorded here. Start a ShopKart chat to see the first ones." />
+            : rows.length === 0 && <EmptyState icon={ScrollText} title="No matching actions" text="Try a different ticket ID or clear the filters." />}
         </div>
         <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
           Showing {rows.length} of {audit.length} actions · click a row to see the full trace
@@ -126,7 +143,7 @@ export default function Audit() {
               {isTicket ? (
                 <><span>{subject.customer.name}</span><LevelBadge level={subject.level} /><StatusBadge status={subject.status} /></>
               ) : (
-                <><span>{subject.name} · {subject.company}</span><Badge className="bg-amber-50 text-amber-800 ring-amber-200">Lead score {subject.score}</Badge></>
+                <><span>{[subject.name, subject.company].filter(Boolean).join(' · ')}</span><Badge className="bg-slate-100 text-slate-700 ring-slate-200">Lead score {subject.score}</Badge></>
               )}
             </div>
           )
@@ -136,14 +153,14 @@ export default function Audit() {
           <div className="p-6">
             <div className="mb-6 grid grid-cols-3 gap-3">
               <Stat label="Steps" value={subject.steps.length} />
-              <Stat label="Elapsed" value={duration(subject.steps[0].time, subject.steps.at(-1).time)} />
+              <Stat label="Elapsed" value={subject.steps.length ? duration(subject.steps[0].time, subject.steps.at(-1).time) : '—'} />
               <Stat label={isTicket ? 'Amount' : 'Deal value'} value={rupees(isTicket ? subject.amount : subject.value)} />
             </div>
             <Trace steps={subject.steps} highlight={highlight} />
             {isTicket && (
               <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <p className="text-sm font-semibold text-slate-900">Outcome</p>
-                <p className="mt-1 text-sm text-slate-700">{subject.result}</p>
+                <p className="mt-1 text-sm text-slate-700">{subject.result || 'Still in progress.'}</p>
                 <Button size="sm" className="mt-3" icon={ExternalLink} onClick={() => navigate(`/tickets?id=${subject.id}`)}>Open ticket</Button>
               </div>
             )}

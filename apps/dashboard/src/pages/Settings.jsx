@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Lightbulb, Hand, Rocket, LifeBuoy, TrendingUp, Loader2, Check, Languages, Clock, ShieldAlert } from 'lucide-react'
+import { Lightbulb, Hand, Rocket, LifeBuoy, TrendingUp, Loader2, Check, Languages, Clock, ShieldAlert, Building2 } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
-import { api } from '../api'
+import { OWNER } from '@ph/shared'
 import { useApp } from '../store'
-import { Card, PageHeader, Toggle, Button, Select, Skeleton } from '../components/ui'
-import { cn, rupees } from '../lib'
+import { Card, PageHeader, Toggle, Button, Select, Skeleton, EmptyState } from '../components/ui'
+import { cn, initials, rupees } from '../lib'
 
 const AUTONOMY = [
   { value: 'suggest', icon: Lightbulb, title: 'Suggest only', text: 'Drafts replies and actions. A human sends every one.' },
@@ -41,22 +41,22 @@ const Label = ({ children }) => <label className="mb-1.5 block text-xs font-medi
 const inputCls = 'h-9 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-500'
 
 export default function Settings() {
-  const { settings, setSettings, toast } = useApp()
+  const { settings, saveSettings, toast, error } = useApp()
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { if (settings && !form) setForm(structuredClone(settings)) }, [settings, form])
 
+  if (!form && error) return <Card><EmptyState icon={ShieldAlert} title="Settings aren't available" text={`The demo API didn't return them: ${error}`} /></Card>
   if (!form) return <div className="space-y-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-40" />)}</div>
 
   const dirty = JSON.stringify(form) !== JSON.stringify(settings)
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
   const save = async () => {
     setSaving(true)
-    await api.saveSettings(form)
-    setSettings(structuredClone(form))
+    const ok = await saveSettings(form)
     setSaving(false)
-    toast({ title: 'Agent settings saved', desc: `${form.agentName} is using the new rules now.` })
+    if (ok) toast({ title: 'Agent settings saved', desc: `The refund limit is now ${rupees(form.refundLimit)}; ${form.agentName || 'Aria'} applies it from the next request.` })
   }
   const toggleIn = (list, item) => (list.includes(item) ? list.filter((x) => x !== item) : [...list, item])
 
@@ -65,6 +65,19 @@ export default function Settings() {
       <PageHeader title="Agent settings" description="Shape how your AI teammate behaves: its voice, its playbooks and how far it can go on its own." />
 
       <div className="space-y-4">
+        <Section icon={Building2} title="Workspace" text="Who runs this business. Tickets Aria hands over, approvals and deals all come to this person.">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="grid size-12 place-items-center rounded-full bg-human/15 text-base font-semibold text-human" aria-hidden>{initials(OWNER.name)}</span>
+            <dl className="grid min-w-0 flex-1 grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
+              <div><dt className="text-xs text-slate-500">Owner</dt><dd className="mt-0.5 font-medium text-slate-900">{OWNER.name}</dd></div>
+              <div><dt className="text-xs text-slate-500">Role</dt><dd className="mt-0.5 font-medium text-slate-900">{OWNER.role}</dd></div>
+              <div><dt className="text-xs text-slate-500">Business</dt><dd className="mt-0.5 font-medium text-slate-900">{OWNER.business}</dd></div>
+              <div className="min-w-0"><dt className="text-xs text-slate-500">Email</dt><dd className="ref mt-0.5 truncate text-slate-900">{OWNER.email}</dd></div>
+            </dl>
+          </div>
+          <p className="mt-3 text-xs text-slate-500">The only person on the team, and the signed-in user in Zendesk and HubSpot too.</p>
+        </Section>
+
         <Section icon={ResolveAIGlyph} title="Profile" text="How the agent introduces itself to customers.">
           <div className="flex flex-wrap items-start gap-6">
             <div className="grid size-16 place-items-center rounded-2xl text-2xl font-semibold text-white shadow-lg transition-colors" style={{ background: form.avatarColor }}>
@@ -103,7 +116,7 @@ export default function Settings() {
               <div key={p.key} className={cn('rounded-xl border p-4 transition', form.playbooks[p.key] ? 'border-brand-200 bg-brand-50/40' : 'border-slate-200')}>
                 <div className="flex items-center justify-between">
                   <p.icon className={cn('size-5', form.playbooks[p.key] ? 'text-brand-600' : 'text-slate-400')} />
-                  <Toggle checked={form.playbooks[p.key]} onChange={(v) => set({ playbooks: { ...form.playbooks, [p.key]: v } })} label={p.title} />
+                  <Toggle checked={!!form.playbooks?.[p.key]} onChange={(v) => set({ playbooks: { ...form.playbooks, [p.key]: v } })} label={p.title} />
                 </div>
                 <p className="mt-3 text-sm font-semibold text-slate-900">{p.title}</p>
                 <p className="mt-0.5 text-xs text-slate-500">{p.text}</p>
@@ -139,7 +152,7 @@ export default function Settings() {
             <input type="range" min={0} max={10000} step={100} value={form.refundLimit} onChange={(e) => set({ refundLimit: +e.target.value })} className="flex-1 accent-brand-500" />
             <div className="relative w-32">
               <span className="absolute top-1/2 left-3 -translate-y-1/2 text-sm text-slate-400">₹</span>
-              <input type="number" min={0} step={100} value={form.refundLimit} onChange={(e) => set({ refundLimit: Math.max(0, +e.target.value) })} className={cn(inputCls, 'pl-7 tabular')} />
+              <input type="number" min={0} step={100} value={form.refundLimit} onChange={(e) => set({ refundLimit: Math.max(0, Number(e.target.value) || 0) })} className={cn(inputCls, 'ref pl-7')} />
             </div>
           </div>
           <p className="mt-2 text-xs text-slate-500">Refunds up to <b className="text-slate-700">{rupees(form.refundLimit)}</b> are issued instantly. Larger ones wait for a human.</p>
@@ -152,7 +165,7 @@ export default function Settings() {
                   <p className="text-sm font-medium text-slate-800">{r.label}</p>
                   <p className="text-xs text-slate-500">{r.text}</p>
                 </div>
-                <Toggle checked={form.escalation[r.key]} onChange={(v) => set({ escalation: { ...form.escalation, [r.key]: v } })} label={r.label} />
+                <Toggle checked={!!form.escalation?.[r.key]} onChange={(v) => set({ escalation: { ...form.escalation, [r.key]: v } })} label={r.label} />
               </li>
             ))}
           </ul>
@@ -172,7 +185,7 @@ export default function Settings() {
           </div>
         </Section>
 
-        <Section icon={Clock} title="Business hours" text="When your human team is around to take escalations.">
+        <Section icon={Clock} title="Business hours" text={`When ${OWNER.first} is around to take escalations.`}>
           <div className="flex flex-wrap gap-1.5">
             {DAYS.map((d) => {
               const on = form.hours.days.includes(d)
@@ -192,7 +205,8 @@ export default function Settings() {
             <Label>Outside business hours</Label>
             <Select label="After hours" className="w-full" value={form.hours.afterHours} onChange={(afterHours) => set({ hours: { ...form.hours, afterHours } })} options={[
               { value: 'autonomous', label: 'Keep resolving. Queue escalations for the morning' },
-              { value: 'collect', label: 'Collect details only and promise a callback' },
+              { value: 'approval', label: 'Act within limits; anything above waits for the morning' },
+              { value: 'suggest', label: 'Collect details only and promise a callback' },
             ]} />
           </div>
         </Section>

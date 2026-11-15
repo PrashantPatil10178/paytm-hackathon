@@ -4,7 +4,7 @@
  *
  * Which agent gets which tools is the point of the levels:
  *   low    → look up, search past cases, update and close the ticket
- *   medium → plus start_refund (refuses above AUTO_REFUND_LIMIT) and escalate_to_human
+ *   medium → plus start_refund (refuses above the auto-refund limit, a Control Room setting) and escalate_to_human
  *   high   → look up, request_approval for the refund, escalate_to_human. No direct refunds.
  */
 import { rupees, SUPPORT_AGENTS, type CreateStepBody, type Order } from "@ph/shared";
@@ -31,6 +31,9 @@ const orderView = (o: Order) => ({
 export type Level = SupportRun["agent"];
 
 export function supportTools(api: DemoAPI, platform: Platform | undefined, level: Level) {
+  /** The live auto-refund limit (Control Room settings, cached by the platform client); the default without one. */
+  const refundLimit = () => (platform ? platform.refundLimit() : Promise.resolve(AUTO_REFUND_LIMIT));
+
   /** Records a step on the run. Never lets a logging problem break the customer's request. */
   async function step(opts: ToolExecuteOptions | undefined, s: Omit<CreateStepBody, "agent">) {
     if (!platform) return;
@@ -107,23 +110,23 @@ export function supportTools(api: DemoAPI, platform: Platform | undefined, level
   const startRefund = createTool({
     name: "start_refund",
     description:
-      `Refund a delivered or damaged order to the original payment method. Only works up to ${rupees(AUTO_REFUND_LIMIT)}; ` +
-      "above that it refuses and you must escalate_to_human instead. Logs an internal note itself.",
+      "Refund a delivered or damaged order to the original payment method. Only works up to the auto-refund limit " +
+      "given with the ticket; above that it refuses and you must escalate_to_human instead. Logs an internal note itself.",
     parameters: z.object({
       order_id: z.number().int(),
       reason: z.string().min(3).describe("What the customer reported, e.g. 'mugs arrived broken'"),
     }),
     execute: async ({ order_id, reason }, opts) => {
       const run = runOf<SupportRun>(opts);
-      const order = await ownOrder(run, order_id);
-      if (order.amount > AUTO_REFUND_LIMIT) {
-        await step(opts, { step: "Refund", tool: "Paytm", result: "blocked", detail: `${rupees(order.amount)} is above the ${rupees(AUTO_REFUND_LIMIT)} limit` });
-        return { ok: false, needs_human: true, why: `${rupees(order.amount)} is above the ${rupees(AUTO_REFUND_LIMIT)} auto-refund limit` };
+      const [order, limit] = await Promise.all([ownOrder(run, order_id), refundLimit()]);
+      if (order.amount > limit) {
+        await step(opts, { step: "Refund", tool: "Paytm", result: "blocked", detail: `${rupees(order.amount)} is above the ${rupees(limit)} limit` });
+        return { ok: false, needs_human: true, why: `${rupees(order.amount)} is above the ${rupees(limit)} auto-refund limit` };
       }
       const refunded = await api.refundOrder(order_id); // the API rejects orders that aren't refundable
       await api.addComment(run.ticketId, {
         public: false,
-        body: `Refund of ${rupees(order.amount)} started for order #${order_id} (under the ${rupees(AUTO_REFUND_LIMIT)} auto-refund limit). Customer reported: ${reason}.`,
+        body: `Refund of ${rupees(order.amount)} started for order #${order_id} (within the ${rupees(limit)} auto-refund limit). Customer reported: ${reason}.`,
       });
       await step(opts, { step: "Refund", tool: "Paytm", result: "success", detail: `${rupees(order.amount)} refunded for #${order_id}` });
       return { ok: true, order: orderView(refunded), arrives: "3–5 working days" };
@@ -162,7 +165,7 @@ export function supportTools(api: DemoAPI, platform: Platform | undefined, level
     description:
       "Hand the ticket to a person. Use for anything you can't resolve or the customer is upset about. The note must give them everything they need.",
     parameters: z.object({
-      assignee: z.enum(SUPPORT_AGENTS).describe("Priya handles payments and refunds; Karan handles delivery and everything else"),
+      assignee: z.enum(SUPPORT_AGENTS).describe("The business owner, who handles everything a person must look at"),
       priority: z.enum(["normal", "high", "urgent"]),
       note: z.string().min(10).describe("Internal hand-off note: what happened, what you checked, what they should do"),
     }),

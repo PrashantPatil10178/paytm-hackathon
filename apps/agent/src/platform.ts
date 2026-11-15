@@ -15,15 +15,19 @@ import type {
   ResolvedCase,
   UpdateRunBody,
 } from "@ph/shared";
+import type { Settings } from "@ph/shared/controlroom";
+import { AUTO_REFUND_LIMIT } from "./criticality.ts";
 import { DemoAPIError } from "./demo-api.ts";
 
 export type Platform = ReturnType<typeof createPlatform>;
 
-export function createPlatform(baseUrl: string, fetchImpl: typeof fetch = fetch, internalKey = "") {
-  async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+const SETTINGS_CACHE_MS = 10_000;
+
+export function createPlatform(baseUrl: string, fetchImpl: typeof fetch = fetch, internalKey = "", log: Pick<Console, "warn"> = console) {
+  async function call<T>(method: string, path: string, body?: unknown, root = "/resolveai"): Promise<T> {
     let res: Response;
     try {
-      res = await fetchImpl(`${baseUrl}/resolveai${path}`, {
+      res = await fetchImpl(`${baseUrl}${root}${path}`, {
         method,
         headers: {
           ...(body !== undefined && { "content-type": "application/json" }),
@@ -40,7 +44,27 @@ export function createPlatform(baseUrl: string, fetchImpl: typeof fetch = fetch,
     return data as T;
   }
 
+  let limit: { at: number; value: number } | null = null;
+
+  /**
+   * The auto-refund limit (₹) from the Control Room settings (GET /control-room/settings), cached for 10 s.
+   * If the demo API can't say, the default ₹1,000 applies: the rule never switches off.
+   */
+  async function refundLimit(): Promise<number> {
+    if (limit && Date.now() - limit.at < SETTINGS_CACHE_MS) return limit.value;
+    let value = AUTO_REFUND_LIMIT;
+    try {
+      const s = await call<Settings>("GET", "/settings", undefined, "/control-room");
+      if (typeof s.refundLimit === "number" && Number.isFinite(s.refundLimit) && s.refundLimit >= 0) value = s.refundLimit;
+    } catch (e) {
+      log.warn(`[agent] couldn't read the refund limit, using ${AUTO_REFUND_LIMIT}: ${(e as Error).message}`);
+    }
+    limit = { at: Date.now(), value };
+    return value;
+  }
+
   return {
+    refundLimit,
     /** Which channel a token belongs to. 401 for unknown tokens, 403 for channels that are off. */
     authenticate: (token: string) => call<{ channel: Channel }>("POST", "/channels/authenticate", { token }).then((r) => r.channel),
     connectors: () => call<{ connectors: ConnectorAccess[] }>("GET", "/connectors/access").then((r) => r.connectors),

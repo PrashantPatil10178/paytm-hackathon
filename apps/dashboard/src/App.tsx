@@ -4,6 +4,7 @@ import Layout from './components/Layout'
 import Home from './pages/Home'
 import Analytics from './pages/Analytics'
 import Campaigns from './pages/Campaigns'
+import Calls from './pages/Calls'
 import SalesAnalytics from './pages/SalesAnalytics'
 import Audit from './pages/Audit'
 import Tickets from './pages/Tickets'
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="tickets" element={<Tickets />} />
             <Route path="board" element={<Board />} />
             <Route path="leads" element={<Leads />} />
+            <Route path="calls" element={<Calls />} />
             <Route path="campaigns" element={<Campaigns />} />
             <Route path="sales/analytics" element={<SalesAnalytics />} />
             <Route path="channels" element={<Channels />} />

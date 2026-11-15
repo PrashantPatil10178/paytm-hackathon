@@ -41,6 +41,7 @@
       "name": "@ph/copilot",
       "dependencies": {
         "@copilotkit/runtime": "1.88.0",
+        "@ph/shared": "workspace:*",
         "zod": "^3.25.76",
       },
       "devDependencies": {

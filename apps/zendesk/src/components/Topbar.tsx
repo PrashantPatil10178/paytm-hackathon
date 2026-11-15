@@ -1,9 +1,10 @@
+import { OWNER } from "@ph/shared";
 import { Search } from "lucide-react";
 import { navigate } from "@ph/shared/react";
 import { useState } from "react";
 import { Avatar } from "./ui.tsx";
 
-export const ME = "Priya – Support";
+export const ME = OWNER.name;
 
 export function Topbar() {
   const [q, setQ] = useState("");

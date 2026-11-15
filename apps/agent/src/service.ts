@@ -22,6 +22,7 @@ import {
   BOT,
   ENQUIRY_NEEDS,
   rupees,
+  OWNER,
   SUPPORT_AGENTS,
   type AnalysisResponse,
   type CampaignResponse,
@@ -250,7 +251,8 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       }
       const order = named ? orders.find((o) => o.id === named)! : null;
       const recent = (await api.customerTickets(customer_id).catch(() => [])).filter((t) => t.id !== known?.id && Date.now() - new Date(t.created_at).getTime() < 30 * DAY).length;
-      const crit = assessCriticality({ intent: triage.intent, signals: triage.signals, confidence: triage.confidence, order, recentTickets: recent });
+      const refundLimit = await platform.refundLimit();
+      const crit = assessCriticality({ intent: triage.intent, signals: triage.signals, confidence: triage.confidence, order, recentTickets: recent, refundLimit });
       await step("main", { step: "Set level", tool: "Criticality rules", result: "success", detail: `${LEVEL_LABEL[crit.level]}: ${crit.reasons.join("; ")}` });
 
       const { ticket, isNew } = await ticketFor(known, session_id, customer_id, message);
@@ -304,7 +306,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
           await step("main", { step: "Acknowledge", tool: channel.name, result: "success", detail: `Told the customer ${HANDLER_LABEL[crit.handled_by]} is on it` });
           await recordTriage();
           await platform.updateRun(run.id, { reply: ack });
-          await work(run.id, ticket, isNew, customer.name, customer_id, session_id, message, triage!, crit);
+          await work(run.id, ticket, isNew, customer.name, customer_id, session_id, message, triage!, crit, refundLimit);
         })().catch((e) => log.error(`[agent] background work on ticket #${ticket.id} failed:`, e)),
       );
       return { status: 200, body: { reply: ack, ticket_id: ticket.id } };
@@ -314,7 +316,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
   /** Critical: a person takes it. The main agent writes the brief; the customer is told straight away. */
   async function escalateCritical(runId: number, ticket: Ticket, customerId: number, triage: Triage, crit: Criticality, order: Order | null): Promise<Result<ChatResponse>> {
     const money = triage.intent === "payment_failed" || triage.intent === "refund" || triage.intent === "damaged_item" || order?.payment_status === "failed_debited";
-    const assignee = money ? SUPPORT_AGENTS[0] : SUPPORT_AGENTS[1];
+    const assignee = SUPPORT_AGENTS[0];
     await api.addComment(ticket.id, {
       public: false,
       body: [
@@ -337,11 +339,12 @@ export function createService({ api, platform, main, writer, levels, sales, anal
   }
 
   /** Low, medium or high: that level's agent works the ticket with its own tools. */
-  async function work(runId: number, ticket: Ticket, isNew: boolean, customerName: string, customerId: number, sessionId: string, message: string, triage: Triage, crit: Criticality): Promise<Result<ChatResponse>> {
+  async function work(runId: number, ticket: Ticket, isNew: boolean, customerName: string, customerId: number, sessionId: string, message: string, triage: Triage, crit: Criticality, refundLimit: number): Promise<Result<ChatResponse>> {
     const level = crit.handled_by as "low" | "medium" | "high";
     const prompt = [
       `[Zendesk ticket #${ticket.id}${isNew ? " (new)" : ""} · customer ${customerName} (id ${customerId}) · today ${today()}]`,
       `Level: ${LEVEL_LABEL[crit.level]} (${crit.reasons.join("; ")})`,
+      `Auto-refund limit: ${rupees(refundLimit)}`,
       `Main agent's plan:\n${triage.plan.map((p, i) => `${i + 1}. ${p}`).join("\n")}`,
       `Customer message: ${message}`,
     ].join("\n");
@@ -422,7 +425,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
    */
   async function toTeam(runId: number, known: Ticket | null, sessionId: string, customerId: number, message: string, triage: Triage, why: string): Promise<Result<ChatResponse>> {
     const { ticket } = await ticketFor(known, sessionId, customerId, message);
-    const assignee = SUPPORT_AGENTS[1];
+    const assignee = SUPPORT_AGENTS[0];
     await api.addComment(ticket.id, { public: false, body: `Handed to ${assignee} by ResolveAI: the customer ${why}.\nWhat they said: ${triage.summary}\nPlease check with the customer and follow up on this ticket.` });
     await api.updateTicket(ticket.id, { assignee, status: "open", priority: "normal", handled_by: "human", tags: [...new Set([...ticket.tags, triage.intent, "needs-data"])] });
     const reply = `I couldn't find what I need to sort this out myself, so I've passed it to our support team (ticket #${ticket.id}). They're looking into it and will get back to you here shortly.`;
@@ -467,7 +470,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
           const why = errorText(e);
           await api.addComment(ticket.id, { public: false, body: `Approved by ${by}, but the refund failed: ${why}. Needs a person.` });
           await api.updateTicket(ticket.id, { assignee: SUPPORT_AGENTS[0], status: "open", handled_by: "human" });
-          reply = `Your refund was approved, but I couldn't start it automatically. ${SUPPORT_AGENTS[0].split(" – ")[0]} from our team will complete it and update you here (ticket #${ticket.id}).`;
+          reply = `Your refund was approved, but I couldn't start it automatically. ${OWNER.first} from our team will complete it and update you here (ticket #${ticket.id}).`;
           await api.addComment(ticket.id, { body: reply, public: true });
           await step("high", { step: "Refund", tool: "Paytm", result: "blocked", detail: why });
           await platform.updateRun(run.id, { status: "escalated", handled_by: "human", reply });

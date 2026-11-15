@@ -2,7 +2,7 @@ import type { BunRequest } from "bun";
 
 export const CORS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+  "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "access-control-allow-headers": "content-type, authorization",
 };
 

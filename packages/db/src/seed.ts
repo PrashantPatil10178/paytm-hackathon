@@ -11,6 +11,7 @@ import {
   type Contact,
   type Customer,
   type Deal,
+  type InfoForm,
   type Order,
   type Product,
   type Ticket,
@@ -347,6 +348,58 @@ function buildCampaigns(): { campaigns: Campaign[]; responses: ResponseSeed[] } 
   return { campaigns, responses };
 }
 
+/** The request forms a new workspace starts with. The team edits them in the Control Room. */
+export function buildForms(): InfoForm[] {
+  const updated_at = new Date().toISOString();
+  return [
+    {
+      id: "damaged_item",
+      title: "Damaged or wrong item",
+      ask: "Sorry about that! Tell us which order it is and what went wrong.",
+      use_for: "A damaged, broken, wrong or incomplete item, when it isn't clear which order it is or what went wrong.",
+      active: true,
+      updated_at,
+      fields: [
+        { key: "order", kind: "order", label: "Which order?", enabled: true, required: true },
+        { key: "problem", kind: "choice", label: "What went wrong?", enabled: true, required: true, options: ["Arrived broken", "Wrong item", "Parts missing", "Not as described"] },
+        { key: "photo", kind: "photo", label: "Photo of the item", enabled: true, required: false },
+        { key: "note", kind: "text", label: "Anything else we should know?", enabled: false, required: false },
+      ],
+    },
+    {
+      id: "payment_problem",
+      title: "Payment problem",
+      ask: "Let's sort out your payment. Pick the order and share the bank reference from your SMS or UPI app.",
+      use_for: "Money was debited but the order shows unpaid or failed, and you need the order or the bank reference (UTR).",
+      active: true,
+      updated_at,
+      fields: [
+        { key: "order", kind: "order", label: "Which order?", enabled: true, required: true },
+        { key: "method", kind: "choice", label: "How did you pay?", enabled: true, required: true, options: ["UPI", "Card", "Net banking", "Wallet"] },
+        { key: "utr", kind: "text", label: "Bank reference (UTR)", enabled: true, required: false },
+        { key: "screenshot", kind: "photo", label: "Screenshot of the debit", enabled: false, required: false },
+      ],
+    },
+    {
+      id: "delivery_issue",
+      title: "Delivery issue",
+      ask: "Which order is it, and what happened with the delivery?",
+      use_for: "A late, missing or wrongly delivered order, when it isn't clear which order it is.",
+      active: true,
+      updated_at,
+      fields: [
+        { key: "order", kind: "order", label: "Which order?", enabled: true, required: true },
+        { key: "problem", kind: "choice", label: "What happened?", enabled: true, required: true, options: ["It's late", "Shows delivered, not received", "Box was opened"] },
+        { key: "note", kind: "text", label: "Anything else we should know?", enabled: true, required: false },
+      ],
+    },
+  ];
+}
+
+async function writeForms(tx: Tx) {
+  await tx.insert(s.infoForms).values(buildForms().map((f, position) => ({ ...f, position, updated_at: date(f.updated_at) })));
+}
+
 async function writeCampaigns(tx: Tx) {
   const { campaigns, responses } = buildCampaigns();
   await tx.insert(s.campaigns).values(campaigns.map((c) => ({ ...c, started_at: date(c.started_at) })));
@@ -381,6 +434,7 @@ async function write(tx: Tx) {
     await tx.execute(sql.raw(`select setval(pg_get_serial_sequence('${table}', 'id'), (select max(id) from ${table}))`));
   }
   await writeCampaigns(tx);
+  await writeForms(tx);
 }
 
 /**
@@ -407,10 +461,15 @@ export async function resetDemoData(db: Db) {
 
 /** Seeds the demo data if the database has none yet. Returns true when it seeded. */
 export async function ensureSeeded(db: Db): Promise<boolean> {
-  const [[row], [campaigns]] = await Promise.all([db.select({ n: count() }).from(s.customers), db.select({ n: count() }).from(s.campaigns)]);
+  const [[row], [campaigns], [forms]] = await Promise.all([
+    db.select({ n: count() }).from(s.customers),
+    db.select({ n: count() }).from(s.campaigns),
+    db.select({ n: count() }).from(s.infoForms),
+  ]);
   if (row && row.n > 0) {
-    // Seeded before campaigns existed: add just those, keep everything else.
+    // Seeded before campaigns or request forms existed: add just those, keep everything else.
     if (!campaigns?.n) await db.transaction(writeCampaigns);
+    if (!forms?.n) await db.transaction(writeForms);
     return false;
   }
   await resetDemoData(db);

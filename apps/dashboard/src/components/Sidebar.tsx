@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { Link, useLocation } from 'react-router-dom'
 import { Search, PanelLeftClose, Flame } from 'lucide-react'
 import { ResolveAIGlyph, ResolveAIMark } from '@ph/shared/brand'
-import { api } from '../api'
+import { api, live } from '../api'
 import { useApp } from '../store'
 import { STATUSES, STATUS_ORDER, type Icon } from '../meta'
 import { AREAS, PAGES, areaOf, byStage, type AreaId } from '../nav'
@@ -250,6 +250,9 @@ function useAreaContent(areaId: AreaId): AreaContent {
   const { pathname, search } = useLocation()
   const params = new URLSearchParams(search)
   const [connected, setConnected] = useState<{ channels: number; apps: number } | null>(null)
+  // The phone line is live (demo API), polled only while the Connect panel shows.
+  const voice = live.useVoiceLine(areaId === 'connect').data
+  const formsWaiting = live.useInfoRequests(areaId === 'support').data?.requests.filter((r) => r.status === 'waiting').length
 
   useEffect(() => {
     if (areaId !== 'connect') return
@@ -286,6 +289,7 @@ function useAreaContent(areaId: AreaId): AreaContent {
             ],
           },
           { label: 'Views', items: [page('/board')] },
+          { label: 'Customers', items: [page('/forms', { count: formsWaiting || undefined, countTone: 'amber' })] },
         ],
         extra: 'live',
       }
@@ -321,7 +325,7 @@ function useAreaContent(areaId: AreaId): AreaContent {
     case 'connect':
       return {
         fact: connected ? `${connected.channels} channels · ${connected.apps} apps connected` : 'Where Aria listens and acts',
-        groups: [{ items: [page('/channels'), page('/connectors')] }],
+        groups: [{ items: [page('/channels'), page('/phone', { count: voice?.live || undefined }), page('/connectors')] }],
       }
     case 'agent':
       return {

@@ -12,10 +12,13 @@ import type {
   CreateCommentBody,
   CreateContactBody,
   CreateDealBody,
+  CreateInfoRequestBody,
   CreateNoteBody,
   CreateTicketBody,
   Customer,
   Deal,
+  InfoForm,
+  InfoRequest,
   Meeting,
   Order,
   Quote,
@@ -72,6 +75,10 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch) 
     createTicket: (body: CreateTicketBody) => call<Ticket>("POST", "/zendesk/tickets", body),
     updateTicket: (ticketId: number, changes: UpdateTicketBody) => call<Ticket>("PATCH", `/zendesk/tickets/${ticketId}`, changes),
     addComment: (ticketId: number, body: CreateCommentBody) => call<ZdComment>("POST", `/zendesk/tickets/${ticketId}/comments`, body),
+
+    // Request forms (details to collect from the customer in the chat)
+    infoForms: () => call<{ forms: InfoForm[] }>("GET", "/info/forms"),
+    createInfoRequest: (body: CreateInfoRequestBody) => call<InfoRequest>("POST", "/info/requests", body),
 
     // CRM
     createContact: (body: CreateContactBody) => call<Contact>("POST", "/crm/contacts", body),

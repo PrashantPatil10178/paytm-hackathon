@@ -4,4 +4,4 @@ export { runMigrations } from "./migrate.ts";
 export * as schema from "./schema.ts";
 export { agentMemoryTables, ensureSeeded, resetDemoData } from "./seed.ts";
 // Query helpers, re-exported so every app uses this package's single copy of drizzle-orm.
-export { and, asc, count, desc, eq, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
+export { and, asc, count, desc, eq, gte, inArray, isNull, ne, not, or, sql } from "drizzle-orm";

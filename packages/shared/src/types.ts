@@ -9,7 +9,8 @@ export type TicketStatus = "new" | "open" | "pending" | "solved";
 export type TicketPriority = "low" | "normal" | "high" | "urgent";
 export type TicketType = "question" | "incident" | "problem";
 export type TicketView = "all_unsolved" | "unassigned" | "assigned_humans" | "recently_solved";
-export type TicketChannel = "chat" | "web" | "email" | "api";
+/** "voice" = a phone call to the Sarvam voice line (see /voice/* in the API). */
+export type TicketChannel = "chat" | "web" | "email" | "api" | "voice";
 
 /** Our agent's severity levels, accepted anywhere a priority is. */
 export type AgentLevel = "low" | "medium" | "high" | "critical";
@@ -302,6 +303,8 @@ export interface ChatRequest {
   session_id: string;
   customer_id: number;
   message: string;
+  /** "voice" when the message was spoken on a phone call: the reply is read aloud. Default "chat". */
+  channel?: "chat" | "voice";
 }
 
 export interface ChatResponse {
@@ -556,4 +559,204 @@ export interface AnalysisResponse {
 
 export interface ApiError {
   error: string;
+}
+
+/* ───────────────────────── Phone line (Sarvam voice agent) ───────────────────────── */
+// Sarvam's voice agent answers the phone (speech, languages, telephony); ResolveAI decides and acts.
+// Sarvam calls three API endpoints: /voice/caller at call start, /voice/turn as a tool mid-call,
+// and /voice/calls as the deployment's call-completion webhook.
+
+/** POST /voice/caller (Sarvam on-start hook): who is calling. Flat, so Sarvam can save fields as agent variables. */
+export interface VoiceCallerRequest {
+  phone: string;
+}
+
+export interface VoiceCallerResponse {
+  known: boolean;
+  customer_id: number | null;
+  customer_name: string;
+  first_name: string;
+  /** One spoken line about their recent orders, or "" */
+  orders_summary: string;
+  /** What the agent can open with */
+  greeting: string;
+}
+
+/** POST /voice/turn (Sarvam API tool "ask_resolveai"): one thing the caller said. */
+export interface VoiceTurnRequest {
+  /** Sarvam's interaction id: one call = one ticket */
+  interaction_id: string;
+  /** Caller's number (Sarvam "User Identifier") */
+  phone?: string;
+  /** What the caller said or asked, in English */
+  message: string;
+  /** A registered mobile number, email or order number the caller gave, when their number isn't known */
+  account?: string;
+}
+
+export interface VoiceTurnResponse {
+  /** What the voice agent should say, written to be spoken */
+  reply: string;
+  ticket_id: number | null;
+  customer_id: number | null;
+}
+
+export interface VoiceTranscriptTurn {
+  role: "agent" | "user";
+  en_text: string;
+  indic_text?: string | null;
+}
+
+/** POST /voice/calls: Sarvam's inbound call-completion webhook payload. */
+export interface SarvamCallWebhook {
+  app_id: string;
+  app_version: number;
+  deployment_id: string;
+  interaction_id: string;
+  user_phone_number: string;
+  agent_phone_number: string;
+  duration?: number;
+  final_agent_variables?: Record<string, unknown> | null;
+  output_agent_variables?: Record<string, unknown> | null;
+  start_datetime?: string | null;
+  end_datetime?: string | null;
+  interaction_transcript?: VoiceTranscriptTurn[] | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export type VoiceCallStatus = "live" | "ended";
+
+export interface VoiceCall {
+  interaction_id: string;
+  status: VoiceCallStatus;
+  caller_phone: string;
+  line_phone: string;
+  customer: Pick<Customer, "id" | "name"> | null;
+  ticket_id: number | null;
+  /** Times the voice agent asked ResolveAI something */
+  turns: number;
+  /** Seconds, once the call ended */
+  duration: number | null;
+  transcript: VoiceTranscriptTurn[];
+  started_at: string;
+  last_activity_at: string;
+  ended_at: string | null;
+}
+
+/** GET /voice/line: what the Control Room needs to show the line and its setup. */
+export interface VoiceLine {
+  /** VOICE_NUMBER, else the last number a caller dialled, else null */
+  number: string | null;
+  /** VOICE_PUBLIC_URL: the API's public base URL that Sarvam calls */
+  public_url: string | null;
+  /** true when VOICE_WEBHOOK_SECRET is set and /voice/* POSTs need it as a bearer token */
+  secured: boolean;
+  /** Last time Sarvam reached any /voice endpoint */
+  last_seen_at: string | null;
+  calls_today: number;
+  live: number;
+  tickets_today: number;
+}
+
+/* ───────────────────────── Request forms (details to collect from a customer) ───────────────────────── */
+
+/**
+ * order: one of the customer's orders (filled in when the form is sent) · choice: one of `options`
+ * · text: a short answer · photo: a picture taken or picked on the phone
+ */
+export type InfoFieldKind = "order" | "choice" | "text" | "photo";
+
+export interface InfoField {
+  key: string;
+  kind: InfoFieldKind;
+  label: string;
+  /** Off = left out when the form is sent */
+  enabled: boolean;
+  required: boolean;
+  /** choice fields only */
+  options?: string[];
+}
+
+/** A form the team sets up in the Control Room. Aria may send it only while `active`; a person can send any. */
+export interface InfoForm {
+  id: string;
+  title: string;
+  /** What the customer reads above the form */
+  ask: string;
+  /** When Aria should send it (goes in her prompt) */
+  use_for: string;
+  fields: InfoField[];
+  active: boolean;
+  updated_at: string;
+}
+
+export interface UpdateInfoFormBody {
+  ask?: string;
+  use_for?: string;
+  active?: boolean;
+  /** Per field: switch it on/off or make it required. Keys must exist on the form. */
+  fields?: { key: string; enabled?: boolean; required?: boolean }[];
+}
+
+/** A choice the customer can tap. For orders: value = order id, label = items, detail = amount · status. */
+export interface InfoChoice {
+  value: string;
+  label: string;
+  detail?: string;
+  image?: string;
+}
+
+/** A field as sent: choices are fixed when the form goes out (the customer's orders at that moment). */
+export type InfoRequestField = Omit<InfoField, "enabled" | "options"> & { choices?: InfoChoice[] };
+
+export interface InfoAnswer {
+  key: string;
+  label: string;
+  /** Order id, the chosen option, the text, or a data: URL for a photo */
+  value: string;
+  /** How it reads on the ticket, e.g. "#1031 Everyday Laptop Backpack" */
+  text: string;
+}
+
+export type InfoRequestStatus = "waiting" | "answered" | "withdrawn";
+
+export interface InfoRequest {
+  id: number;
+  ticket_id: number;
+  customer: Pick<Customer, "id" | "name"> | null;
+  form_id: string;
+  title: string;
+  ask: string;
+  fields: InfoRequestField[];
+  /** BOT when Aria sent it, else the person's name */
+  requested_by: string;
+  status: InfoRequestStatus;
+  answers: InfoAnswer[] | null;
+  created_at: string;
+  answered_at: string | null;
+}
+
+export interface CreateInfoRequestBody {
+  ticket_id: number;
+  form_id: string;
+  /** Defaults to BOT (Aria). A person's name when sent from the Control Room. */
+  requested_by?: string;
+  /** Offer only these of the customer's orders */
+  order_ids?: number[];
+}
+
+/** field key → order id, option, text or photo data: URL */
+export interface AnswerInfoRequestBody {
+  answers: Record<string, string>;
+}
+
+export interface AnswerInfoRequestResponse {
+  request: InfoRequest;
+  /** The answers as one message, e.g. "Order #1031 (Everyday Laptop Backpack) · What went wrong: Arrived broken" */
+  summary: string;
+  /**
+   * true: Aria asked and still has the ticket, so the chat sends `summary` on to her as the customer's next message.
+   * false: a person asked (or has the ticket); the answers are already on the ticket for them.
+   */
+  to_aria: boolean;
 }

@@ -64,7 +64,7 @@ The agent receives exactly what the shop sends and must answer in the same shape
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
-| `POST {AGENT_URL}/chat` | `{ session_id, customer_id, message }` | `{ reply, ticket_id? }` |
+| `POST {AGENT_URL}/chat` | `{ session_id, customer_id, message, channel? }` (`channel: "voice"` for phone calls) | `{ reply, ticket_id? }` |
 | `POST {AGENT_URL}/lead` | `{ name, phone, email, business_name, need, budget, start_when }` | `{ ok, message, deal_id? }` |
 | `POST {AGENT_URL}/analysis` | `{ focus? }` | `{ report }` (also saved via `POST /analytics/reports`) |
 | `POST {AGENT_URL}/campaigns/sync` | `{ limit? }` (default 10) | `{ processed, converted, skipped, failed, remaining, results[] }` |
@@ -143,6 +143,49 @@ Stages: `new_lead → qualified → meeting_booked → quote_sent → closed_won
 | GET | `/analytics/reports/latest` | `{ report }` or `{ report: null }` |
 | POST | `/analysis` | Runs the analysis agent (`{ focus? }`) |
 
+### Phone line (Sarvam voice agent)
+
+A Sarvam voice agent answers the ShopKart number and handles the speech, the language and the telephony.
+ResolveAI decides what to do: each question the caller asks goes to the same support agent as the shop chat, so a
+call opens one Zendesk ticket (`via: "voice"`) and refunds keep the ₹1,000 limit. The Control Room shows calls live
+under **Connect → Phone line**.
+
+| Method | URL | Called by | Notes |
+| --- | --- | --- | --- |
+| POST | `/voice/caller` | Sarvam API tool, run `on_start` | `{ phone, interaction_id? }` → `{ known, customer_id, first_name, orders_summary, greeting }`. Save these as agent variables. |
+| POST | `/voice/turn` | Sarvam API tool `ask_resolveai`, run mid-call | `{ interaction_id, phone, message, account? }` → `{ reply, ticket_id, customer_id }`. Say `reply` as is. |
+| POST | `/voice/calls` | Sarvam inbound deployment `webhook_config` | The call-completion payload. Puts the transcript on the call's ticket, or opens a ticket for a person if Aria never acted. Retries are ignored. |
+| GET | `/voice/calls` | Control Room | Calls, newest first (`?limit=`, default 50) |
+| GET | `/voice/line` | Control Room | Number, public URL, today's counts, calls live now |
+
+The caller is matched by the last 10 digits of their number. If that fails, `account` (or the message) can name a
+registered mobile number, an email or an order number. Unknown callers are asked for one.
+For a demo from your own phone, set `VOICE_DEFAULT_CUSTOMER_ID` to answer them as that customer.
+
+Setup:
+
+1. Sarvam has to reach the API: `ngrok http 4000`, then set `VOICE_PUBLIC_URL` to the https URL and restart the API.
+2. Set `VOICE_WEBHOOK_SECRET` and add it to each Sarvam tool as a bearer token (Auth). Set `VOICE_NUMBER` to the line's number.
+3. In Sarvam Voice Agents, add the two API tools and point the inbound deployment's webhook at `/voice/calls`.
+   Tell the agent to call `ask_resolveai` for anything about orders, refunds, payments or delivery, and to say its
+   reply. The Phone line page lists the exact URLs with copy buttons.
+
+### Request forms (details to collect in the chat)
+
+When it isn't clear which order a customer means or what went wrong, Aria sends a form into the ShopKart chat
+instead of guessing: the customer taps the order, picks what went wrong and can add a photo. The team sets the forms
+up under **Support → Request forms** (which details each asks for, which are required, whether Aria may send it) and
+can send one from any open chat ticket as a person. The chat also shows replies a person writes on the ticket.
+
+| Method | URL | Notes |
+| --- | --- | --- |
+| GET | `/info/forms` | The forms (`damaged_item`, `payment_problem`, `delivery_issue` to start with) |
+| PATCH | `/info/forms/:id` | `{ ask?, use_for?, active?, fields?: [{ key, enabled?, required? }] }` |
+| GET | `/info/requests` | Forms sent into chats, newest first (`?ticket_id=`, `?status=waiting\|answered\|withdrawn`) |
+| POST | `/info/requests` | `{ ticket_id, form_id, requested_by?, order_ids? }`. Without `requested_by` it's Aria, who may only send active forms. The order choices are fixed to the customer's orders when it's sent. Withdraws any form still waiting on that ticket and sets the ticket to pending. |
+| POST | `/info/requests/:id/answer` | `{ answers: { [field key]: value } }` → `{ request, summary, to_aria }`. Answers must be one of the choices; a photo is a JPEG/PNG/WebP data URL. If Aria asked and still has the ticket, the chat sends `summary` on to her; otherwise it goes on the ticket for the person. |
+| POST | `/info/requests/:id/withdraw` | Takes back a form that is still waiting |
+
 ## Demo script
 
 Run `bun run reset`, then open the three apps side by side.
@@ -155,6 +198,14 @@ Run `bun run reset`, then open the three apps side by side.
 3. **Sales.** Fill in **Business Enquiry** with a ₹50,000 budget, starting *This month*. A new
    *Hot* deal lands in HubSpot's **New lead** column and the contact shows up under **Contacts**.
    When the agent moves a deal, its card flies to the new column with a *Moved by ResolveAI* flag.
+
+4. **Phone call.** Call the ShopKart number (Sarvam) and say an order arrived damaged. Aria answers by voice, the ticket
+   appears in Zendesk *via Phone call*, and **Connect → Phone line** shows the call live. When you hang up, the
+   transcript lands on the ticket.
+5. **Aria asks instead of guessing.** Switch to **Rohan Mehta** (no damaged order) and tap **"Item damaged, I want a
+   refund"**. Aria sends the *Damaged or wrong item* form: tap the headphones, pick *Arrived broken*, add a photo, send.
+   The answers come back to Aria (₹2,499 is above the limit, so she hands it to Priya), and **Support → Request forms**
+   shows the form and its answers. From there, send a form to an open chat as Priya: it appears in the customer's chat.
 
 Seed data (`packages/db/src/seed.ts`): 5 customers, 8 products, 12 orders, 10 Zendesk tickets (#2031–#2040), 8 contacts and 8
 deals spread across stages. New tickets start at #2041.

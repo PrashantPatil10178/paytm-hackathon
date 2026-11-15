@@ -60,7 +60,7 @@ export function TicketDetail({ id }: { id: number }) {
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-semibold [overflow-wrap:anywhere]">{t.subject}</h1>
             <p className="text-ink-3">
-              #{t.id} · via {t.via === "chat" ? "ShopKart chat" : cap(t.via)} · {fullDate(t.created_at)}
+              #{t.id} · via {t.via === "chat" ? "ShopKart chat" : t.via === "voice" ? "Phone call" : cap(t.via)} · {fullDate(t.created_at)}
             </p>
           </div>
           <StatusBadge status={t.status} />

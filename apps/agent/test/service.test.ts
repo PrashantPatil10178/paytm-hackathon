@@ -17,7 +17,7 @@ import { createService } from "../src/service.ts";
 /* ───── Fake demo API ───── */
 
 type Json = Record<string, any>;
-let db: { tickets: Json[]; comments: Json[]; orders: Json[]; contacts: Json[]; deals: Json[]; notes: Json[]; meetings: Json[]; responses: Json[]; reports: Json[] };
+let db: { tickets: Json[]; comments: Json[]; orders: Json[]; contacts: Json[]; deals: Json[]; notes: Json[]; meetings: Json[]; responses: Json[]; reports: Json[]; requests: Json[] };
 
 const response = (id: number, x: Json) => ({
   id, campaign: { id: 1, name: "Diwali bulk gifting", channel: "meta_ads" }, phone: "", need: "bulk_order", start_when: "", budget: null,
@@ -43,6 +43,7 @@ beforeEach(() => {
       response(3, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, message: "Still interested in billing." }),
     ],
     reports: [],
+    requests: [],
   };
 });
 
@@ -53,6 +54,15 @@ const METRICS = {
 };
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+
+const FORMS = [
+  {
+    id: "damaged_item", title: "Damaged or wrong item", ask: "Tell us which order it is and what went wrong.", active: true,
+    use_for: "A damaged item when it isn't clear which order.",
+    fields: [{ key: "order", kind: "order", label: "Which order?", enabled: true, required: true }, { key: "photo", kind: "photo", label: "Photo of the item", enabled: false, required: false }],
+  },
+  { id: "payment_problem", title: "Payment problem", ask: "Pick the order.", active: false, use_for: "Payments.", fields: [{ key: "utr", kind: "text", label: "Bank reference (UTR)", enabled: true, required: false }] },
+];
 
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(String(input));
@@ -127,6 +137,14 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     db.deals.push(deal);
     Object.assign(r, { status: "converted", deal_id: deal.id, note: body.note });
     return json({ response: r, contact: { id: 20 + db.deals.length }, deal, existing_contact: false }, 201);
+  }
+  if (p === "/info/forms") return json({ forms: FORMS });
+  if (method === "POST" && p === "/info/requests") {
+    const f = FORMS.find((x) => x.id === body.form_id);
+    if (!f) return json({ error: `Form "${body.form_id}" not found` }, 404);
+    const r = { id: 1 + db.requests.length, title: f.title, ask: f.ask, fields: f.fields.filter((x) => x.enabled), status: "waiting", ...body };
+    db.requests.push(r);
+    return json(r, 201);
   }
   if (p === "/analytics/metrics") return json(METRICS);
   if (p === "/analytics/reports" && method === "GET") return json({ reports: db.reports });
@@ -246,6 +264,53 @@ test("chat: tools can't touch another customer's order", async () => {
   const svc = service(scripted([{ tool: "start_refund", args: { order_id: 1040, reason: "x" } }, { text: "ok" }]));
   await svc.chat({ session_id: "s3", customer_id: 101, message: "refund order 1040" });
   expect(db.orders[2]!.payment_status).toBe("paid");
+});
+
+test("chat: a phone call opens its ticket via voice and tells the agent the reply is spoken", async () => {
+  let seen = "";
+  const model = new MockLanguageModelV3({
+    doGenerate: async ({ prompt }) => {
+      seen = JSON.stringify(prompt);
+      return textResult("Order 1023 was delivered on 13 November.");
+    },
+  });
+  const res = await service(model).chat({ session_id: "voice-abc", customer_id: 101, message: "Where is my order?", channel: "voice" });
+
+  expect(res.body).toMatchObject({ ticket_id: 2041 });
+  expect(db.tickets[0]).toMatchObject({ via: "voice", tags: ["voice"] });
+  expect(seen).toContain("phone call: your reply is spoken aloud");
+});
+
+test("chat: when the order isn't clear, Aria sends the team's form; the prompt lists only active forms", async () => {
+  let seen = "";
+  const steps: Step[] = [
+    { tool: "get_customer_orders" },
+    { tool: "request_details", args: { form_id: "damaged_item", order_ids: [1023, 1030] } },
+    { text: "Sorry about that! Pick the order below and tell me what went wrong." },
+  ];
+  let i = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: async ({ prompt }) => {
+      if (i === 0) seen = JSON.stringify(prompt);
+      const step = steps[i++]!;
+      if ("text" in step) return textResult(step.text);
+      return { content: [{ type: "tool-call", toolCallId: `call-${i}`, toolName: step.tool, input: JSON.stringify(step.args ?? {}) }], finishReason: { unified: "tool-calls", raw: undefined }, usage, warnings: [] };
+    },
+  });
+  const res = await service(model).chat({ session_id: "s-form", customer_id: 101, message: "Item damaged, I want a refund" });
+
+  expect(res.body).toMatchObject({ ticket_id: 2041 });
+  expect(db.requests).toEqual([expect.objectContaining({ ticket_id: 2041, form_id: "damaged_item", order_ids: [1023, 1030] })]);
+  expect(seen).toContain("damaged_item");
+  expect(seen).toContain("asks for which order");
+  expect(seen).not.toContain("payment_problem"); // switched off in the Control Room
+  expect(db.orders[0]!.payment_status).toBe("paid"); // nothing refunded on a guess
+});
+
+test("chat: on a phone call no form is sent; the tool tells Aria to ask out loud", async () => {
+  const svc = service(scripted([{ tool: "request_details", args: { form_id: "damaged_item" } }, { text: "Which order is it?" }]));
+  await svc.chat({ session_id: "voice-x", customer_id: 101, message: "Something arrived broken", channel: "voice" });
+  expect(db.requests).toHaveLength(0);
 });
 
 test("chat: one ticket per session; follow-ups are added as customer comments", async () => {

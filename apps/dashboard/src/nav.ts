@@ -1,4 +1,4 @@
-import { House, LifeBuoy, Handshake, Cable, LayoutGrid, ShieldCheck, Inbox, SquareKanban, Users, Radio, SlidersHorizontal, Logs, ChartColumnBig, Megaphone, ChartPie } from 'lucide-react'
+import { House, LifeBuoy, Handshake, Cable, LayoutGrid, ShieldCheck, Inbox, SquareKanban, Users, Radio, SlidersHorizontal, Logs, ChartColumnBig, Megaphone, ChartPie, PhoneCall, ClipboardList } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import type { Icon } from './meta'
 
@@ -18,9 +18,9 @@ export interface Area {
 
 export const AREAS: Area[] = [
   { id: 'home', label: 'Home', icon: House, home: '/', paths: ['/', '/analytics', '/approvals'] },
-  { id: 'support', label: 'Support', icon: LifeBuoy, home: '/tickets', paths: ['/tickets', '/board'] },
+  { id: 'support', label: 'Support', icon: LifeBuoy, home: '/tickets', paths: ['/tickets', '/board', '/forms'] },
   { id: 'sales', label: 'Sales', icon: Handshake, home: '/sales/analytics', paths: ['/sales/analytics', '/leads', '/campaigns'] },
-  { id: 'connect', label: 'Connect', icon: Cable, home: '/channels', paths: ['/channels', '/connectors'] },
+  { id: 'connect', label: 'Connect', icon: Cable, home: '/channels', paths: ['/channels', '/phone', '/connectors'] },
   { id: 'agent', label: 'Aria', icon: ResolveAIGlyph, home: '/settings', paths: ['/settings', '/audit'] },
 ]
 
@@ -32,10 +32,12 @@ export const PAGES: Record<string, { label: string; icon: Icon }> = {
   '/approvals': { label: 'Approvals', icon: ShieldCheck },
   '/tickets': { label: 'Tickets', icon: Inbox },
   '/board': { label: 'Board', icon: SquareKanban },
+  '/forms': { label: 'Request forms', icon: ClipboardList },
   '/leads': { label: 'Leads', icon: Users },
   '/campaigns': { label: 'Campaigns', icon: Megaphone },
   '/sales/analytics': { label: 'Sales analytics', icon: ChartPie },
   '/channels': { label: 'Channels', icon: Radio },
+  '/phone': { label: 'Phone line', icon: PhoneCall },
   '/connectors': { label: 'Connectors', icon: Cable },
   '/settings': { label: 'Settings', icon: SlidersHorizontal },
   '/audit': { label: 'Audit log', icon: Logs },

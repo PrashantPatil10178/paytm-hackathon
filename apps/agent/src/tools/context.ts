@@ -9,6 +9,8 @@ import type { ToolExecuteOptions } from "@voltagent/core";
 export interface SupportRun {
   ticketId: number;
   customerId: number;
+  /** "voice": a phone call, where forms can't be shown */
+  channel?: "chat" | "voice";
 }
 
 export interface SalesRun {

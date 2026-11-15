@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus, Camera, Send, MessageSquareText, Phone, Loader2, Check, Radio } from 'lucide-react'
 import { api } from '../api'
 import { useApp } from '../store'
@@ -16,6 +17,7 @@ const look = (id) => CHANNELS[id] || EXTRA[id]
 
 export default function Channels() {
   const { toast } = useApp()
+  const navigate = useNavigate()
   const [channels, setChannels] = useState(null)
   const [catalog, setCatalog] = useState([])
   const [adding, setAdding] = useState(false)
@@ -107,11 +109,16 @@ export default function Channels() {
                     <p className="text-sm font-medium text-slate-900">{c.name}</p>
                     <p className="text-xs text-slate-500">{c.desc}</p>
                   </div>
+                  {c.id === 'voice' ? (
+                    // The phone line is real (Sarvam + the demo API): set it up on its own page.
+                    <Button size="sm" variant="primary" icon={Phone} onClick={() => navigate('/phone')}>Set up</Button>
+                  ) : (
                   <Button size="sm" variant="primary" disabled={!!connecting} onClick={() => connect(c)}
                     icon={connecting === c.id ? Loader2 : Check}
                     className={connecting === c.id ? '[&>svg]:animate-spin' : ''}>
                     {connecting === c.id ? 'Connecting' : 'Connect'}
                   </Button>
+                  )}
                 </li>
               )
             })}

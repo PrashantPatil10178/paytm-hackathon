@@ -40,7 +40,7 @@ function Toast({ t, onDismiss }: { t: TicketSummary; onDismiss: () => void }) {
         </span>
         <span className="truncate text-ink-2">{t.subject}</span>
         <span className="text-xs text-ink-3">
-          {t.requester.name} · via {t.via === "chat" ? "ShopKart chat" : t.via}
+          {t.requester.name} · via {t.via === "chat" ? "ShopKart chat" : t.via === "voice" ? "Phone call" : t.via}
         </span>
       </button>
       <button type="button" onClick={onDismiss} aria-label={`Dismiss ticket #${t.id}`} className="grid size-7 flex-none cursor-pointer place-items-center rounded text-ink-3 hover:bg-wash hover:text-ink">

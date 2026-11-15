@@ -14,6 +14,10 @@ import type {
   Contact,
   DealStage,
   EnquiryNeed,
+  InfoAnswer,
+  InfoField,
+  InfoRequestField,
+  InfoRequestStatus,
   LeadScore,
   LeadStatus,
   OrderItem,
@@ -25,6 +29,8 @@ import type {
   TicketPriority,
   TicketStatus,
   TicketType,
+  VoiceCallStatus,
+  VoiceTranscriptTurn,
   ZdComment,
 } from "@ph/shared";
 import { relations } from "drizzle-orm";
@@ -120,6 +126,61 @@ export const chatSessions = pgTable("chat_sessions", {
   session_id: text().primaryKey(),
   ticket_id: integer().notNull().references(() => tickets.id, { onDelete: "cascade" }),
 });
+
+/** Calls to the Sarvam phone line. One call = one ticket (created on the first turn, or by the end-of-call webhook). */
+export const voiceCalls = pgTable(
+  "voice_calls",
+  {
+    interaction_id: text().primaryKey(),
+    status: text().$type<VoiceCallStatus>().notNull().default("live"),
+    caller_phone: text().notNull().default(""),
+    line_phone: text().notNull().default(""),
+    customer_id: integer().references(() => customers.id, { onDelete: "set null" }),
+    ticket_id: integer().references(() => tickets.id, { onDelete: "set null" }),
+    turns: integer().notNull().default(0),
+    duration: real(),
+    transcript: jsonb().$type<VoiceTranscriptTurn[]>().notNull().default([]),
+    variables: jsonb().$type<Record<string, unknown>>(),
+    started_at: at().notNull(),
+    last_activity_at: at().notNull(),
+    ended_at: at(),
+  },
+  (t) => [index().on(t.started_at)],
+);
+
+/** Forms the team sets up: the details to collect from a customer (Control Room › Request forms). */
+export const infoForms = pgTable("info_forms", {
+  id: text().primaryKey(),
+  position: integer().notNull().default(0),
+  title: text().notNull(),
+  ask: text().notNull(),
+  use_for: text().notNull(),
+  fields: jsonb().$type<InfoField[]>().notNull(),
+  active: boolean().notNull().default(true),
+  updated_at: at().notNull(),
+});
+
+/** A form sent into a chat, by Aria or a person, and the customer's answers. */
+export const infoRequests = pgTable(
+  "info_requests",
+  {
+    id: id(),
+    ticket_id: integer()
+      .notNull()
+      .references(() => tickets.id, { onDelete: "cascade" }),
+    customer_id: integer().references(() => customers.id, { onDelete: "set null" }),
+    form_id: text().notNull(),
+    title: text().notNull(),
+    ask: text().notNull(),
+    fields: jsonb().$type<InfoRequestField[]>().notNull(),
+    requested_by: text().notNull(),
+    status: text().$type<InfoRequestStatus>().notNull().default("waiting"),
+    answers: jsonb().$type<InfoAnswer[]>(),
+    created_at: at().notNull(),
+    answered_at: at(),
+  },
+  (t) => [index().on(t.ticket_id), index().on(t.created_at)],
+);
 
 /* ───── HubSpot CRM ───── */
 
@@ -254,4 +315,4 @@ export const campaignResponsesRelations = relations(campaignResponses, ({ one })
 export const activitiesRelations = relations(activities, ({ one }) => ({ deal: one(deals, { fields: [activities.deal_id], references: [deals.id] }) }));
 
 /** Every demo table, children first: the order `reset` truncates in. */
-export const DEMO_TABLES = ["analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+export const DEMO_TABLES = ["info_requests", "info_forms", "voice_calls", "analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;

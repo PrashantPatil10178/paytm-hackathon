@@ -114,5 +114,27 @@ export function supportTools(api: DemoAPI) {
     },
   });
 
-  return [getCustomerOrders, getOrder, updateTicket, addInternalNote, startRefund, escalateToHuman];
+  const requestDetails = createTool({
+    name: "request_details",
+    description:
+      "Send one of the team's request forms into the customer's chat, so they can tap their answers (which order, " +
+      "what went wrong, a photo, a bank reference). Only the forms listed in the ticket header exist. Sets the ticket " +
+      "to pending and logs a note itself. Their answers come back as their next message. Chat only, not on phone calls.",
+    parameters: z.object({
+      form_id: z.string().describe("A form id from the ticket header, e.g. damaged_item"),
+      order_ids: z.array(z.number().int()).max(6).optional().describe("Offer only these of the customer's orders; leave out to offer all"),
+    }),
+    execute: async ({ form_id, order_ids }, opts) => {
+      const run = runOf<SupportRun>(opts);
+      if (run.channel === "voice") return { ok: false, why: "This is a phone call: ask the question out loud instead" };
+      try {
+        const r = await api.createInfoRequest({ ticket_id: run.ticketId, form_id, ...(order_ids?.length && { order_ids }) });
+        return { ok: true, form: r.title, asks_for: r.fields.map((f) => f.label), customer_sees: r.ask };
+      } catch (e) {
+        return { ok: false, why: (e as Error).message };
+      }
+    },
+  });
+
+  return [getCustomerOrders, getOrder, updateTicket, addInternalNote, startRefund, escalateToHuman, requestDetails];
 }

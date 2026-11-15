@@ -30,6 +30,7 @@ import { computeMetrics, saveReport } from "./analytics.ts";
 import { contactForEmail, convertResponse, listResponses, skipResponse } from "./campaigns.ts";
 import { createContact, createDeal, logActivity } from "./crm.ts";
 import { db } from "./db.ts";
+import { createInfoRequest } from "./forms.ts";
 import { bad, body, CORS, handle, ok } from "./http.ts";
 import { customerOrders, findCustomer, refundOrder } from "./shop.ts";
 import { addComment, createTicket, findTicket, ticketExists, updateTicket } from "./zendesk.ts";
@@ -96,8 +97,20 @@ function trackingReply(o: Order): string {
   }
 }
 
+/**
+ * One chat message, answered by the agent when AGENT_URL is set (else, or if it fails, by the stand-in).
+ * The phone line (/voice/turn) uses this, since it needs the reply as data rather than a forwarded response.
+ */
+export async function runChat(req: ChatRequest, timeoutMs = 60_000): Promise<ChatResponse> {
+  const res = await forward("/chat", req, timeoutMs);
+  if (res?.ok) return (await res.json()) as ChatResponse;
+  if (res) console.warn(`[agent] /chat answered ${res.status}, using the built-in stand-in`);
+  return simulateChat(req);
+}
+
 async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
   const customer = await findCustomer(req.customer_id);
+  const via = req.channel === "voice" ? "voice" : "chat";
   const intent = intentOf(req.message);
   const order = await pickOrder(customer.id, req.message, intent);
 
@@ -118,13 +131,13 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
       subject,
       comment: req.message,
       requester_id: customer.id,
-      via: "chat",
+      via,
       assignee: BOT,
       status: "open",
       order_id: order?.id ?? null,
       type: intent === "track" || intent === "other" ? "question" : "incident",
       priority: intent === "payment" ? "critical" : intent === "refund" ? "medium" : "low",
-      tags: [intent === "track" ? "wismo" : intent, "chat"],
+      tags: [intent === "track" ? "wismo" : intent, via],
     });
     await db
       .insert(s.chatSessions)
@@ -135,6 +148,28 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
   await sleep(900 + Math.random() * 900); // let the typing indicator breathe
 
   let reply: string;
+  // In the chat, an unclear refund or payment problem gets a form to pick the order (and say what went wrong)
+  // instead of a guess. On a phone call the voice agent asks out loud instead.
+  const named = /#?\b1\d{3}\b/.test(req.message);
+  const formId =
+    via !== "chat" || named ? null
+    : intent === "refund" && order?.status !== "damaged" ? "damaged_item"
+    : intent === "payment" && !order ? "payment_problem"
+    : null;
+  if (formId) {
+    const mine = await customerOrders(customer.id);
+    const pick = formId === "damaged_item" ? mine.filter((o) => o.status === "delivered").map((o) => o.id) : [];
+    const sent = await createInfoRequest({ ticket_id: ticket.id, form_id: formId, order_ids: pick.length ? pick : undefined }).catch((e: Error) => {
+      console.warn(`[agent] stand-in couldn't send the ${formId} form: ${e.message}`);
+      return null;
+    });
+    if (sent) {
+      reply = formId === "damaged_item" ? "Sorry to hear that! Pick the order below and tell me what went wrong, and I'll sort it out." : "Let's get this checked. Pick the order below and share the bank reference from your SMS.";
+      await addComment(ticket.id, { public: true, body: reply });
+      return { reply, ticket_id: ticket.id };
+    }
+  }
+
   if (intent === "payment" && order) {
     await addComment(ticket.id, {
       public: false,

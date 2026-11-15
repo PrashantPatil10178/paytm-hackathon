@@ -27,6 +27,8 @@ const ChatBody = z.object({
   session_id: z.string().min(1),
   customer_id: z.coerce.number().int().positive(),
   message: z.string().trim().min(1),
+  /** "voice" = spoken on the phone line (Sarvam): the ticket is via voice and the reply is read aloud. */
+  channel: z.enum(["chat", "voice"]).default("chat"),
 });
 
 const LeadBody = z.object({
@@ -65,7 +67,7 @@ export interface ServiceDeps {
 
 export function createService({ api, support, sales, analysis, leads, sessions = memorySessions(), analysisMemory, log = console }: ServiceDeps) {
 
-  async function ticketFor(sessionId: string, customerId: number, message: string): Promise<{ id: number; customer: string; isNew: boolean }> {
+  async function ticketFor(sessionId: string, customerId: number, message: string, channel: "chat" | "voice" = "chat"): Promise<{ id: number; customer: string; isNew: boolean }> {
     const known = await sessions.get(sessionId);
     if (known) {
       try {
@@ -82,30 +84,45 @@ export function createService({ api, support, sales, analysis, leads, sessions =
       subject: message.length > 60 ? `${message.slice(0, 57)}…` : message,
       comment: message,
       requester_id: customerId,
-      via: "chat",
+      via: channel,
       status: "open",
       assignee: BOT,
-      tags: ["chat"],
+      tags: [channel],
     });
     await sessions.set(sessionId, { ticketId: t.id, ticketCreatedAt: t.created_at });
     return { id: t.id, customer: t.requester.name, isNew: true };
   }
 
+  /** The request forms the team switched on, one line each for the prompt. None if the API can't say. */
+  async function activeForms(): Promise<string[]> {
+    try {
+      const { forms } = await api.infoForms();
+      return forms
+        .filter((f) => f.active)
+        .map((f) => `- ${f.id}: "${f.title}", asks for ${f.fields.filter((x) => x.enabled).map((x) => x.label.replace(/\?$/, "").toLowerCase()).join(", ")}. Use for: ${f.use_for}`);
+    } catch (e) {
+      log.warn(`[agent] couldn't load the request forms: ${errorText(e)}`);
+      return [];
+    }
+  }
+
   async function chat(raw: unknown): Promise<Result<ChatResponse>> {
     const parsed = ChatBody.safeParse(raw);
     if (!parsed.success) return invalid(parsed.error);
-    const { session_id, customer_id, message } = parsed.data;
+    const { session_id, customer_id, message, channel } = parsed.data;
 
     return guard(async () => {
-      const ticket = await ticketFor(session_id, customer_id, message);
-      const prompt = `[Zendesk ticket #${ticket.id}${ticket.isNew ? " (new)" : ""} · customer ${ticket.customer} (id ${customer_id}) · today ${today()}]\n${message}`;
+      const [ticket, forms] = await Promise.all([ticketFor(session_id, customer_id, message, channel), channel === "chat" ? activeForms() : []]);
+      const via = channel === "voice" ? " · phone call: your reply is spoken aloud" : "";
+      const formList = forms.length ? `\nForms you can send with request_details:\n${forms.join("\n")}` : "";
+      const prompt = `[Zendesk ticket #${ticket.id}${ticket.isNew ? " (new)" : ""} · customer ${ticket.customer} (id ${customer_id})${via} · today ${today()}${formList}]\n${message}`;
 
       let reply: string;
       try {
         const res = await support.generateText(prompt, {
           userId: `customer-${customer_id}`,
           conversationId: session_id,
-          context: runContext({ ticketId: ticket.id, customerId: customer_id }),
+          context: runContext({ ticketId: ticket.id, customerId: customer_id, channel }),
         });
         reply = res.text.trim();
         if (!reply) throw new Error("the model returned an empty reply");

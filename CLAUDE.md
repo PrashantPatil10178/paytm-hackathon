@@ -13,7 +13,7 @@ Judges watch the agent's work appear live, so the screens matter as much as the 
 | `apps/zendesk` | Zendesk look-alike: views, tickets, replies, internal notes | 3001 | Bun HTML bundler, React 19, Tailwind v4 |
 | `apps/hubspot` | HubSpot CRM look-alike: deals pipeline (drag and drop), contacts | 3002 | same |
 | `apps/shopkart` | Customer side: shop, My Orders, support chat, business enquiry | 3003 | same |
-| `apps/dashboard` | ResolveAI Control Room: areas Home, Support, Sales, Connect, Aria (KPIs, analytics, tickets, leads, campaigns, approvals, board, connectors, audit, settings) | 3004 | Vite 8, React 19 (TS + some JSX), Tailwind v4, Recharts |
+| `apps/dashboard` | ResolveAI Control Room: areas Home, Support, Sales, Connect, Aria (KPIs, analytics, tickets, leads, campaigns, approvals, board, channels, phone line, connectors, audit, settings) | 3004 | Vite 8, React 19 (TS + some JSX), Tailwind v4, Recharts |
 | `apps/agent` | The ResolveAI agents (support, sales, analysis, leads): `/chat`, `/lead`, `/analysis`, `/campaigns/sync` | 8000 | Bun, VoltAgent (`@voltagent/core`, `server-hono`) |
 | `apps/copilot` | CopilotKit runtime behind the dashboard's "Ask Aria" chat (`/api/copilotkit`) | 4100 | Bun, `@copilotkit/runtime/v2` |
 | `packages/db` | Postgres: Drizzle schema, SQL migrations, seed data, row → API type mappers | – | Drizzle ORM on `Bun.SQL` |
@@ -46,6 +46,17 @@ instructions), not as hidden background jobs.
 - ShopKart sends `POST /chat` and `POST /lead` to the API; the Control Room sends `POST /analysis` and `POST /campaigns/sync`.
   With `AGENT_URL` set, the API forwards all four unchanged to the agent; if it is unset or unreachable,
   `apps/api/src/agent.ts` answers with a rule-based stand-in.
+- Phone line: a Sarvam voice agent (Sarvam Voice Agents MCP is configured at user scope) answers the ShopKart number and
+  calls `POST /voice/caller` (on start), `/voice/turn` (tool `ask_resolveai`) and `/voice/calls` (call-completion
+  webhook) in `apps/api/src/voice.ts`. `/voice/turn` runs the same `/chat` flow with `channel: "voice"` and session
+  `voice-<interaction_id>`, so one call = one ticket `via: "voice"`; replies pass through `speakable()` (₹500 → "500 rupees").
+  Calls live in `voice_calls`. Sarvam needs a public URL (`VOICE_PUBLIC_URL`, e.g. ngrok); `VOICE_WEBHOOK_SECRET` guards the POSTs.
+- Request forms (`apps/api/src/forms.ts`, tables `info_forms` / `info_requests`): when the order or the problem is
+  unclear, Aria's `request_details` tool (chat only) sends one of the team's forms into the ShopKart chat; a person can
+  send one from **Support → Request forms**. Order choices are fixed to the customer's own orders when sent, answers
+  are validated against them. The shop chat polls `/info/requests?ticket_id=` and the ticket (for replies a person
+  writes); answers go back to Aria as the next chat message only if she asked and still owns the ticket
+  (`to_aria`), else they go on the ticket. Active forms are listed in the support prompt's ticket header.
 - The agent acts only through the API's Zendesk / CRM / shop endpoints (listed in `README.md`).
 - **`packages/shared/src/types.ts` is the contract.** The agent imports it too; its zod request schemas are in
   `apps/agent/src/service.ts`, so change them together.
@@ -125,7 +136,7 @@ To change memory: keep thread keys in `service.ts` built from `personKey` / `ANA
 
 - Data comes **only** through `src/api.ts`. Most pages read mock JSON in `src/data/` (timestamps shifted so the newest
   event is always recent); swap function bodies there, keep the return shapes. **Analytics** (`/analytics`, Home area),
-  **Sales analytics** (`/sales/analytics`) and **Campaigns** (`/campaigns`) are live: `live.use*()` in `api.ts` polls the
+  **Sales analytics** (`/sales/analytics`), **Campaigns** (`/campaigns`), **Phone line** (`/phone`, Connect area) and **Request forms** (`/forms`, Support area) are live: `live.use*()` in `api.ts` polls the
   demo API through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Shapes come from `@ph/shared`.
 - The Sales area holds every sales task: Sales analytics (its home: `AnalyticsView scope="sales"`, the sales charts and
   the latest sales report), Leads (mock JSON) and Campaigns (live, runs the leads agent). A new sales page goes there.
@@ -206,5 +217,6 @@ To change memory: keep thread keys in `service.ts` built from `personKey` / `ANA
 - Screenshots / visual checks: `bunx playwright@1.60.0 screenshot --color-scheme=dark|light …` matches the
   locally installed Chromium; other versions try to download a browser.
 - Never commit `.env` (only `.env.example`). Env vars that matter: `DATABASE_URL`, `AGENT_URL`, `API_URL`, `AGENT_MODEL_HEAVY`,
-  `AGENT_MODEL_LITE`, `AGENT_MEMORY_RETENTION_DAYS`, and for Ask Aria
+  `AGENT_MODEL_LITE`, `AGENT_MEMORY_RETENTION_DAYS`, `VOICE_PUBLIC_URL` / `VOICE_NUMBER` / `VOICE_WEBHOOK_SECRET` /
+  `VOICE_DEFAULT_CUSTOMER_ID` for the phone line, and for Ask Aria
   `COPILOT_MODEL`, `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` + `OPENAI_BASE_URL`. Bun loads the root `.env` in apps/copilot via `--env-file`.

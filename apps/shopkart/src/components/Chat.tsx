@@ -2,6 +2,7 @@ import { clock } from "@ph/shared";
 import { CheckCheck, MessageCircle, SendHorizontal, Ticket, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useChat, useCustomer, type ChatMessage } from "../store.tsx";
+import { ChatForm } from "./ChatForm.tsx";
 import { LogoMark } from "./Logo.tsx";
 import { BRAND, ResolveAIGlyph } from "@ph/shared/brand";
 
@@ -61,8 +62,13 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
 
   useEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-  }, [messages.length, typing]);
+    if (!el) return;
+    const behavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    // A new form is taller than the window: bring its top into view so the question is read first.
+    const form = messages.at(-1)?.from === "form" ? [...el.querySelectorAll<HTMLElement>("[data-chat-form]")].at(-1) : undefined;
+    const top = form ? el.scrollTop + form.getBoundingClientRect().top - el.getBoundingClientRect().top - 12 : el.scrollHeight;
+    el.scrollTo({ top, behavior });
+  }, [messages, typing]);
 
   // Focus the box when the widget opens or a "Need help?" button fills it in.
   useEffect(() => {
@@ -172,6 +178,7 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
 }
 
 function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
+  if (m.from === "form" && m.requestId) return <ChatForm requestId={m.requestId} />;
   if (m.from === "system")
     return (
       <p className="mx-auto my-1.5 flex animate-pop-in items-center gap-1.5 rounded-lg bg-[#e1f2fb] px-3 py-1 text-[12px] font-semibold text-[#1b4f6b] shadow-[0_1px_0.5px_rgb(11_20_26/0.13)]">
@@ -185,6 +192,8 @@ function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
         mine ? "self-end bg-chat-out" : m.failed ? "self-start bg-bad-wash" : "self-start bg-chat-in"
       } ${tail ? (mine ? "mt-1.5 rounded-tr-none" : "mt-1.5 rounded-tl-none") : ""}`}
     >
+      {m.from === "team" && m.author && <p className="mb-0.5 text-[12.5px] font-semibold text-jamun">{m.author.split(" – ")[0]} · ShopKart team</p>}
+      {m.image && <img src={m.image} alt="Photo you sent" className="mb-1 max-h-40 rounded-md object-cover" />}
       <p className="text-[14.5px] leading-snug whitespace-pre-wrap text-[#111b21] [overflow-wrap:anywhere]">{m.text}</p>
       <span className="mt-0.5 flex items-center justify-end gap-1 self-end text-[11px] text-[#667781]">
         {clock(m.at.toISOString())}

@@ -3,7 +3,7 @@ import type { BunRequest } from "bun";
 export const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
-  "access-control-allow-headers": "content-type, authorization",
+  "access-control-allow-headers": "content-type, authorization, x-api-key",
 };
 
 export class HttpError extends Error {

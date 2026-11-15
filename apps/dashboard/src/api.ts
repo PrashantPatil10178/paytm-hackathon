@@ -9,7 +9,8 @@ import workspace from './data/workspace.json'
 import { api as http, usePoll } from '@ph/shared/react'
 import type {
   AnalysisReport, AnalysisResponse, AnalysisScope, AnalyticsMetrics, CampaignResponse, CampaignResponseStatus, CampaignSummary,
-  DealCard, DealDetail, DealStage, LeadSyncResponse,
+  CreateInfoRequestBody, DealCard, DealDetail, DealStage, InfoForm, InfoRequest, LeadSyncResponse, TicketSummary, UpdateInfoFormBody,
+  VoiceCall, VoiceLine,
 } from '@ph/shared'
 import type {
   Approvals, ChannelConnection, ChannelOffer, Connector, ConnectorOffer, Decision, Lead, Settings, Stats, Status,
@@ -63,6 +64,11 @@ export const api = {
   // Live: the agents. Each waits for the model, so these take seconds (the lead sync up to a few minutes).
   runAnalysis: (focus?: string, scope: AnalysisScope = 'all') => http.post<AnalysisResponse>('/analysis', { scope, ...(focus ? { focus } : {}) }),
   syncCampaignLeads: (limit = 10) => http.post<LeadSyncResponse>('/campaigns/sync', { limit }),
+
+  // Live: request forms (Support › Request forms).
+  updateForm: (id: string, changes: UpdateInfoFormBody) => http.patch<InfoForm>(`/info/forms/${id}`, changes),
+  sendForm: (body: CreateInfoRequestBody) => http.post<InfoRequest>('/info/requests', body),
+  withdrawForm: (id: number) => http.post<InfoRequest>(`/info/requests/${id}/withdraw`, {}),
 }
 
 /** Live, polled reads from the demo API. Identical payloads keep the same object, so idle pages don't re-render. */
@@ -78,4 +84,14 @@ export const live = {
   /** All responses when `status` is omitted. */
   useResponses: (status?: CampaignResponseStatus) =>
     usePoll<{ responses: CampaignResponse[] }>(`/campaigns/responses${status ? `?status=${status}` : ''}`, 4000),
+  /** The Sarvam phone line: number, setup and today's counts. Pass false to skip. */
+  useVoiceLine: (enabled = true) => usePoll<VoiceLine>(enabled ? '/voice/line' : null, 3000),
+  /** Calls to the phone line, newest first (transcripts arrive when a call ends). */
+  useVoiceCalls: () => usePoll<{ calls: VoiceCall[] }>('/voice/calls', 2000),
+  /** The request forms the team set up. */
+  useInfoForms: () => usePoll<{ forms: InfoForm[] }>('/info/forms', 5000),
+  /** Forms sent into customers' chats, newest first. Pass false to skip. */
+  useInfoRequests: (enabled = true) => usePoll<{ requests: InfoRequest[] }>(enabled ? '/info/requests' : null, 2500),
+  /** Unsolved Zendesk tickets (the real helpdesk, not the mock list): where a person can send a form. */
+  useOpenTickets: () => usePoll<{ tickets: TicketSummary[] }>('/zendesk/tickets?view=all_unsolved', 4000),
 }

@@ -94,6 +94,11 @@ instructions), not as hidden background jobs.
   Sales, Connect, Aria) and widens on hover; the panel beside it lists the current area's pages, its filtered views
   (ticket status, lead stage, driven by `?status=` / `?stage=`) and live lists. ⌘B hides the panel. A new page goes in
   one area's `paths` and in `PAGES`.
+- The panel is resizable (`src/components/PanelResize.tsx`): drag its edge; under 160px the labels cascade out
+  (`.cascade-item` in `index.css`, driven by the live width) and on release it settles into the rail.
+- Editable tables use `src/components/DataTable.tsx` (Tickets, Leads): cell cursor, edit on double-click/Enter,
+  sortable headers with sliding rows, row selection with bulk actions, undo/redo. It is controlled: pages pass
+  `rows` and get `onRowsChange(next, change)`; sync side effects (helpdesk status) there.
 - **Theming** (`src/index.css`, `src/theme.jsx`): light is the default token set, `[data-theme="dark"]` on `<html>`
   overrides it. `index.html` sets the attribute before first paint (saved choice, else the OS); the topbar toggle
   switches it. Rules that keep both themes working:

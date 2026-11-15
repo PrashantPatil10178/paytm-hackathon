@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { Search, PanelLeftClose, Flame } from 'lucide-react'
 import { ResolveAIGlyph, ResolveAIMark } from '@ph/shared/brand'
@@ -136,17 +136,22 @@ interface AreaContent {
   extra?: 'live' | 'hot'
 }
 
-function SideLink({ to, label, icon: ItemIcon, dot, active, count, countTone, onNavigate }: NavItem & { onNavigate?: () => void }) {
+/** Position in the top-down cascade (see `.cascade-item` in index.css). */
+const cascade = (i: number) => ({ className: 'cascade-item', style: { '--i': i } as CSSProperties })
+
+const LINK = 'group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] whitespace-nowrap transition-colors'
+const LABEL = 'flex items-center justify-between px-2.5 pb-1.5 text-[11px] font-medium whitespace-nowrap text-slate-400'
+
+function SideLink({ item, i, onNavigate }: { item: NavItem; i: number; onNavigate?: () => void }) {
+  const { to, label, icon: ItemIcon, dot, active, count, countTone } = item
+  const c = cascade(i)
   return (
-    <li>
+    <li className={c.className} style={c.style}>
       <Link
         to={to}
         onClick={onNavigate}
         aria-current={active ? 'page' : undefined}
-        className={cn(
-          'group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] font-medium transition-colors',
-          active ? 'bg-ink/[0.07] text-slate-950' : 'text-slate-600 hover:bg-ink/[0.04] hover:text-slate-950',
-        )}
+        className={cn(LINK, 'font-medium', active ? 'bg-ink/[0.07] text-slate-950' : 'text-slate-600 hover:bg-ink/[0.04] hover:text-slate-950')}
       >
         {ItemIcon ? (
           <ItemIcon className={cn('size-4 shrink-0', active ? 'text-slate-950' : 'text-slate-500 group-hover:text-slate-800')} aria-hidden />
@@ -164,72 +169,57 @@ function SideLink({ to, label, icon: ItemIcon, dot, active, count, countTone, on
   )
 }
 
-function Section({ label, meta, children }: { label?: string; meta?: ReactNode; children: ReactNode }) {
+function SectionLabel({ label, meta, i }: { label: string; meta?: ReactNode; i: number }) {
+  const c = cascade(i)
   return (
-    <div>
-      {label && (
-        <p className="flex items-center justify-between px-2.5 pb-1.5 text-[11px] font-medium text-slate-400">
-          {label} {meta != null && <span className="ref">{meta}</span>}
-        </p>
-      )}
-      <ul className="space-y-px">{children}</ul>
-    </div>
+    <p className={cn(LABEL, c.className)} style={c.style}>
+      {label} {meta != null && <span className="ref">{meta}</span>}
+    </p>
   )
 }
 
-const ROW = 'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] text-slate-600 transition-colors hover:bg-ink/[0.04] hover:text-slate-950'
-
-/** Conversations the agent has open right now. */
-function LiveNow({ tickets, onNavigate }: { tickets: Ticket[]; onNavigate?: () => void }) {
-  const live = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress')
-  if (!live.length) return null
+/** A conversation the agent has open right now. */
+function LiveRow({ t, i, onNavigate }: { t: Ticket; i: number; onNavigate?: () => void }) {
+  const c = cascade(i)
   return (
-    <Section label="Live now" meta={live.length}>
-      {live.map((t) => (
-        <li key={t.id}>
-          <Link to={`/tickets?id=${t.id}`} onClick={onNavigate} className={ROW}>
-            <span className="relative flex size-1.5 shrink-0">
-              {t.status === 'in_progress' && <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand-500 opacity-70 motion-reduce:hidden" />}
-              <span className={cn('relative inline-flex size-1.5 rounded-full', t.status === 'in_progress' ? 'bg-brand-500' : 'bg-slate-500')} />
-            </span>
-            <span className="truncate">{t.customer.name}</span>
-            <span className="ref ml-auto text-[11px] text-slate-500">{t.id}</span>
-          </Link>
-        </li>
-      ))}
-    </Section>
+    <li className={c.className} style={c.style}>
+      <Link to={`/tickets?id=${t.id}`} onClick={onNavigate} className={cn(LINK, 'text-slate-600 hover:bg-ink/[0.04] hover:text-slate-950')}>
+        <span className="relative flex size-1.5 shrink-0">
+          {t.status === 'in_progress' && <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand-500 opacity-70 motion-reduce:hidden" />}
+          <span className={cn('relative inline-flex size-1.5 rounded-full', t.status === 'in_progress' ? 'bg-brand-500' : 'bg-slate-500')} />
+        </span>
+        <span className="truncate">{t.customer.name}</span>
+        <span className="ref ml-auto text-[11px] text-slate-500">{t.id}</span>
+      </Link>
+    </li>
   )
 }
 
-/** Leads the agent scored hot, best first. */
-function HotLeads({ leads, onNavigate }: { leads: Lead[]; onNavigate?: () => void }) {
-  const hot = leads.filter((l) => l.hot).sort((a, b) => b.score - a.score)
-  if (!hot.length) return null
+/** A lead the agent scored hot. */
+function HotRow({ l, i, onNavigate }: { l: Lead; i: number; onNavigate?: () => void }) {
+  const c = cascade(i)
   return (
-    <Section label="Hot leads" meta={hot.length}>
-      {hot.map((l) => (
-        <li key={l.id}>
-          <Link to={`/leads?id=${l.id}`} onClick={onNavigate} className={ROW}>
-            <Flame className="size-3.5 shrink-0 text-amber-600" aria-hidden />
-            <span className="truncate">{l.company}</span>
-            <span className="ref ml-auto text-[11px] text-slate-500" aria-label={`score ${l.score}`}>{l.score}</span>
-          </Link>
-        </li>
-      ))}
-    </Section>
+    <li className={c.className} style={c.style}>
+      <Link to={`/leads?id=${l.id}`} onClick={onNavigate} className={cn(LINK, 'text-slate-600 hover:bg-ink/[0.04] hover:text-slate-950')}>
+        <Flame className="size-3.5 shrink-0 text-amber-600" aria-hidden />
+        <span className="truncate">{l.company || 'Untitled lead'}</span>
+        <span className="ref ml-auto text-[11px] text-slate-500" aria-label={`score ${l.score}`}>{l.score}</span>
+      </Link>
+    </li>
   )
 }
 
 /** Aria's status and the share of queries the AI solved over the last two weeks. */
-function AriaCard({ settings, onNavigate }: { settings: Settings | null; onNavigate?: () => void }) {
+function AriaCard({ settings, i, onNavigate }: { settings: Settings | null; i: number; onNavigate?: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null)
   useEffect(() => { api.getStats().then(setStats) }, [])
   if (!settings) return null
   const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0)
   const ai = stats ? sum(stats.daily.ai) : 0
   const all = stats ? ai + sum(stats.daily.human) : 0
+  const c = cascade(i)
   return (
-    <Link to="/settings" onClick={onNavigate} className="mt-4 block rounded-xl border border-ink/[0.07] bg-surface p-3 transition-colors hover:border-ink/[0.12]">
+    <Link to="/settings" onClick={onNavigate} style={c.style} className={cn(c.className, 'mt-4 block rounded-xl border border-ink/[0.07] bg-surface p-3 transition-colors hover:border-ink/[0.12]')}>
       <div className="flex items-center gap-2.5">
         <span className="relative grid size-7 shrink-0 place-items-center rounded-lg border border-ink/[0.08] bg-ink/[0.04] text-brand-600">
           <ResolveAIGlyph className="size-5" />
@@ -351,19 +341,65 @@ export function AreaPanel({ onSearch, onCollapse, onNavigate }: { onSearch: () =
   const area = areaOf(pathname)
   const { fact, groups, extra } = useAreaContent(area.id)
 
+  const live = extra === 'live' ? tickets.filter((t) => t.status === 'open' || t.status === 'in_progress') : []
+  const hot = extra === 'hot' ? leads.filter((l) => l.hot).sort((a, b) => b.score - a.score) : []
+
+  // Number every row top to bottom, so they leave in that order when the panel narrows:
+  // header, search, each group's label and links, the live list, then Aria's card.
+  const head = 0
+  const search = 1
+  let n = 2
+  const groupAt: { label: number; items: number[] }[] = []
+  for (const g of groups) {
+    const label = g.label ? n++ : -1
+    const items: number[] = []
+    for (let k = 0; k < g.items.length; k++) items.push(n++)
+    groupAt.push({ label, items })
+  }
+  const list = live.length ? live : hot
+  const listAt = list.length ? n++ : -1
+  const rowsAt = list.map((_, k) => n + k)
+  n += list.length
+  const card = n++
+
+  const sections = groups.map((g, gi) => (
+    <div key={g.label ?? gi}>
+      {g.label && <SectionLabel label={g.label} i={groupAt[gi]!.label} />}
+      <ul className="space-y-px">
+        {g.items.map((item, k) => <SideLink key={item.to} item={item} i={groupAt[gi]!.items[k]!} onNavigate={onNavigate} />)}
+      </ul>
+    </div>
+  ))
+  const liveList = live.length > 0 && (
+    <div>
+      <SectionLabel label="Live now" meta={live.length} i={listAt} />
+      <ul className="space-y-px">{live.map((t, k) => <LiveRow key={t.id} t={t} i={rowsAt[k]!} onNavigate={onNavigate} />)}</ul>
+    </div>
+  )
+  const hotList = hot.length > 0 && (
+    <div>
+      <SectionLabel label="Hot leads" meta={hot.length} i={listAt} />
+      <ul className="space-y-px">{hot.map((l, k) => <HotRow key={l.id} l={l} i={rowsAt[k]!} onNavigate={onNavigate} />)}</ul>
+    </div>
+  )
+  const h = cascade(head)
+  const s = cascade(search)
+
   return (
-    <div className="flex h-full w-[232px] shrink-0 flex-col border-r border-ink/[0.06] bg-canvas px-3 pt-3 pb-4">
+    <div className="flex h-full w-full flex-col px-3 pt-3 pb-4" style={{ '--n': n } as CSSProperties}>
       <div className="flex items-start gap-2 px-1">
         <div key={area.id} className="min-w-0 flex-1 animate-rise py-1">
-          <h2 className="truncate text-[15px] leading-tight font-semibold tracking-[-0.01em] text-slate-950">{area.label}</h2>
-          <p className="ref mt-1 truncate text-[11px] text-slate-500">{fact}</p>
+          <div className={h.className} style={h.style}>
+            <h2 className="truncate text-[15px] leading-tight font-semibold tracking-[-0.01em] text-slate-950">{area.label}</h2>
+            <p className="ref mt-1 truncate text-[11px] text-slate-500">{fact}</p>
+          </div>
         </div>
         {onCollapse && (
           <button
             onClick={onCollapse}
             className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg text-slate-500 transition-colors hover:bg-ink/[0.06] hover:text-slate-950"
             aria-label="Hide sidebar"
-            title="Hide sidebar"
+            title="Hide sidebar (⌘B)"
           >
             <PanelLeftClose className="size-4" />
           </button>
@@ -372,24 +408,21 @@ export function AreaPanel({ onSearch, onCollapse, onNavigate }: { onSearch: () =
 
       <button
         onClick={onSearch}
-        className="mt-4 flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 text-[13px] text-slate-500 transition-colors hover:bg-ink/[0.04] hover:text-slate-800"
+        style={s.style}
+        className={cn(s.className, 'mt-4 flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 text-[13px] text-slate-500 transition-colors hover:bg-ink/[0.04] hover:text-slate-800')}
       >
         <Search className="size-4" aria-hidden />
         <span className="flex-1 text-left">Search</span>
         <kbd className="font-mono text-[10px] text-slate-400">⌘K</kbd>
       </button>
 
-      <nav key={area.id} className="scrollbar-thin mt-4 flex-1 animate-fade-in space-y-5 overflow-y-auto" aria-label={area.label}>
-        {groups.map((g, i) => (
-          <Section key={g.label ?? i} label={g.label}>
-            {g.items.map((item) => <SideLink key={item.to} {...item} onNavigate={onNavigate} />)}
-          </Section>
-        ))}
-        {extra === 'live' && <LiveNow tickets={tickets} onNavigate={onNavigate} />}
-        {extra === 'hot' && <HotLeads leads={leads} onNavigate={onNavigate} />}
+      <nav key={area.id} className="scrollbar-thin mt-4 flex-1 animate-fade-in space-y-5 overflow-x-hidden overflow-y-auto" aria-label={area.label}>
+        {sections}
+        {liveList}
+        {hotList}
       </nav>
 
-      <AriaCard settings={settings} onNavigate={onNavigate} />
+      <AriaCard settings={settings} i={card} onNavigate={onNavigate} />
     </div>
   )
 }

@@ -9,6 +9,9 @@ export type NewToast = Omit<Toast, 'id' | 'tone'> & { tone?: Toast['tone'] }
 export interface AppState {
   tickets: Ticket[]
   leads: Lead[]
+  /** Replace the lists wholesale; the editable tables use these (they keep their own undo). */
+  setTickets: (next: Ticket[]) => void
+  setLeads: (next: Lead[]) => void
   approvals: Approvals
   settings: Settings | null
   setSettings: (s: Settings) => void
@@ -147,7 +150,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AppState>(
     () => ({
-      tickets, leads, approvals, settings, setSettings, loading,
+      tickets, leads, setTickets, setLeads, approvals, settings, setSettings, loading,
       toasts, toast, dismissToast, moveTicket, decideApproval,
     }),
     [tickets, leads, approvals, settings, loading, toasts, toast, dismissToast, moveTicket, decideApproval],

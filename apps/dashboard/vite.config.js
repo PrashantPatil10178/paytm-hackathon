@@ -19,5 +19,6 @@ const proxy = {
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: { port, strictPort: true, proxy },
-  preview: { port, strictPort: true, proxy },
+  // Deployed behind a proxy on its own domain: listen on every interface and accept any Host.
+  preview: { port, strictPort: true, proxy, host: true, allowedHosts: true },
 })

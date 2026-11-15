@@ -53,7 +53,14 @@ const RETENTION_DAYS = Number(process.env.AGENT_MEMORY_RETENTION_DAYS ?? 30);
 const sessions = DATABASE_URL ? await postgresSessions(DATABASE_URL) : memorySessions();
 
 const platform = createPlatform(API_URL, fetch, INTERNAL_KEY);
-const api = createDemoAPI(API_URL, fetch, () => platform.connectors());
+// Connectors set up on a laptop point at http://localhost:4000/…. When the API runs elsewhere (a container,
+// API_URL=http://api:4000), a localhost base means "the demo API" and is rebased onto API_URL.
+const LOCAL_BASE = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?/;
+const api = createDemoAPI(API_URL, fetch, () =>
+  platform.connectors().then((list) =>
+    LOCAL_BASE.test(API_URL) ? list : list.map((c) => ({ ...c, base_url: c.base_url.replace(LOCAL_BASE, API_URL) })),
+  ),
+);
 // Heavy: triage and money/policy decisions with customers, and reasoning across every dataset.
 // Lite: short status messages and rule-based triage of sales enquiries and campaign responses.
 // ShopKart's policy book (GET /policies): every agent gets the digest, the acting ones lookup_policies too.

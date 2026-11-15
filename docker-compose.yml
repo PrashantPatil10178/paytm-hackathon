@@ -1,0 +1,112 @@
+# Coolify / docker compose deployment of the whole demo. Every service runs from the same image.
+# Values come from the deployment's environment (Coolify → Environment Variables); see .env.example.
+x-app: &app
+  build:
+    context: .
+    args:
+      VITE_ZENDESK_URL: ${VITE_ZENDESK_URL:-}
+      VITE_HUBSPOT_URL: ${VITE_HUBSPOT_URL:-}
+      VITE_SHOP_URL: ${VITE_SHOP_URL:-}
+      VITE_AGENT_URL: ${VITE_AGENT_URL:-}
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: resolveai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: resolveai
+    volumes:
+      - resolveai-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resolveai -d resolveai"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    <<: *app
+    working_dir: /app/apps/api
+    command: ["bun", "src/index.ts"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgres://resolveai:${POSTGRES_PASSWORD}@db:5432/resolveai
+      AGENT_URL: http://agent:8000
+      RESOLVEAI_INTERNAL_KEY: ${RESOLVEAI_INTERNAL_KEY}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-}
+      VOICE_PUBLIC_URL: ${PUBLIC_API_URL:-}
+      VOICE_NUMBER: ${VOICE_NUMBER:-}
+      VOICE_WEBHOOK_SECRET: ${VOICE_WEBHOOK_SECRET:-}
+      VOICE_DEFAULT_CUSTOMER_ID: ${VOICE_DEFAULT_CUSTOMER_ID:-}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      SARVAM_ORG_ID: ${SARVAM_ORG_ID:-}
+      SARVAM_WORKSPACE_ID: ${SARVAM_WORKSPACE_ID:-}
+      SARVAM_WEBHOOK_TOKEN: ${SARVAM_WEBHOOK_TOKEN:-}
+
+  agent:
+    <<: *app
+    working_dir: /app/apps/agent
+    command: ["bun", "src/index.ts"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      AGENT_PORT: 8000
+      API_URL: http://api:4000
+      DATABASE_URL: postgres://resolveai:${POSTGRES_PASSWORD}@db:5432/resolveai
+      RESOLVEAI_INTERNAL_KEY: ${RESOLVEAI_INTERNAL_KEY}
+      AGENT_MODEL_HEAVY: ${AGENT_MODEL_HEAVY:-}
+      AGENT_MODEL_LITE: ${AGENT_MODEL_LITE:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      COPILOT_MODEL: ${COPILOT_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+
+  copilot:
+    <<: *app
+    working_dir: /app/apps/copilot
+    command: ["bun", "src/index.ts"]
+    environment:
+      COPILOT_PORT: 4100
+      COPILOTKIT_TELEMETRY_DISABLED: "true"
+      COPILOT_MODEL: ${COPILOT_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+
+  zendesk:
+    <<: *app
+    working_dir: /app/apps/zendesk
+    command: ["bun", "server.ts"]
+    environment: { PORT: 3001, API_URL: "http://api:4000" }
+
+  hubspot:
+    <<: *app
+    working_dir: /app/apps/hubspot
+    command: ["bun", "server.ts"]
+    environment: { PORT: 3002, API_URL: "http://api:4000" }
+
+  shopkart:
+    <<: *app
+    working_dir: /app/apps/shopkart
+    command: ["bun", "server.ts"]
+    environment: { PORT: 3003, API_URL: "http://api:4000" }
+
+  dashboard:
+    <<: *app
+    working_dir: /app/apps/dashboard
+    command: ["bun", "--bun", "run", "start"]
+    environment:
+      PORT: 3004
+      API_URL: http://api:4000
+      COPILOT_URL: http://copilot:4100
+
+volumes:
+  resolveai-db:

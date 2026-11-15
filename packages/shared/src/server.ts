@@ -41,6 +41,8 @@ export function serveApp(opts: {
 
   const server = Bun.serve({
     port,
+    // /api/chat waits on the agent through the demo API; Bun's default 10 s idle timeout would cut it off.
+    idleTimeout: 120,
     development: dev ? { hmr: true, console: true } : false,
     routes: {
       "/api/*": proxy,

@@ -19,6 +19,8 @@ import { bad, body, handle, intParam, notFound, ok, oneOf } from "./http.ts";
 const STATUSES = ["new", "open", "pending", "solved"] as const;
 const PRIORITIES = ["low", "normal", "high", "urgent"] as const;
 const TYPES = ["question", "incident", "problem"] as const;
+const LEVELS = ["low", "medium", "high", "critical"] as const;
+const HANDLERS = ["low", "medium", "high", "human"] as const;
 const VIEWS = ["all_unsolved", "unassigned", "assigned_humans", "recently_solved"] as const;
 
 export function toPriority(v: unknown): TicketPriority {
@@ -123,6 +125,8 @@ export async function updateTicket(id: number, b: UpdateTicketBody): Promise<Tic
     if (b.type !== undefined) next.type = oneOf(b.type, TYPES, "type");
     if (b.tags !== undefined) next.tags = b.tags;
     if (b.csat !== undefined) next.csat = b.csat;
+    if (b.level !== undefined) next.level = b.level === null ? null : oneOf(b.level, LEVELS, "level");
+    if (b.handled_by !== undefined) next.handled_by = b.handled_by === null ? null : oneOf(b.handled_by, HANDLERS, "handled_by");
     let escalated = t.escalated_by_ai;
     if (b.assignee !== undefined && b.assignee !== t.assignee) {
       // The bot handing its own ticket to a person counts as an AI escalation,

@@ -68,18 +68,29 @@ instructions), not as hidden background jobs.
 
 ## Agent (`apps/agent`)
 
-- Built on VoltAgent. Four agents: `support` (chats: refunds, tracking, payment escalations), `sales` (enquiries:
-  score, stage, book a call), `analysis` (reads `/analytics/metrics`, publishes a report of findings tied to chart
-  datasets) and `leads` (per campaign response: create a scored CRM lead or skip spam/duplicates). `src/index.ts` boots VoltAgent + Hono, `src/service.ts` runs a request,
-  `src/agents/` instructions, `src/tools/` tools, `src/demo-api.ts` the typed client they act through.
-- Split of work: code always opens one ticket per chat session (or a contact + deal per enquiry) and posts the
-  agent's final text as the public reply; the agent decides everything in between with its tools.
-- Hard rules live in tools, not only prompts: tools read the ticket/customer/deal ids from the VoltAgent operation
-  context (`src/tools/context.ts`), never from model arguments, and `start_refund` refuses above ₹1,000.
-- If the model call fails, the customer still gets a reply and the ticket is unassigned with a note. Keep that.
+- Built on VoltAgent. A **main agent** triages every request; **low / medium / high** agents work tickets; critical
+  ones go to a person; `sales` handles enquiries, `analysis` publishes a report of findings tied to chart datasets
+  (reads `/analytics/metrics`) and `leads` turns each campaign response into a scored CRM lead or skips spam/duplicates. `src/index.ts` boots VoltAgent + Hono, `src/service.ts` runs a
+  request end to end, `src/agents/` instructions, `src/tools/` tools, `src/criticality.ts` the level rules,
+  `src/demo-api.ts` the tools' client, `src/platform.ts` the client for ResolveAI's own records.
+- Flow: a channel posts to `POST /intake` with `Authorization: Bearer <channel token>` → the main agent returns a
+  structured triage (new request or status check, intent, signals, confidence, plan) → `assessCriticality` sets the
+  level in code → the ticket is opened/updated with `level`, `handled_by`, priority and a triage note → the level
+  agent acts, or a person gets a brief → the reply goes back and onto the ticket → finished cases are saved to
+  memory (`rai_cases`). High-level refunds wait in `rai_approvals`; the demo API calls the agent's
+  `POST /approvals/:id/decided` after a person decides, and the agent carries it out and tells the customer.
+- Levels: low = information (answers, closes); medium = actions within limits (refunds ≤ ₹1,000); high = refunds
+  above the limit (approval first); critical = failed payments, fraud/legal → a person. Signals (angry + repeat
+  contact, asks for a person) and confidence < 0.6 push a level up. Money and risk rules stay in code, never prompts.
+- Tools read the ticket/customer/deal/run from the VoltAgent operation context (`src/tools/context.ts`), never from model
+  arguments; each tool records a step on the run. Each level agent gets only its level's tools.
+- The agents reach tools through the **connectors** (base URL + token per tool, `rai_connectors`, Control Room →
+  Connectors; campaigns and analytics go straight to the demo API). A connector turned off makes its calls fail with a clear 502. Channels and their hashed tokens are in
+  `rai_channels`; the demo API's own ShopKart forwarding uses `SHOPKART_CHANNEL_TOKEN` (or issues one at startup).
+- If a model call fails, the customer still gets a reply and the ticket goes to a person with a note. Keep that.
 - With `DATABASE_URL`, conversation memory (`@voltagent/postgres`) and chat sessions survive agent restarts.
-- Models, two tiers (`src/models.ts`): heavy (support, analysis) = `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`;
-  lite (sales, leads) = `AGENT_MODEL_LITE`, else `AGENT_MODEL`, else `COPILOT_MODEL`, else `openai/gpt-5.6-luna`.
+- Models, two tiers (`src/models.ts`): heavy (main, low/medium/high, analysis) = `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`;
+  lite (writer, sales, leads) = `AGENT_MODEL_LITE`, else `AGENT_MODEL`, else `COPILOT_MODEL`, else `openai/gpt-5.6-luna`.
   `CLAUDE_API_KEY` is accepted for `ANTHROPIC_API_KEY`. Agents set no `temperature`: current Claude models reject it.
 - Analysis and leads rules in tools/API: findings may only name known dataset ids (`ANALYTICS_DATASETS`), one report
   per run; a lead's deal amount is the response's stated budget (never the model's), a response is converted or skipped
@@ -90,7 +101,7 @@ instructions), not as hidden background jobs.
   `publish_report` rewrites every ₹ amount with Indian grouping (`indianRupees`), since models drift to ₹603,000.
 - Memory: see "Agent memory" below.
 - Tests (`bun test`) run the real agents against a fake demo API with `MockLanguageModelV3` from `ai/test`
-  scripting the tool calls; keep them standalone.
+  scripting the triage and tool calls; keep them standalone.
 - Skills: `voltagent-best-practices`, `voltagent-core-reference`, `voltagent-docs-bundle`, `create-voltagent`
   (from github.com/VoltAgent/skills, in `.claude/skills/`). Version-matched docs: `apps/agent/node_modules/@voltagent/core/docs`.
 

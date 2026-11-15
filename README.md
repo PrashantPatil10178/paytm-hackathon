@@ -123,6 +123,29 @@ Stages: `new_lead → qualified → meeting_booked → quote_sent → closed_won
 | POST | `/lead` |
 | POST | `/admin/reset` (same as `bun run reset`) |
 
+`POST /chat` goes to the agent's `POST /intake` with ShopKart's channel token (`SHOPKART_CHANNEL_TOKEN`, or one the
+API issues at startup) when `AGENT_URL` is set.
+
+### ResolveAI (agent config and records)
+
+| Method | URL | Notes |
+| --- | --- | --- |
+| GET | `/resolveai/channels` | Channels that may send requests. Tokens are stored hashed; only the last 4 characters are returned. |
+| PATCH | `/resolveai/channels/{id}` | `{ enabled?, name? }` |
+| POST | `/resolveai/channels/{id}/token` | New token, returned once. The old one stops working. |
+| POST | `/resolveai/channels/authenticate` | Agent only: `{ token }` → the channel, 401 unknown, 403 turned off |
+| GET | `/resolveai/connectors` | Zendesk, ShopKart + Paytm, HubSpot: base URL, on/off, live health (`connected` / `error` / `disabled`) |
+| PATCH | `/resolveai/connectors/{id}` | `{ base_url?, token?, enabled? }`, then re-checks health |
+| POST | `/resolveai/connectors/{id}/check` | Health check now |
+| GET | `/resolveai/connectors/access` | Agent only: base URLs and tokens |
+| GET / POST | `/resolveai/runs` | One per request: level, who handles it, plan, status, reply. `?ticket_id=` / `?session_id=` filter |
+| GET / PATCH | `/resolveai/runs/{id}` | With its steps |
+| POST | `/resolveai/runs/{id}/steps` | `{ agent, step, tool, result, detail }`: the audit trail |
+| GET / POST | `/resolveai/approvals` | High-level refunds waiting for a person. `?status=pending` |
+| POST | `/resolveai/approvals/{id}/decide` | `{ decision: approved \| rejected, decided_by?, note? }`; the agent is told and carries it out |
+| GET / POST | `/resolveai/cases` | The main agent's memory of finished cases. `?q=` full-text search |
+
+With `RESOLVEAI_INTERNAL_KEY` set, the agent-only routes need the `x-resolveai-key` header.
 ### Campaigns (the leads agent's input)
 
 | Method | URL | Notes |

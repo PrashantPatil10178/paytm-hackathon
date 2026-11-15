@@ -31,24 +31,32 @@ import { contactForEmail, convertResponse, listResponses, skipResponse } from ".
 import { createContact, createDeal, logActivity } from "./crm.ts";
 import { db } from "./db.ts";
 import { bad, body, CORS, handle, ok } from "./http.ts";
+import { shopkartChannelToken } from "./resolveai.ts";
 import { customerOrders, findCustomer, refundOrder } from "./shop.ts";
 import { addComment, createTicket, findTicket, ticketExists, updateTicket } from "./zendesk.ts";
 
 const AGENT_URL = process.env.AGENT_URL?.replace(/\/$/, "");
 const AUTO_REFUND_LIMIT = 1000;
 
-async function forward(path: string, payload: unknown, timeoutMs = 60_000): Promise<Response | null> {
+async function forward(path: string, payload: unknown, { token, timeoutMs = 110_000 }: { token?: string; timeoutMs?: number } = {}): Promise<Response | null> {
   if (!AGENT_URL) return null;
   try {
     const res = await fetch(`${AGENT_URL}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(token && { authorization: `Bearer ${token}` }) },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(timeoutMs),
     });
     const headers = { ...CORS, "content-type": res.headers.get("content-type") ?? "application/json", "x-answered-by": "agent" };
     return new Response(res.body, { status: res.status, headers });
   } catch (e) {
+    // Slow is not down: the agent may still be acting on this request, so the stand-in must not act too
+    // (it would open a second ticket and could refund twice). Only an unreachable agent falls back.
+    if ((e as Error).name === "TimeoutError") {
+      console.warn(`[agent] ${AGENT_URL}${path} is taking longer than ${timeoutMs / 1000} s`);
+      if (path === "/intake") return ok({ reply: "Sorry, this is taking a little longer than usual. I'm still on it and will update you here shortly." });
+      return Response.json({ error: "The agent is still working on this; try again in a minute." }, { status: 504, headers: CORS });
+    }
     console.warn(`[agent] ${AGENT_URL}${path} failed, using the built-in stand-in:`, (e as Error).message);
     return null;
   }
@@ -320,7 +328,8 @@ export const agentRoutes = {
     POST: handle(async (req) => {
       const b = await body<ChatRequest>(req);
       if (!b.session_id || !b.customer_id || !b.message?.trim()) throw bad("session_id, customer_id and message are required");
-      const forwarded = await forward("/chat", b);
+      // ShopKart is a ResolveAI channel: its chats go to the agent's intake with the channel token.
+      const forwarded = await forward("/intake", b, { token: shopkartChannelToken() });
       if (forwarded) return forwarded;
       return ok(await simulateChat({ ...b, message: b.message.trim() }));
     }),
@@ -336,7 +345,7 @@ export const agentRoutes = {
   "/analysis": {
     POST: handle(async (req) => {
       const b = await body<AnalysisRequest>(req).catch(() => ({}));
-      const forwarded = await forward("/analysis", b, 120_000);
+      const forwarded = await forward("/analysis", b, { timeoutMs: 120_000 });
       if (forwarded) return forwarded;
       return ok(await simulateAnalysis(b), 201);
     }),
@@ -345,7 +354,7 @@ export const agentRoutes = {
     POST: handle(async (req) => {
       const b = await body<LeadSyncRequest>(req).catch(() => ({}));
       // One model run per response: give the agent time to work through a batch.
-      const forwarded = await forward("/campaigns/sync", b, 300_000);
+      const forwarded = await forward("/campaigns/sync", b, { timeoutMs: 300_000 });
       if (forwarded) return forwarded;
       return ok(await simulateLeadSync(b));
     }),

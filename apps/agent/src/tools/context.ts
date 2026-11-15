@@ -9,6 +9,10 @@ import type { ToolExecuteOptions } from "@voltagent/core";
 export interface SupportRun {
   ticketId: number;
   customerId: number;
+  /** The ResolveAI run this request belongs to (steps and approvals hang off it) */
+  runId: number;
+  /** Which level agent is working: low, medium or high */
+  agent: "low" | "medium" | "high";
 }
 
 export interface SalesRun {

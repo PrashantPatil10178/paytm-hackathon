@@ -125,6 +125,8 @@ function build() {
       type,
       requester: u(requester),
       assignee,
+      level: null,
+      handled_by: null,
       escalated_by_ai: false,
       tags: [],
       via: "email",
@@ -415,4 +417,23 @@ export async function ensureSeeded(db: Db): Promise<boolean> {
   }
   await resetDemoData(db);
   return true;
+}
+
+/**
+ * ResolveAI's config rows: the ShopKart chat channel and the three demo connectors. Only inserts
+ * missing rows, so URLs and tokens people changed survive restarts and demo resets.
+ */
+export async function ensureResolveAIConfig(db: Db, apiOrigin: string) {
+  await db
+    .insert(s.channels)
+    .values([{ id: "shopkart", name: "ShopKart chat", kind: "chat" }])
+    .onConflictDoNothing();
+  await db
+    .insert(s.connectors)
+    .values([
+      { id: "zendesk", name: "Zendesk", category: "Helpdesk", base_url: `${apiOrigin}/zendesk` },
+      { id: "shop", name: "ShopKart + Paytm", category: "Orders & payments", base_url: `${apiOrigin}/shop` },
+      { id: "hubspot", name: "HubSpot CRM", category: "CRM", base_url: `${apiOrigin}/crm` },
+    ])
+    .onConflictDoNothing();
 }

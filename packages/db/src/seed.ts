@@ -6,6 +6,8 @@
 import {
   BOT,
   type Activity,
+  type Campaign,
+  type CampaignResponse,
   type Contact,
   type Customer,
   type Deal,
@@ -306,6 +308,54 @@ function build() {
 
 const date = (iso: string) => new Date(iso);
 
+/* ───── Campaigns: the leads agent's input. Seeded on their own too, so a database seeded before they existed gets them. ───── */
+
+type ResponseSeed = Omit<CampaignResponse, "campaign" | "status" | "contact_id" | "deal_id" | "note" | "processed_at"> & { campaign_id: number };
+
+function buildCampaigns(): { campaigns: Campaign[]; responses: ResponseSeed[] } {
+  const campaigns: Campaign[] = [
+    { id: 1, name: "Diwali bulk gifting", channel: "meta_ads", status: "active", budget: 60000, spend: 38400, impressions: 182000, clicks: 3640, started_at: daysAgo(12) },
+    { id: 2, name: "GST billing for restaurants", channel: "google_ads", status: "active", budget: 40000, spend: 27150, impressions: 64000, clicks: 2180, started_at: daysAgo(9) },
+    { id: 3, name: "UPI payments for D2C stores", channel: "whatsapp", status: "active", budget: 15000, spend: 9800, impressions: 21000, clicks: 1460, started_at: daysAgo(6) },
+    { id: 4, name: "Wholesale catalogue mailer", channel: "email", status: "paused", budget: 8000, spend: 8000, impressions: 12500, clicks: 410, started_at: daysAgo(20) },
+  ];
+  let rid = 0;
+  const r = (campaign_id: number, x: Omit<ResponseSeed, "id" | "campaign_id">): ResponseSeed => ({ id: ++rid, campaign_id, ...x });
+  const responses: ResponseSeed[] = [
+    r(1, { name: "Meera Joshi", email: "meera@joshisweets.example", phone: "+91 90000 40001", company: "Joshi Sweets", need: "bulk_order", budget: 90000, start_when: "This week",
+      message: "Need 500 Diwali hampers with our logo on the box, delivered by the 28th. Please share pricing.", created_at: hoursAgo(5) }),
+    r(1, { name: "Aditya Menon", email: "aditya@brightcorp.example", phone: "+91 90000 40002", company: "BrightCorp IT Services", need: "bulk_order", budget: 45000, start_when: "This month",
+      message: "Looking for 150 employee gift boxes for our Diwali party.", created_at: hoursAgo(9) }),
+    r(1, { name: "test test", email: "test@test.example", phone: "0000000000", company: "test", need: "other", budget: null, start_when: "",
+      message: "test", created_at: hoursAgo(7) }),
+    r(2, { name: "Zoya Hussain", email: "zoya@spiceroute.example", phone: "+91 90000 40004", company: "Spice Route Kitchens", need: "billing_setup", budget: 60000, start_when: "Now",
+      message: "We run 4 outlets in Hyderabad. Need GST billing and KOT printing on every counter.", created_at: hoursAgo(3) }),
+    r(2, { name: "Lakshmi Pillai", email: "lakshmi@pillaitiffins.example", phone: "+91 90000 40005", company: "Pillai Tiffin Centre", need: "billing_setup", budget: 8000, start_when: "In 3 months",
+      message: "Single counter. Just want a simple billing app. What is the monthly cost?", created_at: hoursAgo(26) }),
+    // Already in the pipeline (contact 1, deal 1 has a meeting booked): the agent should not open a second deal.
+    r(2, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", phone: "+91 90000 30001", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, start_when: "This month",
+      message: "Saw your ad. We spoke earlier about billing for our 3 outlets. Still interested.", created_at: hoursAgo(4) }),
+    r(2, { name: "Gaurav Sethi", email: "gaurav@sethimedicals.example", phone: "+91 90000 40007", company: "Sethi Medicals", need: "billing_setup", budget: 25000, start_when: "",
+      message: "Pharmacy with 2 stores. Need billing with batch and expiry tracking.", created_at: hoursAgo(14) }),
+    r(3, { name: "Nikhil Batra", email: "nikhil@urbanthread.example", phone: "+91 90000 40008", company: "UrbanThread", need: "payment_setup", budget: 30000, start_when: "Next month",
+      message: "D2C apparel brand, about 800 orders a month on Shopify. Want UPI and cards at checkout.", created_at: hoursAgo(2) }),
+    r(4, { name: "Sunita Deshmukh", email: "sunita@deshmukhtraders.example", phone: "+91 90000 40009", company: "Deshmukh Traders", need: "bulk_order", budget: 120000, start_when: "This month",
+      message: "Please send the wholesale price list for steel bottles. We need about 1,000 units.", created_at: daysAgo(2) }),
+    r(4, { name: "Promo Blast", email: "noreply@promo-blast.example", phone: "", company: "", need: "other", budget: null, start_when: "",
+      message: "WIN a FREE iPhone!!! Click bit.ly/xx-claim to claim your prize now", created_at: daysAgo(1) }),
+  ];
+  return { campaigns, responses };
+}
+
+async function writeCampaigns(tx: Tx) {
+  const { campaigns, responses } = buildCampaigns();
+  await tx.insert(s.campaigns).values(campaigns.map((c) => ({ ...c, started_at: date(c.started_at) })));
+  await tx.insert(s.campaignResponses).values(responses.map((x) => ({ ...x, created_at: date(x.created_at) })));
+  for (const table of ["campaigns", "campaign_responses"]) {
+    await tx.execute(sql.raw(`select setval(pg_get_serial_sequence('${table}', 'id'), (select max(id) from ${table}))`));
+  }
+}
+
 async function write(tx: Tx) {
   const d = build();
   await tx.insert(s.customers).values(d.customers);
@@ -330,6 +380,7 @@ async function write(tx: Tx) {
   for (const table of ["customers", "products", "orders"]) {
     await tx.execute(sql.raw(`select setval(pg_get_serial_sequence('${table}', 'id'), (select max(id) from ${table}))`));
   }
+  await writeCampaigns(tx);
 }
 
 /** Wipes every demo table and writes the seed data again. */
@@ -342,8 +393,12 @@ export async function resetDemoData(db: Db) {
 
 /** Seeds the demo data if the database has none yet. Returns true when it seeded. */
 export async function ensureSeeded(db: Db): Promise<boolean> {
-  const [row] = await db.select({ n: count() }).from(s.customers);
-  if (row && row.n > 0) return false;
+  const [[row], [campaigns]] = await Promise.all([db.select({ n: count() }).from(s.customers), db.select({ n: count() }).from(s.campaigns)]);
+  if (row && row.n > 0) {
+    // Seeded before campaigns existed: add just those, keep everything else.
+    if (!campaigns?.n) await db.transaction(writeCampaigns);
+    return false;
+  }
   await resetDemoData(db);
   return true;
 }

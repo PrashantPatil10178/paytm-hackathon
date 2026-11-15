@@ -1,11 +1,12 @@
-// Single data access layer. Today it serves mock JSON; later, swap each
-// function body for a fetch() to the real backend. Pages never import JSON directly.
+// Single data access layer. Most pages still read mock JSON; Analytics and Campaigns read the live demo
+// API (Postgres) through /api, which vite proxies to API_URL. Pages never import JSON or fetch directly.
 import tickets from './data/tickets.json'
 import leads from './data/leads.json'
 import approvals from './data/approvals.json'
 import stats from './data/stats.json'
 import integrations from './data/integrations.json'
 import workspace from './data/workspace.json'
+import { api as http, usePoll } from '@ph/shared/react'
 
 // Mock timestamps are anchored to this moment. We shift them so the newest
 // event always looks like it happened a minute ago, whenever the demo runs.
@@ -42,4 +43,16 @@ export const api = {
   decideApproval: (id, decision, note) => respond({ id, decision, note, ok: true }, 200),
   saveSettings: (settings) => respond({ ok: true, settings }, 400),
   connect: (id) => respond({ id, ok: true }, 1100),
+
+  // Live: the agents. Each waits for the model, so these take seconds (the lead sync up to a few minutes).
+  runAnalysis: (focus) => http.post('/analysis', focus ? { focus } : {}),
+  syncCampaignLeads: (limit = 10) => http.post('/campaigns/sync', { limit }),
+}
+
+/** Live, polled reads from the demo API. Identical payloads keep the same object, so idle pages don't re-render. */
+export const live = {
+  useMetrics: () => usePoll('/analytics/metrics', 5000),
+  useLatestReport: () => usePoll('/analytics/reports/latest', 5000),
+  useCampaigns: () => usePoll('/campaigns', 4000),
+  useResponses: (status) => usePoll(`/campaigns/responses${status ? `?status=${status}` : ''}`, 4000),
 }

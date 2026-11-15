@@ -5,6 +5,8 @@
 import { beforeEach, expect, test } from "bun:test";
 import { APICallError } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
+import { createAnalysisAgent } from "../src/agents/analysis.ts";
+import { createLeadsAgent } from "../src/agents/leads.ts";
 import { createSalesAgent } from "../src/agents/sales.ts";
 import { createSupportAgent } from "../src/agents/support.ts";
 import { createDemoAPI } from "../src/demo-api.ts";
@@ -13,7 +15,12 @@ import { createService } from "../src/service.ts";
 /* ───── Fake demo API ───── */
 
 type Json = Record<string, any>;
-let db: { tickets: Json[]; comments: Json[]; orders: Json[]; contacts: Json[]; deals: Json[]; notes: Json[]; meetings: Json[] };
+let db: { tickets: Json[]; comments: Json[]; orders: Json[]; contacts: Json[]; deals: Json[]; notes: Json[]; meetings: Json[]; responses: Json[]; reports: Json[] };
+
+const response = (id: number, x: Json) => ({
+  id, campaign: { id: 1, name: "Diwali bulk gifting", channel: "meta_ads" }, phone: "", need: "bulk_order", start_when: "", budget: null,
+  status: "new", contact_id: null, deal_id: null, note: "", created_at: "2026-11-15T05:00:00.000Z", processed_at: null, ...x,
+});
 
 beforeEach(() => {
   db = {
@@ -28,8 +35,20 @@ beforeEach(() => {
     deals: [],
     notes: [],
     meetings: [],
+    responses: [
+      response(1, { name: "Meera Joshi", email: "meera@joshisweets.example", company: "Joshi Sweets", budget: 90000, start_when: "This week", message: "Need 500 Diwali hampers with our logo." }),
+      response(2, { name: "Promo Blast", email: "noreply@promo.example", company: "", need: "other", message: "WIN a FREE iPhone!!! bit.ly/xx" }),
+      response(3, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, message: "Still interested in billing." }),
+    ],
+    reports: [],
   };
 });
+
+const METRICS = {
+  generated_at: "2026-11-15T10:00:00.000Z",
+  totals: { tickets: 10, tickets_ai: 6, ai_rate: 60, campaign_spend: 83350, campaign_leads: 0 },
+  datasets: [{ id: "tickets_per_day", title: "Tickets per day", description: "x", series: [{ key: "ai", label: "AI", unit: "count" }], rows: [{ key: "2026-11-15", label: "15 Nov", ai: 6 }] }],
+};
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -92,6 +111,28 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     db.meetings.push(mt);
     return json(mt, 201);
   }
+  if (p === "/campaigns/responses" && url.searchParams.get("status") === "new") return json({ responses: db.responses.filter((r) => r.status === "new") });
+  if ((m = p.match(/^\/campaigns\/responses\/(\d+)(\/convert|\/skip)?$/))) {
+    const r = db.responses.find((x) => x.id === Number(m![1]));
+    if (!r) return json({ error: "Campaign response not found" }, 404);
+    if (!m[2]) {
+      const known = r.email === "rakesh@sharmarestaurants.example" ? { id: 1, company: "Sharma Restaurants", deals: [{ id: 1, name: "Sharma Restaurants – Billing setup", stage: "meeting_booked", amount: 50000 }] } : null;
+      return json({ ...r, existing_contact: known });
+    }
+    if (r.status !== "new") return json({ error: `Campaign response ${r.id} was already ${r.status}` }, 409);
+    if (m[2] === "/skip") return json(Object.assign(r, { status: "skipped", note: body.reason }));
+    const deal = { id: 9 + db.deals.length, name: body.deal_name, amount: body.amount, score: body.score, next_step: body.next_step, stage: "new_lead" };
+    db.deals.push(deal);
+    Object.assign(r, { status: "converted", deal_id: deal.id, note: body.note });
+    return json({ response: r, contact: { id: 20 + db.deals.length }, deal, existing_contact: false }, 201);
+  }
+  if (p === "/analytics/metrics") return json(METRICS);
+  if (p === "/analytics/reports" && method === "GET") return json({ reports: db.reports });
+  if (p === "/analytics/reports" && method === "POST") {
+    const r = { id: 1 + db.reports.length, author: "ResolveAI Bot", snapshot: METRICS.totals, created_at: new Date().toISOString(), ...body };
+    db.reports.push(r);
+    return json(r, 201);
+  }
   return json({ error: `${method} ${p} not found` }, 404);
 }) as typeof fetch;
 
@@ -118,6 +159,32 @@ function scripted(steps: Step[]) {
   });
 }
 
+const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], finishReason: { unified: "stop" as const, raw: undefined }, usage, warnings: [] });
+
+/**
+ * A model that answers from the prompt it is given, for agents run in parallel (where a fixed script
+ * would interleave). Calls `decide` with the latest user message; once a tool has run, it finishes.
+ */
+function byPrompt(decide: (prompt: string) => Step) {
+  let n = 0;
+  return new MockLanguageModelV3({
+    doGenerate: async ({ prompt }) => {
+      const msgs = prompt as Json[];
+      if (msgs.at(-1)!.role === "tool") return textResult("Done.");
+      const user = [...msgs].reverse().find((x) => x.role === "user")!;
+      const text = typeof user.content === "string" ? user.content : user.content.map((c: Json) => c.text ?? "").join("");
+      const step = decide(text);
+      if ("text" in step) return textResult(step.text);
+      return {
+        content: [{ type: "tool-call" as const, toolCallId: `call-p${++n}`, toolName: step.tool, input: JSON.stringify(step.args ?? {}) }],
+        finishReason: { unified: "tool-calls" as const, raw: undefined },
+        usage,
+        warnings: [],
+      };
+    },
+  });
+}
+
 const failing = () =>
   new MockLanguageModelV3({
     doGenerate: async () => {
@@ -129,7 +196,14 @@ const failing = () =>
 function service(model: ReturnType<typeof scripted>) {
   const api = createDemoAPI("http://demo", fakeFetch);
   const quiet = { warn() {}, error() {} };
-  return createService({ api, support: createSupportAgent(api, model), sales: createSalesAgent(api, model), log: quiet });
+  return createService({
+    api,
+    support: createSupportAgent(api, model),
+    sales: createSalesAgent(api, model),
+    analysis: createAnalysisAgent(api, model),
+    leads: createLeadsAgent(api, model),
+    log: quiet,
+  });
 }
 
 /* ───── Tests ───── */
@@ -239,8 +313,109 @@ test("bad input is rejected with 400", async () => {
 test("demo API down → 502", async () => {
   const api = createDemoAPI("http://127.0.0.1:1");
   const model = scripted([]);
-  const svc = createService({ api, support: createSupportAgent(api, model), sales: createSalesAgent(api, model), log: { warn() {}, error() {} } });
+  const svc = createService({
+    api,
+    support: createSupportAgent(api, model),
+    sales: createSalesAgent(api, model),
+    analysis: createAnalysisAgent(api, model),
+    leads: createLeadsAgent(api, model),
+    log: { warn() {}, error() {} },
+  });
   const res = await svc.chat({ session_id: "s6", customer_id: 101, message: "hi" });
   expect(res.status).toBe(502);
   expect((res.body as { error: string }).error).toContain("Can't reach the demo API");
+  expect((await svc.syncLeads({})).status).toBe(502);
+});
+
+/* ───── Analysis agent ───── */
+
+const INSIGHTS = [
+  { dataset: "tickets_per_day", title: "AI handled 60% of tickets", finding: "6 of 10 tickets stayed with the AI.", tone: "good" },
+  { dataset: "campaign_performance", title: "₹83,350 spent, 0 leads yet", finding: "Run the leads agent on the new responses.", tone: "watch" },
+  { dataset: "pipeline_by_score", title: "Pipeline steady", finding: "Keep following up hot deals.", tone: "good" },
+];
+
+test("analysis: reads the metrics and publishes one report", async () => {
+  const svc = service(
+    scripted([
+      { tool: "get_metrics" },
+      { tool: "get_previous_reports" },
+      { tool: "publish_report", args: { headline: "AI handled 60% of tickets; campaigns have 0 leads yet.", insights: INSIGHTS } },
+      { text: "Published the report." },
+    ]),
+  );
+  const res = await svc.analyze({ focus: "How are campaigns doing?" });
+
+  expect(res.status).toBe(201);
+  expect(res.body).toMatchObject({ report: { id: 1, headline: "AI handled 60% of tickets; campaigns have 0 leads yet.", insights: INSIGHTS } });
+  expect(db.reports).toHaveLength(1);
+});
+
+test("analysis: a second publish in the same run is refused", async () => {
+  const svc = service(
+    scripted([
+      { tool: "publish_report", args: { headline: "First", insights: INSIGHTS } },
+      { tool: "publish_report", args: { headline: "Second", insights: INSIGHTS } },
+      { text: "Done." },
+    ]),
+  );
+  const res = await svc.analyze({});
+  expect(res.body).toMatchObject({ report: { headline: "First" } });
+  expect(db.reports).toHaveLength(1);
+});
+
+test("analysis: a finding about an unknown chart is rejected, and no report means 502", async () => {
+  const svc = service(
+    scripted([
+      { tool: "publish_report", args: { headline: "x", insights: [...INSIGHTS, { dataset: "made_up_chart", title: "t", finding: "f", tone: "good" }] } },
+      { text: "I could not publish." },
+    ]),
+  );
+  const res = await svc.analyze({});
+  expect(res.status).toBe(502);
+  expect(db.reports).toHaveLength(0);
+});
+
+/* ───── Leads agent ───── */
+
+/** Spam → skip, already in the CRM → skip, otherwise a hot lead. Tries to sneak in an amount too. */
+const triage = (prompt: string): Step => {
+  if (/FREE iPhone/.test(prompt)) return { tool: "skip_response", args: { reason: "Spam: prize message with a link" } };
+  if (/open deals/.test(prompt)) return { tool: "skip_response", args: { reason: "Already in the pipeline" } };
+  return { tool: "create_lead", args: { score: "hot", deal_name: "Joshi Sweets – Bulk order", next_step: "Book a call this week", note: "₹90,000, this week.", amount: 9_999_999 } };
+};
+
+test("leads: converts real responses, skips spam and people already in the pipeline", async () => {
+  const res = await service(byPrompt(triage)).syncLeads({});
+
+  expect(res.status).toBe(200);
+  expect(res.body).toMatchObject({ processed: 3, converted: 1, skipped: 2, failed: 0, remaining: 0 });
+  expect(db.responses.map((r) => r.status)).toEqual(["converted", "skipped", "skipped"]);
+  // The amount comes from the response's budget, not from the model.
+  expect(db.deals).toEqual([expect.objectContaining({ name: "Joshi Sweets – Bulk order", amount: 90000, score: "hot", stage: "new_lead" })]);
+  expect((res.body as Json).results[0]).toMatchObject({ response_id: 1, outcome: "converted", deal_id: 9, score: "hot" });
+});
+
+test("leads: respects the limit and reports what is left", async () => {
+  const res = await service(byPrompt(triage)).syncLeads({ limit: 1 });
+  expect(res.body).toMatchObject({ processed: 1, remaining: 2 });
+  expect(db.responses.filter((r) => r.status === "new")).toHaveLength(2);
+});
+
+test("leads: if the model fails, responses stay new for the next run", async () => {
+  const res = await service(failing()).syncLeads({});
+  expect(res.body).toMatchObject({ processed: 3, converted: 0, failed: 3, remaining: 3 });
+  expect(db.responses.every((r) => r.status === "new")).toBe(true);
+  expect(db.deals).toHaveLength(0);
+});
+
+test("leads: a response decided elsewhere mid-run is not converted twice", async () => {
+  const raced = byPrompt((prompt) => {
+    // Another sync run skips it while this one is still thinking.
+    db.responses.find((r) => prompt.includes(`Campaign response #${r.id} `))!.status = "skipped";
+    return { tool: "create_lead", args: { score: "warm", deal_name: "x", next_step: "y", note: "z" } };
+  });
+  const res = await service(raced).syncLeads({});
+  expect(res.body).toMatchObject({ converted: 0, failed: 3 });
+  expect(db.deals).toHaveLength(0);
 });

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Search, LayoutDashboard, ScrollText, Ticket, ShieldCheck, KanbanSquare, Radio, Plug, Settings,
-  CornerDownLeft, TrendingUp,
+  CornerDownLeft, TrendingUp, ChartColumnBig, Megaphone,
 } from 'lucide-react'
 import { useApp } from '../store'
 import { cn } from '../lib'
@@ -10,6 +10,8 @@ import { LEVELS } from '../meta'
 
 const PAGES = [
   { label: 'Home', to: '/', icon: LayoutDashboard },
+  { label: 'Analytics', to: '/analytics', icon: ChartColumnBig },
+  { label: 'Campaigns', to: '/campaigns', icon: Megaphone },
   { label: 'Audit log', to: '/audit', icon: ScrollText },
   { label: 'Tickets', to: '/tickets', icon: Ticket },
   { label: 'Approvals', to: '/approvals', icon: ShieldCheck },

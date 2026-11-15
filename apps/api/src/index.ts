@@ -1,5 +1,7 @@
 import { resetDemoData } from "@ph/db";
 import { agentMode, agentRoutes } from "./agent.ts";
+import { analyticsRoutes } from "./analytics.ts";
+import { campaignRoutes } from "./campaigns.ts";
 import { crmRoutes } from "./crm.ts";
 import { db, prepare } from "./db.ts";
 import { CORS, handle, ok } from "./http.ts";
@@ -21,6 +23,8 @@ const server = Bun.serve({
     ...zendeskRoutes,
     ...crmRoutes,
     ...shopRoutes,
+    ...campaignRoutes,
+    ...analyticsRoutes,
     ...agentRoutes,
   },
   fetch(req) {
@@ -31,4 +35,4 @@ const server = Bun.serve({
 
 console.log(`Demo API ready on ${server.url}`);
 console.log(`  data: Postgres at ${new URL(process.env.DATABASE_URL!).host} (${state === "seeded" ? "empty, seeded the demo data" : "existing data kept; bun run reset re-seeds"})`);
-console.log(`  /chat and /lead: ${agentMode}`);
+console.log(`  /chat, /lead, /analysis, /campaigns/sync: ${agentMode}`);

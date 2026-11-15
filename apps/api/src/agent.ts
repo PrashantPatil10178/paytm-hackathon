@@ -1,7 +1,7 @@
 /**
- * POST /chat and POST /lead.
+ * POST /chat, POST /lead, POST /analysis and POST /campaigns/sync.
  *
- * When AGENT_URL is set, both are forwarded to the real ResolveAI agent.
+ * When AGENT_URL is set, all four are forwarded to the real ResolveAI agent.
  * Without it (or if the agent is down) a small rule-based stand-in answers instead,
  * using the same Zendesk / CRM endpoints the agent would. That keeps the screens
  * demoable while the agent is still being built.
@@ -10,15 +10,24 @@ import {
   BOT,
   ENQUIRY_NEEDS,
   rupees,
+  type AnalysisInsight,
+  type AnalysisRequest,
+  type AnalysisResponse,
+  type CampaignResponse,
   type ChatRequest,
   type ChatResponse,
   type LeadRequest,
   type LeadResponse,
   type LeadScore,
+  type LeadSyncRequest,
+  type LeadSyncResponse,
+  type LeadSyncResult,
   type Order,
   type Ticket,
 } from "@ph/shared";
 import { eq, schema as s } from "@ph/db";
+import { computeMetrics, saveReport } from "./analytics.ts";
+import { contactForEmail, convertResponse, listResponses, skipResponse } from "./campaigns.ts";
 import { createContact, createDeal, logActivity } from "./crm.ts";
 import { db } from "./db.ts";
 import { bad, body, CORS, handle, ok } from "./http.ts";
@@ -28,14 +37,14 @@ import { addComment, createTicket, findTicket, ticketExists, updateTicket } from
 const AGENT_URL = process.env.AGENT_URL?.replace(/\/$/, "");
 const AUTO_REFUND_LIMIT = 1000;
 
-async function forward(path: string, payload: unknown): Promise<Response | null> {
+async function forward(path: string, payload: unknown, timeoutMs = 60_000): Promise<Response | null> {
   if (!AGENT_URL) return null;
   try {
     const res = await fetch(`${AGENT_URL}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const headers = { ...CORS, "content-type": res.headers.get("content-type") ?? "application/json", "x-answered-by": "agent" };
     return new Response(res.body, { status: res.status, headers });
@@ -201,6 +210,96 @@ async function simulateLead(b: LeadRequest): Promise<LeadResponse> {
   return { ok: true, message: "Thanks! Our team will contact you shortly.", deal_id: deal.id };
 }
 
+/* ───────────── Analysis stand-in ───────────── */
+
+async function simulateAnalysis(_req: AnalysisRequest): Promise<AnalysisResponse> {
+  const { totals: t, datasets } = await computeMetrics();
+  const campaigns = datasets.find((d) => d.id === "campaign_performance")!.rows;
+  const insights: AnalysisInsight[] = [];
+
+  insights.push({
+    dataset: "tickets_per_day",
+    title: `AI handled ${t.ai_rate.toFixed(0)}% of tickets`,
+    finding: `${t.tickets_ai} of ${t.tickets} tickets stayed with the AI; ${t.tickets_escalated} were escalated to a person. ${t.tickets_open} are still open.`,
+    tone: t.ai_rate >= 60 ? "good" : t.ai_rate >= 40 ? "watch" : "risk",
+  });
+  insights.push({
+    dataset: "pipeline_by_score",
+    title: `${rupees(t.pipeline_open)} in open pipeline`,
+    finding: `${t.deals_open} open deals, ${t.hot_open} of them hot. ${rupees(t.won_value)} closed won so far.`,
+    tone: t.hot_open > 0 ? "good" : "watch",
+  });
+  const best = [...campaigns].sort((a, b) => Number(b.responses) - Number(a.responses))[0];
+  if (best) {
+    insights.push({
+      dataset: "campaign_performance",
+      title: `${best.label} brings the most responses`,
+      finding: `${best.responses} responses for ${rupees(Number(best.spend))} spent. ${t.campaign_leads} campaign leads created overall${t.cost_per_lead ? `, ${rupees(t.cost_per_lead)} per lead` : ""}.`,
+      tone: t.campaign_leads > 0 ? "good" : "watch",
+    });
+  }
+  insights.push({
+    dataset: "orders_per_day",
+    title: `${rupees(t.revenue_14d)} revenue in 14 days`,
+    finding: `${t.orders_14d} orders in the last 14 days. ${t.refunds} orders refunded or being refunded.`,
+    tone: t.refunds > 2 ? "watch" : "good",
+  });
+
+  const report = await saveReport({
+    headline: `AI handled ${t.ai_rate.toFixed(0)}% of tickets; ${rupees(t.pipeline_open)} open pipeline with ${t.hot_open} hot deals.`,
+    insights,
+    author: "Rules",
+  });
+  return { report };
+}
+
+/* ───────────── Campaign leads stand-in ───────────── */
+
+const SPAM = /\b(win|free|prize|click|lottery|offer)\b|bit\.ly|https?:\/\//i;
+
+async function simulateLeadSync(req: LeadSyncRequest): Promise<LeadSyncResponse> {
+  const limit = Math.min(25, Math.max(1, Number(req.limit) || 10));
+  const queue = await listResponses({ status: "new" });
+  const results: LeadSyncResult[] = [];
+
+  for (const r of queue.slice(0, limit)) {
+    const base = { response_id: r.id, name: r.name, company: r.company, campaign: r.campaign.name };
+    const reason = await skipReason(r);
+    if (reason) {
+      await skipResponse(r.id, { reason });
+      results.push({ ...base, outcome: "skipped", reason });
+      continue;
+    }
+    const { score, why } = scoreLead({ ...r, business_name: r.company, budget: r.budget ?? 0 });
+    const need = ENQUIRY_NEEDS.find((x) => x.id === r.need)?.label ?? "Enquiry";
+    const res = await convertResponse(r.id, {
+      score,
+      deal_name: `${r.company} – ${need}`,
+      amount: r.budget ?? 0,
+      next_step: score === "hot" ? "Book a call this week" : score === "warm" ? "Qualify on a short call" : "Send intro email",
+      note: `Scored ${score}: ${why}.`,
+    });
+    results.push({ ...base, outcome: "converted", deal_id: res.deal.id, score, reason: `Scored ${score}: ${why}` });
+  }
+
+  return {
+    processed: results.length,
+    converted: results.filter((x) => x.outcome === "converted").length,
+    skipped: results.filter((x) => x.outcome === "skipped").length,
+    failed: 0,
+    remaining: Math.max(0, queue.length - results.length),
+    results,
+  };
+}
+
+async function skipReason(r: CampaignResponse): Promise<string | null> {
+  if (!r.company.trim() || r.message.trim().length < 12 || /^test\b/i.test(r.name) || SPAM.test(r.message)) return "Looks like spam or a test entry";
+  const known = await contactForEmail(r.email);
+  const live = known?.deals.find((d) => d.stage !== "closed_won" && d.stage !== "closed_lost");
+  if (live) return `Already in the pipeline as deal #${live.id} (${live.name})`;
+  return null;
+}
+
 /* ───── Routes ───── */
 
 export const agentRoutes = {
@@ -219,6 +318,23 @@ export const agentRoutes = {
       const forwarded = await forward("/lead", b);
       if (forwarded) return forwarded;
       return ok(await simulateLead(b), 201);
+    }),
+  },
+  "/analysis": {
+    POST: handle(async (req) => {
+      const b = await body<AnalysisRequest>(req).catch(() => ({}));
+      const forwarded = await forward("/analysis", b, 120_000);
+      if (forwarded) return forwarded;
+      return ok(await simulateAnalysis(b), 201);
+    }),
+  },
+  "/campaigns/sync": {
+    POST: handle(async (req) => {
+      const b = await body<LeadSyncRequest>(req).catch(() => ({}));
+      // One model run per response: give the agent time to work through a batch.
+      const forwarded = await forward("/campaigns/sync", b, 300_000);
+      if (forwarded) return forwarded;
+      return ok(await simulateLeadSync(b));
     }),
   },
 };

@@ -1,5 +1,5 @@
 /** Rows → the API shapes in @ph/shared. The only real work is Date → ISO string. */
-import type { Activity, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
+import type { Activity, AnalysisReport, Campaign, CampaignResponse, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
 import type * as s from "./schema.ts";
 
 type Row<T extends { $inferSelect: unknown }> = T["$inferSelect"];
@@ -39,3 +39,18 @@ export function toDeal(r: Row<typeof s.deals> & { meeting: Row<typeof s.meetings
 }
 
 export const toActivity = ({ deal_id: _, ...r }: Row<typeof s.activities>): Activity => ({ ...r, created_at: iso(r.created_at) });
+
+export const toCampaign = (r: Row<typeof s.campaigns>): Campaign => ({ ...r, started_at: iso(r.started_at) });
+
+type ResponseRow = Row<typeof s.campaignResponses> & { campaign: Pick<Row<typeof s.campaigns>, "id" | "name" | "channel"> };
+
+export function toCampaignResponse({ campaign_id: _, campaign, ...r }: ResponseRow): CampaignResponse {
+  return {
+    ...r,
+    campaign: { id: campaign.id, name: campaign.name, channel: campaign.channel },
+    created_at: iso(r.created_at),
+    processed_at: r.processed_at ? iso(r.processed_at) : null,
+  };
+}
+
+export const toReport = (r: Row<typeof s.analysisReports>): AnalysisReport => ({ ...r, created_at: iso(r.created_at) });

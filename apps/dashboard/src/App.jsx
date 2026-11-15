@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AppProvider } from './store'
 import Layout from './components/Layout'
 import Home from './pages/Home'
+import Analytics from './pages/Analytics'
+import Campaigns from './pages/Campaigns'
 import Audit from './pages/Audit'
 import Tickets from './pages/Tickets'
 import Approvals from './pages/Approvals'
@@ -17,6 +19,8 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Home />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="campaigns" element={<Campaigns />} />
             <Route path="audit" element={<Audit />} />
             <Route path="tickets" element={<Tickets />} />
             <Route path="approvals" element={<Approvals />} />

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutGrid, Logs, Inbox, ShieldCheck, SquareKanban, Radio, Cable, SlidersHorizontal,
+  LayoutGrid, Logs, Inbox, ShieldCheck, SquareKanban, Radio, Cable, SlidersHorizontal, ChartColumnBig, Megaphone,
   Search, Menu, X, Bell, Sun, Moon,
 } from 'lucide-react'
 import { api } from '../api'
@@ -21,12 +21,14 @@ const readAria = () => { try { return localStorage.getItem(ARIA_KEY) === '1' } c
 const NAV = [
   { group: 'Overview', items: [
     { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
+    { to: '/analytics', label: 'Analytics', icon: ChartColumnBig },
     { to: '/audit', label: 'Audit', icon: Logs },
   ] },
   { group: 'Work', items: [
     { to: '/tickets', label: 'Tickets', icon: Inbox },
     { to: '/approvals', label: 'Approvals', icon: ShieldCheck, badge: 'approvals' },
     { to: '/board', label: 'Board', icon: SquareKanban },
+    { to: '/campaigns', label: 'Campaigns', icon: Megaphone },
   ] },
   { group: 'Integrations', items: [
     { to: '/channels', label: 'Channels', icon: Radio },

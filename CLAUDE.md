@@ -14,7 +14,7 @@ Judges watch the agent's work appear live, so the screens matter as much as the 
 | `apps/hubspot` | HubSpot CRM look-alike: deals pipeline (drag and drop), contacts | 3002 | same |
 | `apps/shopkart` | Customer side: shop, My Orders, support chat, business enquiry | 3003 | same |
 | `apps/dashboard` | ResolveAI Control Room (KPIs, audit, tickets, approvals, board, connectors, settings) | 3004 | Vite 8, React 19 (JSX), Tailwind v4, Recharts |
-| `apps/agent` | The ResolveAI agents (support + sales): `POST /chat`, `POST /lead` | 8000 | Bun, VoltAgent (`@voltagent/core`, `server-hono`) |
+| `apps/agent` | The ResolveAI agents (support, sales, analysis, leads): `/chat`, `/lead`, `/analysis`, `/campaigns/sync` | 8000 | Bun, VoltAgent (`@voltagent/core`, `server-hono`) |
 | `apps/copilot` | CopilotKit runtime behind the dashboard's "Ask Aria" chat (`/api/copilotkit`) | 4100 | Bun, `@copilotkit/runtime/v2` |
 | `packages/db` | Postgres: Drizzle schema, SQL migrations, seed data, row → API type mappers | – | Drizzle ORM on `Bun.SQL` |
 | `packages/shared` | API types, ₹/date formatting, polling hooks, app server helper, **brand (logo)** | – | TS |
@@ -43,14 +43,15 @@ instructions), not as hidden background jobs.
 
 - Every demo screen polls the API every 2 s (`packages/shared/src/react.ts`), so changes appear without refresh.
 - Demo apps proxy `/api/*` to `API_URL` (default `http://localhost:4000`) from their `server.ts`, so the browser never needs CORS.
-- ShopKart sends `POST /chat` and `POST /lead` to the API. With `AGENT_URL` set, the API forwards them unchanged
-  to the agent; if it is unset or unreachable, `apps/api/src/agent.ts` answers with a rule-based stand-in.
+- ShopKart sends `POST /chat` and `POST /lead` to the API; the Control Room sends `POST /analysis` and `POST /campaigns/sync`.
+  With `AGENT_URL` set, the API forwards all four unchanged to the agent; if it is unset or unreachable,
+  `apps/api/src/agent.ts` answers with a rule-based stand-in.
 - The agent acts only through the API's Zendesk / CRM / shop endpoints (listed in `README.md`).
 - **`packages/shared/src/types.ts` is the contract.** The agent imports it too; its zod request schemas are in
   `apps/agent/src/service.ts`, so change them together.
 - Data lives in Postgres (`DATABASE_URL` in the repo-root `.env`). See "Database" below.
 - Seed data: customers 101–105 (shared between ShopKart and Zendesk), tickets #2031–#2040 (new ones from #2041),
-  8 contacts and 8 deals. Demo stories are in `README.md` (refund handled by AI, payment escalation, hot sales lead).
+  8 contacts and 8 deals, 4 campaigns with 10 responses (incl. spam, a test entry and a duplicate of contact 1). Demo stories are in `README.md` (refund handled by AI, payment escalation, hot sales lead).
 
 ## Database (`packages/db`)
 
@@ -66,8 +67,9 @@ instructions), not as hidden background jobs.
 
 ## Agent (`apps/agent`)
 
-- Built on VoltAgent. Two agents: `support` (chats: refunds, tracking, payment escalations) and `sales` (enquiries:
-  score, stage, book a call). `src/index.ts` boots VoltAgent + Hono, `src/service.ts` runs a request,
+- Built on VoltAgent. Four agents: `support` (chats: refunds, tracking, payment escalations), `sales` (enquiries:
+  score, stage, book a call), `analysis` (reads `/analytics/metrics`, publishes a report of findings tied to chart
+  datasets) and `leads` (per campaign response: create a scored CRM lead or skip spam/duplicates). `src/index.ts` boots VoltAgent + Hono, `src/service.ts` runs a request,
   `src/agents/` instructions, `src/tools/` tools, `src/demo-api.ts` the typed client they act through.
 - Split of work: code always opens one ticket per chat session (or a contact + deal per enquiry) and posts the
   agent's final text as the public reply; the agent decides everything in between with its tools.
@@ -75,7 +77,13 @@ instructions), not as hidden background jobs.
   context (`src/tools/context.ts`), never from model arguments, and `start_refund` refuses above ₹1,000.
 - If the model call fails, the customer still gets a reply and the ticket is unassigned with a note. Keep that.
 - With `DATABASE_URL`, conversation memory (`@voltagent/postgres`) and chat sessions survive agent restarts.
-- Model: `AGENT_MODEL`, else `COPILOT_MODEL`, else `anthropic/claude-opus-5-5` (same keys as Ask Aria).
+- Models, two tiers (`src/models.ts`): heavy (support, analysis) = `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`;
+  lite (sales, leads) = `AGENT_MODEL_LITE`, else `AGENT_MODEL`, else `COPILOT_MODEL`, else `openai/gpt-5.6-luna`.
+  `CLAUDE_API_KEY` is accepted for `ANTHROPIC_API_KEY`. Agents set no `temperature`: current Claude models reject it.
+- Analysis and leads rules in tools/API: findings may only name known dataset ids (`ANALYTICS_DATASETS`), one report
+  per run; a lead's deal amount is the response's stated budget (never the model's), a response is converted or skipped
+  once (API 409), and an email that already has a contact reuses it. Responses the agent couldn't decide stay `new`.
+- Every agent shares the Postgres `Memory`; the analysis agent keeps one thread (`control-room-analysis`).
 - Tests (`bun test`) run the real agents against a fake demo API with `MockLanguageModelV3` from `ai/test`
   scripting the tool calls; keep them standalone.
 - Skills: `voltagent-best-practices`, `voltagent-core-reference`, `voltagent-docs-bundle`, `create-voltagent`
@@ -83,8 +91,11 @@ instructions), not as hidden background jobs.
 
 ## Dashboard (`apps/dashboard`)
 
-- Data comes **only** through `src/api.js` (mock JSON in `src/data/`, timestamps shifted so the newest event is
-  always recent). It is not wired to the live API yet; swap function bodies there, keep the return shapes.
+- Data comes **only** through `src/api.js`. Most pages read mock JSON in `src/data/` (timestamps shifted so the newest
+  event is always recent); swap function bodies there, keep the return shapes. **Analytics** and **Campaigns** are live:
+  `live.use*()` polls the demo API through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100).
+- Analytics charts: one y-axis per chart (a second measure goes in the tooltip), `ai`/`human` only for AI vs people,
+  `bar` (neutral) for single series, `track` for the remainder of a part-of-whole bar; every chart has a Table view.
 - Shared state and the audit log are in `src/store.jsx`; labels/colours/icons per channel, level, status, tool in `src/meta.js`.
 - **Theming** (`src/index.css`, `src/theme.jsx`): light is the default token set, `[data-theme="dark"]` on `<html>`
   overrides it. `index.html` sets the attribute before first paint (saved choice, else the OS); the topbar toggle

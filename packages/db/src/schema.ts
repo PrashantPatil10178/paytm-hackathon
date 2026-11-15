@@ -5,8 +5,14 @@
  */
 import type {
   ActivityType,
+  AnalysisInsight,
+  AnalyticsTotals,
+  CampaignChannel,
+  CampaignResponseStatus,
+  CampaignStatus,
   Contact,
   DealStage,
+  EnquiryNeed,
   LeadScore,
   LeadStatus,
   OrderItem,
@@ -173,6 +179,56 @@ export const activities = pgTable(
   (t) => [index().on(t.deal_id)],
 );
 
+/* ───── Campaigns (lead sources for the leads agent) ───── */
+
+export const campaigns = pgTable("campaigns", {
+  id: id(),
+  name: text().notNull(),
+  channel: text().$type<CampaignChannel>().notNull(),
+  status: text().$type<CampaignStatus>().notNull(),
+  budget: money(),
+  spend: money(),
+  impressions: integer().notNull(),
+  clicks: integer().notNull(),
+  started_at: at().notNull(),
+});
+
+/** People who answered a campaign. The leads agent converts each into a CRM contact + deal, or skips it. */
+export const campaignResponses = pgTable(
+  "campaign_responses",
+  {
+    id: id(),
+    campaign_id: integer().notNull().references(() => campaigns.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    email: text().notNull(),
+    phone: text().notNull(),
+    company: text().notNull(),
+    need: text().$type<EnquiryNeed>().notNull(),
+    message: text().notNull(),
+    budget: doublePrecision(),
+    start_when: text().notNull(),
+    status: text().$type<CampaignResponseStatus>().notNull().default("new"),
+    contact_id: integer().references(() => contacts.id, { onDelete: "set null" }),
+    deal_id: integer().references(() => deals.id, { onDelete: "set null" }),
+    note: text().notNull().default(""),
+    created_at: at().notNull(),
+    processed_at: at(),
+  },
+  (t) => [index().on(t.campaign_id), index().on(t.status)],
+);
+
+/* ───── Analytics ───── */
+
+/** Reports written by the analysis agent (or the API's rule-based stand-in). */
+export const analysisReports = pgTable("analysis_reports", {
+  id: id(),
+  headline: text().notNull(),
+  insights: jsonb().$type<AnalysisInsight[]>().notNull(),
+  author: text().notNull(),
+  snapshot: jsonb().$type<AnalyticsTotals>().notNull(),
+  created_at: at().notNull(),
+});
+
 /* ───── Relations (for db.query.*.findMany({ with })) ───── */
 
 export const customersRelations = relations(customers, ({ many }) => ({ orders: many(orders) }));
@@ -189,7 +245,11 @@ export const dealsRelations = relations(deals, ({ one, many }) => ({
   activities: many(activities),
 }));
 export const meetingsRelations = relations(meetings, ({ one }) => ({ deal: one(deals, { fields: [meetings.deal_id], references: [deals.id] }) }));
+export const campaignsRelations = relations(campaigns, ({ many }) => ({ responses: many(campaignResponses) }));
+export const campaignResponsesRelations = relations(campaignResponses, ({ one }) => ({
+  campaign: one(campaigns, { fields: [campaignResponses.campaign_id], references: [campaigns.id] }),
+}));
 export const activitiesRelations = relations(activities, ({ one }) => ({ deal: one(deals, { fields: [activities.deal_id], references: [deals.id] }) }));
 
 /** Every demo table, children first: the order `reset` truncates in. */
-export const DEMO_TABLES = ["chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+export const DEMO_TABLES = ["analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;

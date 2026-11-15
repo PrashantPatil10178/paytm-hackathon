@@ -53,6 +53,8 @@ export const toolMeta = (t) => TOOLS[t] || { icon: Inbox, tile: TILE }
 
 // Chart colours per theme. They mirror the tokens in index.css: SVG attributes can't read CSS vars.
 export const CHART = {
-  light: { ai: '#12a46e', human: '#5160d6', line: '#18181b', grid: '#ededef', tick: '#71717a', surface: '#ffffff', cursor: 'rgb(9 9 11 / 0.04)' },
-  dark: { ai: '#3ecf8e', human: '#8b93f8', line: '#ededf0', grid: '#232327', tick: '#7a7a84', surface: '#161618', cursor: 'rgb(255 255 255 / 0.04)' },
+  // ai/human are the one categorical pair, validated per theme (lightness band, CVD and contrast vs surface).
+  // bar = the single neutral fill for one-series charts; track = the unfilled remainder of a part-of-whole bar.
+  light: { ai: '#12a46e', human: '#5160d6', bar: '#52525b', track: '#e4e4e7', line: '#18181b', grid: '#ededef', tick: '#71717a', surface: '#ffffff', cursor: 'rgb(9 9 11 / 0.04)' },
+  dark: { ai: '#22a66e', human: '#7a82ee', bar: '#a1a1aa', track: '#34343a', line: '#ededf0', grid: '#232327', tick: '#7a7a84', surface: '#161618', cursor: 'rgb(255 255 255 / 0.04)' },
 }

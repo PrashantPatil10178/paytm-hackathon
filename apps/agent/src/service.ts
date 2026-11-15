@@ -1,15 +1,26 @@
 /**
- * POST /chat and POST /lead. The parts that must always happen are plain code (one ticket per chat
- * session, a contact + deal per enquiry, the reply posted on the ticket); the decisions in between
- * are made by the VoltAgent agents through their tools. If the model fails, the customer still gets
- * an answer and the ticket or deal is left for a person.
+ * POST /chat, /lead, /analysis and /campaigns/sync. The parts that must always happen are plain code
+ * (one ticket per chat session, a contact + deal per enquiry, the reply posted on the ticket, the queue
+ * of campaign responses); the decisions in between are made by the VoltAgent agents through their
+ * tools. If the model fails, the customer still gets an answer and the ticket or deal is left for a
+ * person; a campaign response the agent couldn't decide stays new for the next run.
  */
-import { BOT, ENQUIRY_NEEDS, rupees, type ChatResponse, type LeadResponse } from "@ph/shared";
+import {
+  BOT,
+  ENQUIRY_NEEDS,
+  rupees,
+  type AnalysisResponse,
+  type CampaignResponse,
+  type ChatResponse,
+  type LeadResponse,
+  type LeadSyncResponse,
+  type LeadSyncResult,
+} from "@ph/shared";
 import type { Agent } from "@voltagent/core";
 import { z } from "zod";
-import { DemoAPIError, type DemoAPI } from "./demo-api.ts";
+import { DemoAPIError, type DemoAPI, type KnownContact } from "./demo-api.ts";
 import { memorySessions, type SessionStore } from "./sessions.ts";
-import { runContext } from "./tools/context.ts";
+import { runContext, type AnalysisRun, type LeadsRun } from "./tools/context.ts";
 
 const ChatBody = z.object({
   session_id: z.string().min(1),
@@ -27,6 +38,13 @@ const LeadBody = z.object({
   start_when: z.string().default(""),
 });
 
+const AnalysisBody = z.object({ focus: z.string().trim().max(300).optional() }).default({});
+
+const LeadSyncBody = z.object({ limit: z.coerce.number().int().min(1).max(25).default(10) }).default({ limit: 10 });
+
+/** Campaign responses worked on at once: quicker than one by one, gentle on the model's rate limit. */
+const LEAD_CONCURRENCY = 3;
+
 export type Result<T> = { status: number; body: T | { error: string } };
 
 const today = () => new Date().toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
@@ -35,12 +53,14 @@ export interface ServiceDeps {
   api: DemoAPI;
   support: Agent;
   sales: Agent;
+  analysis: Agent;
+  leads: Agent;
   /** Chat session → ticket. Postgres in the app, in memory in tests. */
   sessions?: SessionStore;
   log?: Pick<Console, "warn" | "error">;
 }
 
-export function createService({ api, support, sales, sessions = memorySessions(), log = console }: ServiceDeps) {
+export function createService({ api, support, sales, analysis, leads, sessions = memorySessions(), log = console }: ServiceDeps) {
 
   async function ticketFor(sessionId: string, customerId: number, message: string): Promise<{ id: number; customer: string; isNew: boolean }> {
     const known = await sessions.get(sessionId);
@@ -135,6 +155,71 @@ export function createService({ api, support, sales, sessions = memorySessions()
     });
   }
 
+  async function analyze(raw: unknown): Promise<Result<AnalysisResponse>> {
+    const parsed = AnalysisBody.safeParse(raw ?? {});
+    if (!parsed.success) return invalid(parsed.error);
+    const { focus } = parsed.data;
+
+    return guard<AnalysisResponse>(async () => {
+      const run: AnalysisRun = { kind: "analysis" };
+      const prompt = `[Control Room analysis request · today ${today()}]\nFocus: ${focus || "a general health check of support, sales, the shop and campaigns"}`;
+      try {
+        // One long-running thread, so Aria can refer back to what it found last time.
+        await analysis.generateText(prompt, { userId: "control-room", conversationId: "control-room-analysis", context: runContext(run) });
+      } catch (e) {
+        log.error("[agent] analysis agent failed:", e);
+        if (!run.report) return { status: 502, body: { error: `Aria couldn't finish the analysis (${errorText(e)}).` } };
+      }
+      if (!run.report) return { status: 502, body: { error: "Aria finished without publishing a report. Try again." } };
+      return { status: 201, body: { report: run.report } };
+    });
+  }
+
+  async function syncLeads(raw: unknown): Promise<Result<LeadSyncResponse>> {
+    const parsed = LeadSyncBody.safeParse(raw ?? {});
+    if (!parsed.success) return invalid(parsed.error);
+    const { limit } = parsed.data;
+
+    return guard(async () => {
+      const { responses: queue } = await api.newResponses();
+      const batch = queue.slice(0, limit);
+      const results = await mapPool(batch, LEAD_CONCURRENCY, (r) => work(r));
+      const of = (o: LeadSyncResult["outcome"]) => results.filter((x) => x.outcome === o).length;
+      return {
+        status: 200,
+        body: { processed: results.length, converted: of("converted"), skipped: of("skipped"), failed: of("failed"), remaining: queue.length - batch.length + of("failed"), results },
+      };
+    });
+  }
+
+  /** Runs the leads agent on one campaign response. Never throws: a failure is reported and the response stays new. */
+  async function work(r: CampaignResponse): Promise<LeadSyncResult> {
+    const base = { response_id: r.id, name: r.name, company: r.company, campaign: r.campaign.name };
+    const run: LeadsRun = { kind: "leads", responseId: r.id, budget: r.budget ?? 0 };
+    try {
+      const { existing_contact } = await api.campaignResponse(r.id);
+      const need = ENQUIRY_NEEDS.find((n) => n.id === r.need)?.label ?? r.need;
+      const prompt = [
+        `Campaign response #${r.id} · "${r.campaign.name}" (${r.campaign.channel}) · today ${today()}`,
+        `Name: ${r.name}`,
+        `Company: ${r.company || "not given"}`,
+        `Email: ${r.email}`,
+        `Need: ${need}`,
+        `Budget: ${r.budget == null ? "not given" : rupees(r.budget)}`,
+        `Wants to start: ${r.start_when || "not given"}`,
+        `Message: ${r.message}`,
+        `CRM: ${crmLine(existing_contact)}`,
+      ].join("\n");
+      const res = await leads.generateText(prompt, { userId: `campaign-response-${r.id}`, conversationId: `campaign-response-${r.id}`, context: runContext(run) });
+      if (!run.outcome) return { ...base, outcome: "failed", reason: `Aria didn't decide: ${res.text.trim().slice(0, 160) || "no answer"}` };
+    } catch (e) {
+      log.error(`[agent] leads agent failed on campaign response #${r.id}:`, e);
+      if (!run.outcome) return { ...base, outcome: "failed", reason: errorText(e) };
+    }
+    const o = run.outcome!;
+    return o.outcome === "converted" ? { ...base, outcome: "converted", deal_id: o.dealId, score: o.score, reason: o.reason } : { ...base, outcome: "skipped", reason: o.reason };
+  }
+
   async function guard<T>(fn: () => Promise<Result<T>>): Promise<Result<T>> {
     try {
       return await fn();
@@ -147,7 +232,28 @@ export function createService({ api, support, sales, sessions = memorySessions()
     }
   }
 
-  return { chat, lead };
+  return { chat, lead, analyze, syncLeads };
+}
+
+function crmLine(c: KnownContact | null): string {
+  if (!c) return "no contact with this email yet";
+  const open = c.deals.filter((d) => d.stage !== "closed_won" && d.stage !== "closed_lost");
+  if (!open.length) return `already a contact (#${c.id}, ${c.company}), no open deals`;
+  return `already a contact (#${c.id}, ${c.company}) with open deals: ${open.map((d) => `#${d.id} ${d.name} (${d.stage}, ${rupees(d.amount)})`).join("; ")}`;
+}
+
+/** Like Promise.all over `items`, with at most `size` running at once. Keeps the input order. */
+async function mapPool<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
+  return out;
 }
 
 function invalid(error: z.ZodError): Result<never> {

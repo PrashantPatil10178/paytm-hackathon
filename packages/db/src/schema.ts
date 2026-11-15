@@ -13,6 +13,7 @@ import type {
   ActivityType,
   CallExtraction,
   CallOutcome,
+  CallPurpose,
   CallStatus,
   TranscriptLine,
   AgentLevel,
@@ -32,6 +33,9 @@ import type {
   CampaignChannel,
   CampaignResponseStatus,
   CampaignStatus,
+  ChatAnswer,
+  ChatQuestion,
+  ChatSender,
   Contact,
   DealStage,
   EnquiryNeed,
@@ -144,6 +148,29 @@ export const chatSessions = pgTable("chat_sessions", {
   session_id: text().primaryKey(),
   ticket_id: integer().notNull().references(() => tickets.id, { onDelete: "cascade" }),
 });
+
+/**
+ * Every line of every support chat (customer, Aria, a person, notices), in order. The API writes it: /chat
+ * records the message and the answer, public ticket replies on a chat's ticket are copied in, and the Control
+ * Room's Chats inbox writes a person's messages. ShopKart and the Control Room read the same rows.
+ */
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: serial().primaryKey(),
+    session_id: text().notNull(),
+    customer_id: integer().notNull(),
+    channel_id: text().notNull().default("shopkart"),
+    sender: text().$type<ChatSender>().notNull(),
+    author: text().notNull().default(""),
+    body: text().notNull(),
+    ticket_id: integer(),
+    ask: jsonb().$type<ChatQuestion>(),
+    answer: jsonb().$type<ChatAnswer>(),
+    created_at: at().notNull().defaultNow(),
+  },
+  (t) => [index().on(t.session_id), index().on(t.ticket_id), index().on(t.created_at)],
+);
 
 /* ───── HubSpot CRM ───── */
 
@@ -331,11 +358,21 @@ export const calls = pgTable(
     summary: text(),
     duration_s: integer(),
     error: text(),
+    /** sales (Sales Caller) or support (Support Caller: details a support request is missing) */
+    purpose: text().$type<CallPurpose>().notNull().default("sales"),
+    customer_id: integer(),
+    ticket_id: integer(),
+    session_id: text(),
+    run_id: integer(),
+    language: text(),
+    reason: text(),
+    /** When a finished support call's answers were handed back to the agent (once only) */
+    continued_at: at(),
     created_at: at().notNull().defaultNow(),
     updated_at: at().notNull().defaultNow(),
     ended_at: at(),
   },
-  (t) => [index().on(t.external_id), index().on(t.deal_id)],
+  (t) => [index().on(t.external_id), index().on(t.deal_id), index().on(t.ticket_id)],
 );
 
 /** Control Room settings (one row, id "default"). Kept across demo resets. */
@@ -465,7 +502,7 @@ export const agentStepsRelations = relations(agentSteps, ({ one }) => ({ run: on
 export const activitiesRelations = relations(activities, ({ one }) => ({ deal: one(deals, { fields: [activities.deal_id], references: [deals.id] }) }));
 
 /** Every demo table, children first: the order `reset` truncates in. */
-export const DEMO_TABLES = ["rai_calls", "rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+export const DEMO_TABLES = ["rai_calls", "rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_messages", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
 
 export const policiesRelations = relations(policies, ({ many }) => ({ rules: many(policyRules) }));
 export const policyRulesRelations = relations(policyRules, ({ one }) => ({ policy: one(policies, { fields: [policyRules.policy_code], references: [policies.code] }) }));

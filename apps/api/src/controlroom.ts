@@ -507,6 +507,7 @@ async function loadConversations(): Promise<ConversationView[]> {
           { from: "ai", time: iso(answeredAt), text: r.reply! },
         ],
         steps: steps.map(toStep),
+        sessionId: r.session_id,
         result: r.reply!,
       },
       created: r.created_at,

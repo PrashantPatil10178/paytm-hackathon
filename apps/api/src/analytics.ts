@@ -18,7 +18,7 @@ import {
   type AnalyticsSeries,
   type CreateReportBody,
 } from "@ph/shared";
-import { desc, eq, schema as s, toReport } from "@ph/db";
+import { and, desc, eq, isNotNull, isNull, schema as s, toReport } from "@ph/db";
 import { listCampaigns } from "./campaigns.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, ok, oneOf } from "./http.ts";
@@ -57,12 +57,17 @@ const n = (xs: unknown[]) => xs.length;
 const sum = <T>(f: (x: T) => number) => (xs: T[]) => Math.round(xs.reduce((a, x) => a + f(x), 0));
 
 export async function computeMetrics(): Promise<AnalyticsMetrics> {
-  const [tickets, orders, deals, contacts, campaigns] = await Promise.all([
+  const [tickets, orders, deals, contacts, campaigns, chats] = await Promise.all([
     db.select({ status: s.tickets.status, priority: s.tickets.priority, assignee: s.tickets.assignee, escalated: s.tickets.escalated_by_ai, created_at: s.tickets.created_at }).from(s.tickets),
     db.select({ amount: s.orders.amount, status: s.orders.status, payment: s.orders.payment_status, placed_at: s.orders.placed_at }).from(s.orders),
     db.select({ stage: s.deals.stage, amount: s.deals.amount, score: s.deals.score }).from(s.deals),
     db.select({ source: s.contacts.source }).from(s.contacts),
     listCampaigns(),
+    // Questions Aria answered in the chat without opening a ticket (triaged into a level; not out-of-scope or "which order?").
+    db
+      .select({ created_at: s.agentRuns.created_at })
+      .from(s.agentRuns)
+      .where(and(isNull(s.agentRuns.ticket_id), isNotNull(s.agentRuns.reply), isNotNull(s.agentRuns.level), eq(s.agentRuns.kind, "request"))),
   ]);
 
   type T = (typeof tickets)[number];
@@ -83,7 +88,12 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
 
   const datasets: AnalyticsDataset[] = [
     dataset("tickets_per_day", [COUNT("ai", "Handled by AI"), COUNT("human", "Handled by people")],
-      byCategory(recentTickets, days, (t) => dayKey(t.created_at), { ai: (xs) => xs.filter(byAi).length, human: (xs) => xs.filter((t) => !byAi(t)).length })),
+      byCategory(
+        [...recentTickets.map((t) => ({ at: t.created_at, ai: byAi(t) })), ...chats.filter((c) => since.has(dayKey(c.created_at))).map((c) => ({ at: c.created_at, ai: true }))],
+        days,
+        (x) => dayKey(x.at),
+        { ai: (xs) => xs.filter((x) => x.ai).length, human: (xs) => xs.filter((x) => !x.ai).length },
+      )),
     dataset("tickets_by_status", [COUNT("tickets", "Tickets")],
       byCategory(tickets, ["new", "open", "pending", "solved"].map((k) => ({ key: k, label: cap(k) })), (t) => t.status, { tickets: n })),
     dataset("tickets_by_priority", [COUNT("tickets", "Tickets")],
@@ -113,7 +123,9 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
       tickets_solved: tickets.filter((t) => t.status === "solved").length,
       tickets_ai: ai,
       tickets_escalated: tickets.filter((t) => t.escalated).length,
-      ai_rate: tickets.length ? Math.round((ai / tickets.length) * 1000) / 10 : 0,
+      chats_answered: chats.length,
+      // Share of all requests (tickets plus chats answered without one) that the AI handled alone.
+      ai_rate: tickets.length + chats.length ? Math.round(((ai + chats.length) / (tickets.length + chats.length)) * 1000) / 10 : 0,
       orders_14d: recentOrders.length,
       revenue_14d: Math.round(recentOrders.filter(counted).reduce((a, o) => a + o.amount, 0)),
       refunds: orders.filter((o) => o.payment === "refunded" || o.payment === "refund_initiated").length,

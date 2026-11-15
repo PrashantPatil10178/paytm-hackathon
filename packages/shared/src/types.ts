@@ -327,6 +327,7 @@ export interface ChatRequest {
 }
 
 export interface ChatResponse {
+  /** Empty when a person is chatting with the customer live: the message reached them and nobody needs to answer for them. */
   reply: string;
   ticket_id?: number;
   /** Aria needs one more detail before it can act (e.g. which order). The chat shows it as a card to pick from. */
@@ -366,6 +367,41 @@ export interface ChatAnswer {
   value: string | null;
   /** What the customer sees as their reply: the choice's label or what they typed. */
   text: string;
+}
+
+/**
+ * One line of a support chat, stored by the API so every screen sees the same conversation: the shop's chat
+ * widget, the Control Room's Chats inbox. `ai` = Aria, `human` = a person on the team (from the Control Room
+ * or a public Zendesk reply), `system` = a notice ("Ticket #2041 opened", "Kabir joined the chat").
+ */
+export type ChatSender = "customer" | "ai" | "human" | "system";
+
+export interface ChatMessage {
+  id: number;
+  session_id: string;
+  sender: ChatSender;
+  /** The customer's name, "Aria", the person's name, or "" for a notice */
+  author: string;
+  body: string;
+  /** The ticket this message belongs to, if the chat has one by then */
+  ticket_id: number | null;
+  /** Aria asked the customer to pick something (which order) */
+  ask: ChatQuestion | null;
+  /** The customer's message answered that question */
+  answer: ChatAnswer | null;
+  created_at: string;
+}
+
+/** GET /chat/sessions/:id: the conversation so far and who is answering it. */
+export interface ChatTranscript {
+  session_id: string;
+  messages: ChatMessage[];
+  /** `human` while a person owns the chat's open ticket; Aria stays quiet then. */
+  handler: "ai" | "human";
+  /** That person's name when `handler` is human */
+  agent: string | null;
+  /** The chat's newest ticket, if it has one */
+  ticket_id: number | null;
 }
 
 export type EnquiryNeed = "bulk_order" | "billing_setup" | "payment_setup" | "other";
@@ -510,7 +546,7 @@ export type AnalyticsDatasetId =
 
 /** The charts the analytics page draws. The analysis agent can only write findings about these. */
 export const ANALYTICS_DATASETS: { id: AnalyticsDatasetId; title: string; description: string }[] = [
-  { id: "tickets_per_day", title: "Tickets per day", description: "Tickets opened per day over the last 14 days, split into handled by the AI and handled by people" },
+  { id: "tickets_per_day", title: "Requests per day", description: "Requests per day over the last 14 days (tickets, plus questions answered in the chat without a ticket), split into handled by the AI and handled by people" },
   { id: "tickets_by_status", title: "Tickets by status", description: "Every ticket by its current status" },
   { id: "tickets_by_priority", title: "Tickets by priority", description: "Every ticket by priority" },
   { id: "orders_per_day", title: "Orders per day", description: "ShopKart orders and revenue (₹) per day over the last 14 days" },
@@ -552,7 +588,9 @@ export interface AnalyticsTotals {
   tickets_ai: number;
   /** Tickets the AI handed to a person. A different set from tickets_ai, not a part of it. */
   tickets_escalated: number;
-  /** 0–100 */
+  /** Questions Aria answered in the chat without opening a ticket (all AI-handled) */
+  chats_answered: number;
+  /** 0–100: AI-handled share of all requests (tickets_ai + chats_answered over tickets + chats_answered) */
   ai_rate: number;
   orders_14d: number;
   revenue_14d: number;

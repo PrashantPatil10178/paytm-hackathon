@@ -43,6 +43,20 @@
       "when": 1794734205481,
       "tag": "0005_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794734892148,
+      "tag": "0006_chat_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794734988470,
+      "tag": "0007_support_calls",
+      "breakpoints": true
     }
   ]
 }

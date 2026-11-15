@@ -5,6 +5,7 @@ import { CopilotKitProvider } from '@copilotkit/react-core/v2'
 import '@copilotkit/react-core/v2/styles.css'
 import AriaTools from './tools'
 import SalesTools from './sales'
+import PolicyTools from './policies'
 import ChatPanel from './ChatPanel'
 
 // Vite proxies /api/copilotkit to the runtime in apps/copilot (:4100), so the browser stays same-origin.
@@ -15,6 +16,7 @@ export default function AskAria({ open, onClose }) {
     <CopilotKitProvider runtimeUrl={RUNTIME_URL} enableInspector={false} showDevConsole={false}>
       <AriaTools />
       <SalesTools />
+      <PolicyTools />
       <ChatPanel open={open} onClose={onClose} />
     </CopilotKitProvider>
   )

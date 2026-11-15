@@ -6,6 +6,8 @@
  * deal id, approvals "AP-<id>".
  */
 
+import type { ChatMessage, ChatSender } from './types.ts'
+
 /** Where a request came in. `chat` = ShopKart chat, `voice` = Sarvam calls, `form` = the business enquiry form. */
 export type ChannelId = 'chat' | 'voice' | 'form' | 'whatsapp' | 'email' | 'webchat' | 'appchat' | 'api'
 export type Level = 'low' | 'medium' | 'high' | 'critical'
@@ -68,8 +70,41 @@ export interface Conversation {
   answeredAt: string
   conversation: Message[]
   steps: Step[]
+  /** The chat it came from, for the Chats inbox */
+  sessionId: string
   /** Aria's answer */
   result: string
+}
+
+/**
+ * One support chat in the Control Room's Chats inbox: every ShopKart chat, with or without a ticket. Aria answers
+ * until a person replies from the inbox; then the chat is theirs (its ticket is assigned to them) until they hand
+ * it back or solve it. The messages are the same rows the shop's chat widget shows.
+ */
+export interface ChatThread {
+  /** The chat session id */
+  id: string
+  customer: { id: number; name: string; contact: string; city: string }
+  channel: ChannelId
+  /** The newest message that isn't a notice */
+  last: { sender: ChatSender; author: string; body: string; at: string } | null
+  startedAt: string
+  updatedAt: string
+  /** Messages, not counting notices */
+  count: number
+  /** The chat's newest ticket */
+  ticket: { id: number; status: 'new' | 'open' | 'pending' | 'solved'; assignee: string | null; subject: string } | null
+  /** `human` while a person owns the open ticket: Aria stays quiet and the customer's messages go to them. */
+  handler: 'ai' | 'human'
+  /** That person */
+  agent: string | null
+  /** The customer wrote last and a person owns the chat: they are waiting on a reply. */
+  waiting: boolean
+}
+
+export interface ChatDetail {
+  chat: ChatThread
+  messages: ChatMessage[]
 }
 
 export interface Lead {

@@ -12,18 +12,22 @@
  * every start), so webhooks for calls placed before a restart still verify and nothing extra is stored.
  * A token only ever opens its own call, and a webhook naming another attempt id is refused.
  */
-import { BOT, DEAL_STAGES, ENQUIRY_NEEDS, rupees, type Call, type CallExtraction, type CallStatus, type DealStage, type PlaceCallBody, OWNER } from "@ph/shared";
+import { BOT, DEAL_STAGES, ENQUIRY_NEEDS, languageFor, rupees, type Call, type CallExtraction, type CallStatus, type DealStage, type PlaceCallBody, type SupportCallBody, OWNER } from "@ph/shared";
 import { timingSafeEqual } from "node:crypto";
 import { and, desc, eq, inArray, schema as s, sql, toCall } from "@ph/db";
 import { createContact, createDeal, findDeal, logActivity, updateDeal } from "./crm.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, HttpError, intParam, notFound, ok } from "./http.ts";
-import { getTranscript, listAttempts, parseAttempt, parseWebhook, placeOutbound, SarvamError, sarvamConfig, type CallResult, type SarvamConfig } from "./sarvam.ts";
+import { appFor, getTranscript, listAttempts, parseAttempt, parseWebhook, placeOutbound, SarvamError, sarvamConfig, type CallResult, type SarvamConfig } from "./sarvam.ts";
+import { voiceChannelToken } from "./resolveai.ts";
+import { findCustomer } from "./shop.ts";
+import { addComment, findTicket, updateTicket } from "./zendesk.ts";
 
 type CallRow = typeof s.calls.$inferSelect;
 
 /** `force: true` places the call outside 09:00–21:00 IST (for a demo after hours). */
-type PlaceCall = Partial<PlaceCallBody> & { force?: boolean };
+type PlaceCall = (Partial<PlaceCallBody> & { force?: boolean; purpose?: "sales" }) | SupportCallBody;
+const AGENT_URL = process.env.AGENT_URL?.trim().replace(/\/+$/, "") || "";
 
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL?.trim().replace(/\/+$/, "") || "";
 const FINAL: CallStatus[] = ["completed", "no_answer", "failed"];
@@ -97,7 +101,8 @@ async function saveCall(id: number, set: Partial<typeof s.calls.$inferInsert>): 
 /* ───── Placing a call ───── */
 
 async function placeCall(b: PlaceCall): Promise<Call> {
-  let { name = "", business_name = "", phone = "" } = b;
+  if (b.purpose === "support") return placeSupportCall(b);
+  let { name = "", business_name = "", phone = "" } = b as Partial<PlaceCallBody>;
   let contactId: number | null = null;
   let dealId: number | null = null;
   if (b.deal_id !== undefined && b.deal_id !== null) {
@@ -159,6 +164,180 @@ async function placeCall(b: PlaceCall): Promise<Call> {
   return toCall(placed);
 }
 
+/* ───── Support calls: phone a customer for the details their request is missing ───── */
+
+/** A step on the agent run this call belongs to, so the request's trace shows the call. */
+async function runStep(runId: number | null, step: string, result: "success" | "blocked" | "escalated", detail: string) {
+  if (!runId) return;
+  await db.insert(s.agentSteps).values({ run_id: runId, agent: "main", step, tool: "Sarvam", result, detail: detail.slice(0, 500) }).catch((e) => console.warn(`calls: couldn't add a step to run ${runId}: ${e instanceof Error ? e.message : e}`));
+}
+
+async function ticketNote(ticketId: number | null, body: string, publicReply = false) {
+  if (!ticketId) return;
+  await addComment(ticketId, { body, public: publicReply }).catch((e) => console.warn(`calls: couldn't comment on ticket #${ticketId}: ${e instanceof Error ? e.message : e}`));
+}
+
+async function placeSupportCall(b: SupportCallBody): Promise<Call> {
+  const customer = await findCustomer(intParam(String(b.customer_id ?? ""), "customer_id"));
+  const reason = String(b.reason ?? "").trim();
+  const questions = (Array.isArray(b.questions) ? b.questions : []).map((q) => String(q).trim()).filter(Boolean);
+  if (!reason) throw bad("reason is required: why Aria is calling, e.g. \"you wrote that an item arrived damaged, but we couldn't tell which order\"");
+  if (!questions.length || questions.length > 5) throw bad("questions needs 1 to 5 details to collect");
+  const ticketId = b.ticket_id == null ? null : intParam(String(b.ticket_id), "ticket_id");
+  if (ticketId) await findTicket(ticketId);
+
+  // One support call at a time per customer: a second request while one is live gets that call back.
+  const [live] = await db
+    .select()
+    .from(s.calls)
+    .where(and(eq(s.calls.purpose, "support"), eq(s.calls.customer_id, customer.id), inArray(s.calls.status, LIVE)))
+    .orderBy(desc(s.calls.id))
+    .limit(1);
+  if (live) throw new HttpError(409, `Aria is already calling ${customer.name} (call #${live.id}).`);
+  if (!b.force && !inCallingHours())
+    throw new HttpError(409, "It's outside calling hours (09:00–21:00 IST). Calls go out only in that window; send force: true to call anyway.");
+
+  const cfg = await sarvamConfig();
+  if (!cfg.ok) throw new HttpError(503, cfg.reason);
+  // The demo's customers have made-up numbers: with SARVAM_TEST_NUMBER set, the call rings that verified phone.
+  const dial = toE164(cfg.config.supportTestNumber || customer.phone);
+  if (!dial) throw bad(`${customer.name}'s number ${customer.phone} isn't an Indian mobile number`);
+  const language = languageFor(customer.city);
+
+  const [row] = await db
+    .insert(s.calls)
+    .values({
+      purpose: "support",
+      phone: dial,
+      name: customer.name,
+      business_name: "",
+      customer_id: customer.id,
+      ticket_id: ticketId,
+      session_id: b.session_id?.trim() || null,
+      run_id: b.run_id ?? null,
+      language,
+      reason,
+      status: "queued",
+    })
+    .returning();
+  const call = row!;
+  await db.update(s.channels).set({ last_used_at: new Date() }).where(eq(s.channels.id, "sarvam_voice"));
+
+  let attemptId: string;
+  try {
+    attemptId = await placeOutbound(cfg.config, {
+      purpose: "support",
+      phone: dial,
+      variables: {
+        customer_name: customer.name.split(" ")[0] ?? customer.name,
+        company_name: "ShopKart",
+        owner_name: OWNER.first,
+        preferred_language: language,
+        reason,
+        questions: questions.join("; "),
+        order_ref: b.order_id ? `#${b.order_id}` : "",
+        ticket_ref: ticketId ? `#${ticketId}` : "",
+      },
+      webhook: PUBLIC_API_URL ? { url: `${PUBLIC_API_URL}/sarvam/webhook/${webhookToken(call.id)}`, metadata: { call_id: String(call.id) } } : undefined,
+    });
+  } catch (e) {
+    const message = e instanceof SarvamError ? e.message : "Couldn't place the call with Sarvam";
+    if (!(e instanceof SarvamError)) console.error("sarvam: place support call failed", e instanceof Error ? e.message : e);
+    await saveCall(call.id, { status: "failed", error: message, ended_at: new Date() });
+    await runStep(call.run_id, "Call for details", "blocked", `Couldn't call ${customer.name}: ${message}`);
+    throw new HttpError(502, message);
+  }
+  const placed = await saveCall(call.id, { status: "ringing", external_id: attemptId });
+  const to = cfg.config.supportTestNumber ? `the test number ${crmPhone(dial)} (for ${customer.name})` : crmPhone(dial);
+  await Promise.all([
+    runStep(call.run_id, "Call for details", "success", `Aria · Support Caller is calling ${to}, opening in ${language}: ${questions.join("; ")}`),
+    ticketNote(ticketId, `Aria · Support Caller is calling ${customer.name} on ${to} (opens in ${language}, switches to whatever they speak) to collect: ${questions.join("; ")}.\nWhy: ${reason}.\n(call #${call.id})`),
+  ]);
+  return toCall(placed);
+}
+
+const INFO_LABEL: Record<string, string> = {
+  info_collected: "got the details",
+  partial: "got some of the details",
+  callback: "asked to be called back",
+  declined: "didn't want to give details",
+  wrong_person: "reached the wrong person",
+  unclear: "no clear answers",
+};
+const WANTS_LABEL: Record<string, string> = {
+  refund: "a refund", replacement: "a replacement", return: "to return it", cancel: "to cancel the order",
+  delivery_update: "a delivery update", information: "an answer", other: "something else",
+};
+
+/** What the customer said on the phone, as their own message to support, so the agent can continue. */
+function phoneMessage(call: CallRow): string {
+  const x = call.extracted;
+  return [
+    "(Said on the phone call with Aria)",
+    x.order_number ? `It's about order ${x.order_number}${x.product ? `, the ${x.product}` : ""}.` : x.product ? `It's about the ${x.product}.` : null,
+    x.issue_details ?? null,
+    x.wants && WANTS_LABEL[x.wants] ? `I'd like ${WANTS_LABEL[x.wants]}.` : null,
+    !x.issue_details && call.summary ? call.summary : null,
+  ].filter(Boolean).join(" ");
+}
+
+function supportNote(call: CallRow): string {
+  const x = call.extracted;
+  if (call.status === "no_answer") return `Aria · Support Caller called ${call.name}: no answer.${call.error ? ` ${call.error}.` : ""}\n(call #${call.id})`;
+  if (call.status === "failed") return `Aria · Support Caller couldn't reach ${call.name}: the call failed${call.error ? ` (${call.error})` : ""}.\n(call #${call.id})`;
+  const facts = [
+    x.order_number && `Order: ${x.order_number}`,
+    x.product && `Product: ${x.product}`,
+    x.issue_details && `Problem: ${x.issue_details}`,
+    x.wants && x.wants !== "not_discussed" && `Wants: ${WANTS_LABEL[x.wants] ?? x.wants}`,
+    x.best_time && `Call back: ${x.best_time}`,
+    x.language_used && `Spoke: ${x.language_used}`,
+  ].filter(Boolean);
+  return [
+    `Aria · Support Caller spoke with ${call.name}${call.duration_s ? ` for ${minutes(call.duration_s)}` : ""}: ${INFO_LABEL[x.info_outcome ?? "unclear"]}.`,
+    call.summary,
+    facts.length ? `${facts.join(". ")}.` : null,
+    `(call #${call.id})`,
+  ].filter(Boolean).join("\n");
+}
+
+/** A finished support call: note it on the ticket and the run, then hand the answers back to the agent (once). */
+async function applySupport(call: CallRow) {
+  const x = call.extracted;
+  const got = call.status === "completed" && (x.info_outcome === "info_collected" || x.info_outcome === "partial");
+  await Promise.all([
+    ticketNote(call.ticket_id, supportNote(call)),
+    runStep(call.run_id, "Call result", got ? "success" : "escalated", supportNote(call).split("\n")[0]!),
+  ]);
+  if (call.continued_at) return;
+  await saveCall(call.id, { continued_at: new Date() });
+
+  if (got && call.session_id && call.customer_id && AGENT_URL) {
+    // The answers continue the request in the customer's chat session, like a message they typed.
+    try {
+      const res = await fetch(`${AGENT_URL}/intake`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${await voiceChannelToken()}` },
+        body: JSON.stringify({ session_id: call.session_id, customer_id: call.customer_id, message: phoneMessage(call) }),
+        signal: AbortSignal.timeout(110_000),
+      });
+      if (!res.ok) throw new Error(`agent answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return;
+    } catch (e) {
+      console.warn(`calls: couldn't hand call #${call.id} back to the agent: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  // Nothing usable came back (or the agent couldn't take it): the customer is asked in the chat, and the
+  // owner takes the ticket.
+  if (!call.ticket_id) return;
+  const tried = call.status === "completed" ? "We just spoke on the phone" : "We tried calling you";
+  const ask = got ? "" : " Could you reply here with the details, or tell us a good time to call?";
+  await ticketNote(call.ticket_id, `${tried} to get a few details for this request.${ask} ${OWNER.first} from our team will follow up here.`, true);
+  await updateTicket(call.ticket_id, { assignee: OWNER.name, status: "open", handled_by: "human" }).catch((e) =>
+    console.warn(`calls: couldn't hand ticket #${call.ticket_id} to ${OWNER.name}: ${e instanceof Error ? e.message : e}`),
+  );
+}
+
 /* ───── Applying a result (webhook or poll) ───── */
 
 const locks = new Map<number, Promise<unknown>>();
@@ -176,7 +355,7 @@ async function applyResult(id: number, r: CallResult, cfg: SarvamConfig | null):
     const call = await findCall(id);
     let transcript = r.transcript;
     if (!transcript.length && r.interactionId && cfg && r.status && FINAL.includes(r.status)) {
-      transcript = await getTranscript(cfg, r.interactionId).catch((e) => {
+      transcript = await getTranscript(cfg, r.interactionId, appFor(cfg, call.purpose).id).catch((e) => {
         console.warn(`sarvam: transcript for call #${id} not available yet (${e instanceof Error ? e.message : e})`);
         return [];
       });
@@ -197,7 +376,7 @@ async function applyResult(id: number, r: CallResult, cfg: SarvamConfig | null):
       error: r.failure ?? (status === "completed" ? null : call.error),
       ended_at: final ? (r.endedAt ?? call.ended_at ?? new Date()) : call.ended_at,
     });
-    if (final) await applyToCrm(saved);
+    if (final) await (saved.purpose === "support" ? applySupport(saved) : applyToCrm(saved));
     return saved;
   });
 }
@@ -345,7 +524,7 @@ async function syncFromSarvam(call: CallRow, cfg: SarvamConfig): Promise<SyncOut
   if (!call.external_id) return "not_found";
   const from = new Date(call.created_at.getTime() - 5 * 60_000);
   const to = new Date(Math.min(Date.now(), call.created_at.getTime() + 2 * 60 * 60_000));
-  const attempt = (await listAttempts(cfg, from, to)).find((a) => a.attempt_id === call.external_id);
+  const attempt = (await listAttempts(cfg, from, to, appFor(cfg, call.purpose).id)).find((a) => a.attempt_id === call.external_id);
   if (!attempt) return "not_found";
   const r = parseAttempt(attempt);
   const ended = r.endedAt?.getTime() ?? Date.now();

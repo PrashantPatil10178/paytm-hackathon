@@ -1,4 +1,4 @@
-import { MessageCircle, MessagesSquare, Mail, Globe, Smartphone, Phone, ClipboardList, Webhook, CheckCircle2, ShieldX, ArrowUpRight, ShieldCheck, CreditCard, LifeBuoy, Users, Truck, Inbox, Hand, ShoppingBag, Megaphone } from 'lucide-react'
+import { MessageCircle, MessagesSquare, Mail, Globe, Smartphone, Phone, ClipboardList, Webhook, CheckCircle2, ShieldX, ArrowUpRight, ShieldCheck, CreditCard, LifeBuoy, Users, Truck, Inbox, Hand, ShoppingBag, Megaphone, ScrollText } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import type { ComponentType } from 'react'
 import type { ChannelId, Level, Status, StepResult } from './types'
@@ -47,6 +47,7 @@ export const RESULTS: Record<StepResult, { label: string; icon: Icon; badge: str
 export const TOOLS: Record<string, { icon: Icon; tile: string }> = {
   'Aria LLM': { icon: ResolveAIGlyph, tile: AI_TILE },
   'Policy engine': { icon: ShieldCheck, tile: TILE },
+  Policies: { icon: ScrollText, tile: TILE },
   Approvals: { icon: Hand, tile: GATE_TILE },
   Paytm: { icon: CreditCard, tile: TILE },
   Zendesk: { icon: LifeBuoy, tile: TILE },

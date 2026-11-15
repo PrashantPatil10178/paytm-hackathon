@@ -3,10 +3,10 @@
 import { ApiRequestError, api as http, usePoll } from '@ph/shared/react'
 import type {
   AnalysisReport, AnalysisResponse, AnalysisScope, AnalyticsMetrics, Call, CampaignResponse, CampaignResponseStatus, CampaignSummary,
-  DealCard, DealDetail, DealStage, LeadSyncResponse, PlaceCallBody,
+  DealCard, DealDetail, DealStage, LeadSyncResponse, PlaceCallBody, PolicyArea, PolicyEffect, PolicyWithRules,
 } from '@ph/shared'
 import type {
-  Approvals, ChannelConnection, ChannelId, ChannelOffer, Connector, ConnectorOffer, Conversation, Decision, Lead, Settings, Stats, Status,
+  Approvals, ChannelConnection, ChannelId, ChannelOffer, ChatDetail, ChatThread, Connector, ConnectorOffer, Conversation, Decision, Lead, Settings, Stats, Status,
   TeamTask, Ticket,
 } from './types'
 import type { Channel, ChannelToken } from '@ph/shared'
@@ -33,6 +33,10 @@ export const api = {
   // Support
   updateTicketStatus: (id: string, status: Status) =>
     http.patch<{ ticket: Ticket }>(`/control-room/tickets/${encodeURIComponent(id)}`, { status }),
+  /** A reply from the Chats inbox. The first one takes the chat over from Aria (its ticket is assigned to you). */
+  sendChatMessage: (id: string, body: string) => http.post<ChatDetail>(`/control-room/chats/${encodeURIComponent(id)}/messages`, { body }),
+  handBackChat: (id: string) => http.post<ChatDetail>(`/control-room/chats/${encodeURIComponent(id)}/handback`, {}),
+  solveChat: (id: string) => http.post<ChatDetail>(`/control-room/chats/${encodeURIComponent(id)}/solve`, {}),
   decideApproval: (id: string, decision: Decision, note?: string) =>
     http.post<{ ok: boolean; warning?: string }>(`/control-room/approvals/${encodeURIComponent(id)}/decide`, { decision, ...(note ? { note } : {}) }),
 
@@ -61,6 +65,9 @@ export const api = {
     http.post<Call>('/resolveai/calls', body),
   syncCall: (id: number) => http.post<Call>(`/resolveai/calls/${id}/sync`, {}),
 
+  // Policies (read-only). `q` matches any word, best first.
+  policies: (q?: string) => http.get<{ policies: PolicyWithRules[] }>(`/policies${q?.trim() ? `?q=${encodeURIComponent(q.trim())}` : ''}`),
+
   // The agents. Each waits for the model, so these take seconds (the lead sync up to a few minutes).
   runAnalysis: (focus?: string, scope: AnalysisScope = 'all') => http.post<AnalysisResponse>('/analysis', { scope, ...(focus ? { focus } : {}) }),
   syncCampaignLeads: (limit = 10) => http.post<LeadSyncResponse>('/campaigns/sync', { limit }),
@@ -72,6 +79,10 @@ export const live = {
   useTickets: () => usePoll<{ tickets: Ticket[] }>('/control-room/tickets', 3000),
   /** Chats Aria answered directly, without a ticket (low-level questions). */
   useConversations: () => usePoll<{ conversations: Conversation[] }>('/control-room/conversations', 3000),
+  /** Every support chat, newest activity first (the Chats inbox). */
+  useChats: (on = true) => usePoll<{ chats: ChatThread[] }>(on ? '/control-room/chats' : null, 2000),
+  /** One chat's messages; null id = nothing to poll. */
+  useChat: (id: string | null) => usePoll<ChatDetail>(id ? `/control-room/chats/${encodeURIComponent(id)}` : null, 2000),
   useLeads: () => usePoll<{ leads: Lead[] }>('/control-room/leads', 3000),
   useApprovals: () => usePoll<Approvals>('/control-room/approvals', 3000),
   useStats: () => usePoll<Stats>('/control-room/stats', 5000),
@@ -82,6 +93,16 @@ export const live = {
   useBoard: () => usePoll<{ tasks: TeamTask[] }>('/control-room/board', 3000),
   /** Voice calls, newest first. */
   useCalls: () => usePoll<{ calls: Call[] }>('/resolveai/calls', 3000),
+
+  /** ShopKart's business policies with their rules (read-only). `q` matches any word, best first. Pass `on = false` to skip. */
+  usePolicies: (f: { area?: PolicyArea | null; q?: string | null; effect?: PolicyEffect | null } = {}, on = true) => {
+    const qs = new URLSearchParams()
+    if (f.area) qs.set('area', f.area)
+    if (f.q?.trim()) qs.set('q', f.q.trim())
+    if (f.effect) qs.set('effect', f.effect)
+    const s = qs.toString()
+    return usePoll<{ policies: PolicyWithRules[] }>(on ? `/policies${s ? `?${s}` : ''}` : null, 30000)
+  },
 
   useMetrics: () => usePoll<AnalyticsMetrics>('/analytics/metrics', 5000),
   /** The newest report of that scope ("sales" for the Sales area). */

@@ -32,6 +32,7 @@ import {
 } from "@ph/shared";
 import { eq, schema as s } from "@ph/db";
 import { computeMetrics, saveReport } from "./analytics.ts";
+import { linkTicket, personActive, personOnChat, record, recordAria, type ChatRef } from "./chats.ts";
 import { refundLimit } from "./controlroom.ts";
 import { contactForEmail, convertResponse, listResponses, skipResponse } from "./campaigns.ts";
 import { createContact, createDeal, logActivity } from "./crm.ts";
@@ -227,6 +228,20 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
   return { reply, ticket_id: ticket.id };
 }
 
+/**
+ * A person owns this chat (they took it over in the Control Room, or Aria escalated it to them): the message goes
+ * onto their ticket and Aria doesn't act. While they're talking with the customer she says nothing; otherwise the
+ * customer hears who has it.
+ */
+async function toPerson(chat: ChatRef, { ticket, agent }: { ticket: { id: number; status: string }; agent: string }, name: string, message: string): Promise<ChatResponse> {
+  await addComment(ticket.id, { body: message, public: true, author: name, author_type: "customer" });
+  if (ticket.status === "pending" || ticket.status === "new") await updateTicket(ticket.id, { status: "open" });
+  if (await personActive(chat.session_id)) return { reply: "", ticket_id: ticket.id };
+  const reply = `Thanks, I've added this to your ticket #${ticket.id}. ${agent} from our team is on it and will reply here.`;
+  await addComment(ticket.id, { body: reply, public: true });
+  return { reply, ticket_id: ticket.id };
+}
+
 /* ───────────── Lead stand-in ───────────── */
 
 function scoreLead(b: LeadRequest): { score: LeadScore; why: string } {
@@ -375,10 +390,27 @@ export const agentRoutes = {
     POST: handle(async (req) => {
       const b = await body<ChatRequest>(req);
       if (!b.session_id || !b.customer_id || !b.message?.trim()) throw bad("session_id, customer_id and message are required");
+      const message = b.message.trim();
+      const chat: ChatRef = { session_id: b.session_id, customer_id: b.customer_id, channel_id: "shopkart" };
+      const [customer, person] = await Promise.all([findCustomer(b.customer_id), personOnChat(b.session_id)]);
+      // Every line is stored, so the Control Room's Chats inbox and a reloaded widget see the same conversation.
+      const mine = await record(chat, { sender: "customer", author: customer.name, body: message, answer: b.answer ?? null, ticket_id: person?.ticket.id ?? null });
+      if (person) return ok(await toPerson(chat, person, customer.name, message));
+
       // ShopKart is a ResolveAI channel: its chats go to the agent's intake with the channel token.
-      const forwarded = await forward("/intake", b, { token: shopkartChannelToken() });
-      if (forwarded) return forwarded;
-      return ok(await simulateChat({ ...b, message: b.message.trim() }));
+      let res: ChatResponse;
+      const forwarded = await forward("/intake", { ...b, message }, { token: shopkartChannelToken() });
+      if (forwarded) {
+        if (!forwarded.ok) return forwarded;
+        res = (await forwarded.json()) as ChatResponse;
+      } else res = await simulateChat({ ...b, message });
+
+      if (res.ticket_id) {
+        await linkTicket(chat, res.ticket_id);
+        await db.update(s.chatMessages).set({ ticket_id: res.ticket_id }).where(eq(s.chatMessages.id, mine.id));
+      }
+      await recordAria(chat, res.reply, { ticket_id: res.ticket_id ?? null, ask: res.ask ?? null });
+      return ok(res);
     }),
   },
   "/lead": {

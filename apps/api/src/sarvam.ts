@@ -6,7 +6,7 @@
  * The API key is the `sarvam` connector's token (Control Room → Connectors), else SARVAM_API_KEY.
  * It is only ever sent to Sarvam in the X-API-Key header: never logged, never returned.
  */
-import type { CallExtraction, CallOutcome, CallStatus, TranscriptLine } from "@ph/shared";
+import type { CallExtraction, CallOutcome, CallPurpose, CallStatus, InfoOutcome, TranscriptLine } from "@ph/shared";
 import { eq, schema as s } from "@ph/db";
 import { db } from "./db.ts";
 
@@ -19,6 +19,11 @@ export interface SarvamConfig {
   workspaceId: string;
   appId: string;
   appVersion: number;
+  /** "Aria · Support Caller": phones a customer for the details a support request is missing */
+  supportAppId: string;
+  supportAppVersion: number;
+  /** Demo safety: when set, every support call rings this (verified) number instead of the customer's */
+  supportTestNumber: string;
   connectionId: string;
   callerNumber: string;
 }
@@ -48,6 +53,9 @@ export async function sarvamConfig(): Promise<{ ok: true; config: SarvamConfig }
       workspaceId: env("SARVAM_WORKSPACE_ID"),
       appId: env("SARVAM_APP_ID", "Aria---Sale-a01f8007-240c"),
       appVersion: Number(env("SARVAM_APP_VERSION", "1")) || 1,
+      supportAppId: env("SARVAM_SUPPORT_APP_ID", "Aria---Supp-c275c85f-5a2e"),
+      supportAppVersion: Number(env("SARVAM_SUPPORT_APP_VERSION", "1")) || 1,
+      supportTestNumber: env("SARVAM_TEST_NUMBER"),
       connectionId: env("SARVAM_CONNECTION_ID", "50ccd51e-3f-4c3775cb-fbe7"),
       callerNumber: env("SARVAM_CALLER_NUMBER", "+918064260576"),
     },
@@ -95,7 +103,12 @@ async function request<T>(cfg: SarvamConfig, path: string, init: RequestInit = {
 
 const seg = encodeURIComponent;
 
+/** The Sarvam app (and version) that places calls of this purpose. */
+export const appFor = (cfg: SarvamConfig, purpose: CallPurpose) =>
+  purpose === "support" ? { id: cfg.supportAppId, version: cfg.supportAppVersion } : { id: cfg.appId, version: cfg.appVersion };
+
 export interface OutboundCall {
+  purpose?: CallPurpose;
   phone: string;
   variables: Record<string, string>;
   webhook?: { url: string; metadata: Record<string, string> };
@@ -107,8 +120,8 @@ export async function placeOutbound(cfg: SarvamConfig, call: OutboundCall): Prom
     method: "POST",
     body: JSON.stringify({
       app_config: {
-        app_id: cfg.appId,
-        app_version: cfg.appVersion,
+        app_id: appFor(cfg, call.purpose ?? "sales").id,
+        app_version: appFor(cfg, call.purpose ?? "sales").version,
         app_type: "agent",
         connection_config: { connection_id: cfg.connectionId, agent_phone_number: cfg.callerNumber },
         agent_variables: call.variables,
@@ -125,7 +138,7 @@ export async function placeOutbound(cfg: SarvamConfig, call: OutboundCall): Prom
 const sarvamTime = (d: Date) => d.toISOString().slice(0, 19);
 
 /** Attempts of our app in a time window, newest first. Sarvam caches these for about a minute. */
-export async function listAttempts(cfg: SarvamConfig, from: Date, to: Date): Promise<Record<string, unknown>[]> {
+export async function listAttempts(cfg: SarvamConfig, from: Date, to: Date, appId = cfg.appId): Promise<Record<string, unknown>[]> {
   const q = new URLSearchParams({
     start_datetime: sarvamTime(from),
     end_datetime: sarvamTime(to),
@@ -133,13 +146,13 @@ export async function listAttempts(cfg: SarvamConfig, from: Date, to: Date): Pro
     sort_order: "desc",
     limit: "50",
   });
-  const data = await request<{ items?: Record<string, unknown>[] }>(cfg, `/analytics/v1/${seg(cfg.orgId)}/${seg(cfg.workspaceId)}/${seg(cfg.appId)}/attempts?${q}`);
+  const data = await request<{ items?: Record<string, unknown>[] }>(cfg, `/analytics/v1/${seg(cfg.orgId)}/${seg(cfg.workspaceId)}/${seg(appId)}/attempts?${q}`);
   return Array.isArray(data?.items) ? data.items : [];
 }
 
 /** A call's transcript by interaction id (`YYYYMMDD/<id>`; the slash is encoded). */
-export async function getTranscript(cfg: SarvamConfig, interactionId: string): Promise<TranscriptLine[]> {
-  const data = await request<{ messages?: unknown[] }>(cfg, `/analytics/v1/${seg(cfg.orgId)}/${seg(cfg.workspaceId)}/${seg(cfg.appId)}/transcripts/${seg(interactionId)}`);
+export async function getTranscript(cfg: SarvamConfig, interactionId: string, appId = cfg.appId): Promise<TranscriptLine[]> {
+  const data = await request<{ messages?: unknown[] }>(cfg, `/analytics/v1/${seg(cfg.orgId)}/${seg(cfg.workspaceId)}/${seg(appId)}/transcripts/${seg(interactionId)}`);
   return toTranscript(data?.messages);
 }
 
@@ -195,6 +208,7 @@ const enumOf = <T extends string>(v: unknown, allowed: readonly T[]): T | undefi
   const t = str(v)?.toLowerCase().replace(/[\s-]+/g, "_");
   return t && (allowed as readonly string[]).includes(t) ? (t as T) : undefined;
 };
+const INFO_OUTCOMES: InfoOutcome[] = ["info_collected", "partial", "callback", "declined", "wrong_person", "unclear"];
 const EMPTY = new Set(["none", "null", "n/a", "na", "unknown", "not captured", "-"]);
 
 /** The app's extracted fields, typed: numbers and booleans parsed, empty strings dropped. */
@@ -232,6 +246,13 @@ export function normaliseExtraction(vars: unknown): CallExtraction {
     meeting_time: text("meeting_time"),
     objections: text("objections"),
     call_summary: text("call_summary"),
+    info_outcome: enumOf(v.info_outcome, INFO_OUTCOMES),
+    order_number: text("order_number")?.replace(/\D/g, "") || undefined,
+    product: text("product"),
+    issue_details: text("issue_details"),
+    wants: enumOf(v.wants, ["refund", "replacement", "return", "cancel", "delivery_update", "information", "other", "not_discussed"] as const),
+    best_time: text("best_time"),
+    language_used: text("language_used"),
   };
   return Object.fromEntries(Object.entries(out).filter(([, x]) => x !== undefined)) as CallExtraction;
 }

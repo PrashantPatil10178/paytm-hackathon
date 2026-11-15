@@ -251,6 +251,8 @@ function useAreaContent(areaId: AreaId): AreaContent {
   const params = new URLSearchParams(search)
   const { data: ch } = live.useChannels(10000, areaId === 'connect')
   const { data: co } = live.useConnectors(10000, areaId === 'connect')
+  const { data: chatList } = live.useChats(areaId === 'support')
+  const waiting = chatList?.chats.filter((c) => c.waiting).length ?? 0
   const connected = ch && co
     ? { channels: ch.channels.filter((c) => c.connected && c.enabled).length, apps: co.connectors.filter((c) => c.status === 'connected').length }
     : null
@@ -277,6 +279,14 @@ function useAreaContent(areaId: AreaId): AreaContent {
                 count: tickets.filter((t) => t.status === s).length,
                 countTone: s === 'waiting' ? 'amber' : undefined,
               })),
+            ],
+          },
+          {
+            label: 'Chats',
+            items: [
+              // Amber: customers waiting on a reply in a chat you took over.
+              page('/chats', waiting ? { count: waiting, countTone: 'amber' } : { count: chatList?.chats.length }),
+              page('/conversations'),
             ],
           },
           { label: 'Views', items: [page('/board')] },
@@ -320,7 +330,7 @@ function useAreaContent(areaId: AreaId): AreaContent {
     case 'agent':
       return {
         fact: settings ? AUTONOMY[settings.autonomy] : 'Your AI teammate',
-        groups: [{ items: [page('/settings'), page('/audit')] }],
+        groups: [{ items: [page('/settings'), page('/policies'), page('/audit')] }],
       }
     case 'home': {
       const pending = approvals.pending.length

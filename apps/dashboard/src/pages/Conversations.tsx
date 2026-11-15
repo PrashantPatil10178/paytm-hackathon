@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Search, MessagesSquare, CheckCircle2, ScrollText, UserRound } from 'lucide-react'
+import { Search, MessageCircle, MessagesSquare, CheckCircle2, ScrollText, UserRound } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { useApp } from '../store'
 import { Card, PageHeader, Tabs, LevelBadge, ChannelTag, Drawer, Button, EmptyState, SectionTitle, Badge } from '../components/ui'
@@ -116,13 +116,13 @@ export default function Conversations() {
           </div>
         )}
       >
-        {selected && <ConversationDetail c={selected} onAudit={() => navigate(`/audit?ref=${selected.id}`)} />}
+        {selected && <ConversationDetail c={selected} onAudit={() => navigate(`/audit?ref=${selected.id}`)} onChat={() => navigate(`/chats?id=${encodeURIComponent(selected.sessionId)}`)} />}
       </Drawer>
     </div>
   )
 }
 
-function ConversationDetail({ c, onAudit }: { c: Conversation; onAudit: () => void }) {
+function ConversationDetail({ c, onAudit, onChat }: { c: Conversation; onAudit: () => void; onChat: () => void }) {
   return (
     <div className="space-y-6 p-6">
       <div className="flex items-start gap-3 rounded-xl bg-brand-50/70 p-4 ring-1 ring-brand-100">
@@ -170,6 +170,7 @@ function ConversationDetail({ c, onAudit }: { c: Conversation; onAudit: () => vo
       </section>
 
       <div className="flex gap-2 border-t border-slate-100 pt-4">
+        <Button onClick={onChat} icon={MessageCircle} variant="primary">Open the chat</Button>
         <Button onClick={onAudit} icon={ScrollText}>Full audit trail</Button>
       </div>
     </div>

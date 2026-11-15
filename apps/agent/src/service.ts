@@ -141,7 +141,16 @@ export function createService({ api, platform, main, writer, levels, sales, anal
 
   /** The ticket this chat session already has, if it still exists (a demo reset recycles ticket numbers). */
   async function knownTicket(sessionId: string): Promise<Ticket | null> {
-    const known = await sessions.get(sessionId);
+    const [known, stored] = await Promise.all([sessions.get(sessionId), api.chatSession(sessionId).catch(() => null)]);
+    // A person who joined this chat from the Control Room opened its ticket there (tagged live-chat), so this
+    // service never saw it. After they hand the chat back, Aria carries on with that ticket.
+    if (stored?.ticket_id && (!known || stored.ticket_id > known.ticketId)) {
+      const t = await api.ticket(stored.ticket_id).catch(() => null);
+      if (t?.tags.includes("live-chat")) {
+        await sessions.set(sessionId, { ticketId: t.id, ticketCreatedAt: t.created_at });
+        return t;
+      }
+    }
     if (!known) return null;
     try {
       const t = await api.ticket(known.ticketId);

@@ -4,6 +4,7 @@
  * connector's token. A connector that is turned off refuses every call.
  */
 import type {
+  ChatTranscript,
   AnalysisReport,
   AnalysisScope,
   AnalyticsMetrics,
@@ -110,6 +111,8 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
     updateTicket: (ticketId: number, changes: UpdateTicketBody) => call<Ticket>("PATCH", `/zendesk/tickets/${ticketId}`, changes),
     addComment: (ticketId: number, body: CreateCommentBody) => call<ZdComment>("POST", `/zendesk/tickets/${ticketId}/comments`, body),
     customerTickets: (customerId: number) => call<{ tickets: TicketSummary[] }>("GET", `/zendesk/users/${customerId}/tickets`).then((r) => r.tickets),
+    /** The stored chat (ResolveAI's own record in the demo API): its newest ticket, e.g. one a person opened from the Control Room. */
+    chatSession: (sessionId: string) => call<ChatTranscript>("GET", `/chat/sessions/${encodeURIComponent(sessionId)}`),
 
     // CRM
     createContact: (body: CreateContactBody) => call<Contact>("POST", "/crm/contacts", body),

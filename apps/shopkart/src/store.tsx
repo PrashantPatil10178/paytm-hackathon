@@ -1,6 +1,6 @@
-import type { ChatAnswer, ChatQuestion, ChatResponse, Customer, Ticket } from "@ph/shared";
+import type { ChatAnswer, ChatMessage as StoredMessage, ChatQuestion, ChatResponse, ChatTranscript, Customer } from "@ph/shared";
 import { api, usePoll } from "@ph/shared/react";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 /** A message id. crypto.randomUUID only exists on secure pages (https or localhost), not when the shop is
  *  opened over the network by IP, so fall back to getRandomValues, which works everywhere. */
@@ -42,10 +42,12 @@ export function useCustomer() {
 
 export interface ChatMessage {
   id: string;
-  /** "system" = a centred notice, like WhatsApp's "Messages are end-to-end encrypted" pill */
-  from: "me" | "bot" | "system";
+  /** "system" = a centred notice, like WhatsApp's "Messages are end-to-end encrypted" pill; "agent" = a person on the team */
+  from: "me" | "bot" | "agent" | "system";
   text: string;
   at: Date;
+  /** Who wrote it, for a person on the team */
+  author?: string;
   failed?: boolean;
   /** Aria asked the customer to pick something (which order); the chat shows it as a card under the bubble. */
   ask?: ChatQuestion;
@@ -58,6 +60,10 @@ interface ChatCtx {
   setOpen: (open: boolean) => void;
   messages: ChatMessage[];
   typing: boolean;
+  /** A person from the team is on this chat (they took it over from Aria) */
+  agent: string | null;
+  /** Replies arrived while the widget was closed */
+  unread: number;
   draft: string;
   setDraft: (d: string) => void;
   /** Send a message. With `answer`, it answers the open question card. */
@@ -90,12 +96,50 @@ function typedAnswer(text: string, ask: ChatQuestion): { value: string | null; t
 }
 
 const newSession = (customerId: number) => `shopkart-${customerId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+/** One chat per customer, kept across reloads like a messaging app: the conversation itself is stored by the API. */
+function sessionFor(customerId: number): string {
+  const key = `shopkart.chat.${customerId}`;
+  try {
+    const known = localStorage.getItem(key);
+    if (known) return known;
+    const id = newSession(customerId);
+    localStorage.setItem(key, id);
+    return id;
+  } catch {
+    return newSession(customerId); // private mode: a chat for this tab only
+  }
+}
+
 const greeting = (name?: string): ChatMessage => ({
   id: "hello",
   from: "bot",
   text: `Hi${name ? ` ${name.split(" ")[0]}` : ""}! I'm the ShopKart assistant. Ask me about an order, a refund or a payment.`,
-  at: new Date(),
+  at: new Date(0),
 });
+
+const FROM: Record<StoredMessage["sender"], ChatMessage["from"]> = { customer: "me", ai: "bot", human: "agent", system: "system" };
+
+/** The stored conversation as bubbles. A question card counts as answered once the customer wrote after it. */
+function bubbles(stored: StoredMessage[]): ChatMessage[] {
+  return stored.map((m, i) => {
+    const next = m.ask ? stored.slice(i + 1).find((x) => x.sender === "customer") : undefined;
+    return {
+      id: String(m.id),
+      from: FROM[m.sender],
+      text: m.body,
+      at: new Date(m.created_at),
+      ...(m.sender === "human" && { author: m.author }),
+      ...(m.ask && { ask: m.ask, ...(next && { answered: next.answer?.text ?? "" }) }),
+    };
+  });
+}
+
+/** Messages only this tab has: one being sent, or a failed send. `after` = the newest stored message id when it was made. */
+interface Local {
+  m: ChatMessage;
+  after: number;
+}
 
 export function ShopProvider({ children }: { children: React.ReactNode }) {
   const list = usePoll<{ customers: Customer[] }>("/shop/customers", 30_000);
@@ -114,102 +158,79 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // One chat thread per customer, kept while you switch back and forth.
-  // `seen` holds the ticket's public comment ids already in the thread, so later replies (an approved
-  // refund, a teammate's answer) can be picked up from the ticket without repeating earlier ones.
-  const threads = useRef(new Map<number, { session: string; messages: ChatMessage[]; ticketId?: number; seen?: Set<number>; sending?: boolean }>());
-  const [, force] = useState(0);
   const [open, setOpen] = useState(false);
   const [typing, setTyping] = useState(false);
   const [draft, setDraft] = useState("");
   const [inlineMounted, setInlineMounted] = useState(false);
-
-  const thread = useMemo(() => {
-    if (!customer) return undefined;
-    let t = threads.current.get(customer.id);
-    if (!t) {
-      t = { session: newSession(customer.id), messages: [greeting(customer.name)] };
-      threads.current.set(customer.id, t);
-    }
-    return t;
-  }, [customer]);
+  const [locals, setLocals] = useState<Local[]>([]);
+  const session = useMemo(() => (customer ? sessionFor(customer.id) : null), [customer?.id]);
+  const transcript = usePoll<ChatTranscript>(session ? `/chat/sessions/${encodeURIComponent(session)}` : null, 2000);
+  const stored = transcript.data?.session_id === session ? transcript.data.messages : undefined;
+  const lastId = stored?.at(-1)?.id ?? 0;
 
   useEffect(() => {
     setDraft("");
     setTyping(false);
+    setLocals([]);
   }, [customer?.id]);
+
+  // Stored messages, with this tab's own in place. A message being sent shows until the stored copy arrives.
+  const messages = useMemo(() => {
+    const list = stored ?? [];
+    const sent = (l: Local) => l.m.from === "me" && list.some((x) => x.id > l.after && x.sender === "customer" && x.body === l.m.text);
+    const mine = locals.filter((l) => !sent(l));
+    const out: ChatMessage[] = [greeting(customer?.name), ...mine.filter((l) => l.after === 0).map((l) => l.m)];
+    for (const m of bubbles(list)) {
+      out.push(m);
+      out.push(...mine.filter((l) => String(l.after) === m.id).map((l) => l.m));
+    }
+    const placed = new Set(out);
+    out.push(...mine.map((l) => l.m).filter((m) => !placed.has(m)));
+    return out;
+  }, [stored, locals, customer?.name]);
 
   const send = useCallback(
     async (text: string, picked?: Omit<ChatAnswer, "original" | "kind">) => {
       const msg = text.trim();
-      if (!msg || !customer || !thread) return;
-      const push = (m: ChatMessage) => {
-        thread.messages = [...thread.messages, m];
-        force((n) => n + 1);
-      };
+      if (!msg || !customer || !session) return;
       // An open question card: a pick from it, or a typed order number / product name, answers it.
       // Anything else typed is a new message, and the card closes unanswered.
-      const open = [...thread.messages].reverse().find((m) => m.ask && m.answered === undefined);
+      const card = [...messages].reverse().find((m) => m.ask && m.answered === undefined);
       let answer: ChatAnswer | undefined;
-      if (open?.ask) {
-        const typed = picked ?? typedAnswer(msg, open.ask);
-        if (typed) answer = { kind: open.ask.kind, original: open.ask.original, ...typed };
-        thread.messages = thread.messages.map((m) => (m === open ? { ...m, answered: answer ? answer.text : "" } : m));
+      if (card?.ask) {
+        const typed = picked ?? typedAnswer(msg, card.ask);
+        if (typed) answer = { kind: card.ask.kind, original: card.ask.original, ...typed };
       }
-      push({ id: uid(), from: "me", text: msg, at: new Date() });
-      thread.sending = true;
+      const after = lastId;
+      setLocals((l) => [...l, { m: { id: uid(), from: "me", text: msg, at: new Date() }, after }]);
       setDraft("");
       setTyping(true);
       try {
-        const res = await api.post<ChatResponse>("/chat", { session_id: thread.session, customer_id: customer.id, message: msg, ...(answer && { answer }) });
-        if (res.ticket_id && res.ticket_id !== thread.ticketId) {
-          thread.ticketId = res.ticket_id;
-          push({ id: uid(), from: "system", text: `Ticket #${res.ticket_id} opened with ShopKart support`, at: new Date() });
-        }
-        push({ id: uid(), from: "bot", text: res.reply, at: new Date(), ...(res.ask && { ask: res.ask }) });
-        if (thread.ticketId) {
-          const t = await api.get<Ticket>(`/zendesk/tickets/${thread.ticketId}`).catch(() => null);
-          // Seen = what the thread already shows: customer messages, earlier replies and this answer.
-          // A later reply (the level agent finishing, an approval) is left for the poll to pick up.
-          const before = thread.seen;
-          // A chat answered without a ticket gets one later with the earlier exchange copied in: those
-          // comments are already on screen, so they count as seen too.
-          const shown = new Set(thread.messages.map((m) => m.text));
-          if (t) thread.seen = new Set(t.comments.filter((c) => c.public && (before?.has(c.id) || c.author_type === "customer" || c.body === res.reply || shown.has(c.body))).map((c) => c.id));
-        }
+        await api.post<ChatResponse>("/chat", { session_id: session, customer_id: customer.id, message: msg, ...(answer && { answer }) });
       } catch (e) {
-        push({
-          id: uid(),
-          from: "bot",
-          text: `I couldn't get an answer just now (${(e as Error).message}). Please send that again.`,
-          at: new Date(),
-          failed: true,
-        });
+        // After whatever of this turn was stored (usually the customer's message).
+        const now = await api.get<ChatTranscript>(`/chat/sessions/${encodeURIComponent(session)}`).catch(() => null);
+        const at = now?.messages.at(-1)?.id ?? after;
+        setLocals((l) => [
+          ...l,
+          { m: { id: uid(), from: "bot", text: `I couldn't get an answer just now (${(e as Error).message}). Please send that again.`, at: new Date(), failed: true }, after: at },
+        ]);
       } finally {
-        thread.sending = false;
+        await transcript.refresh();
         setTyping(false);
       }
     },
-    [customer, thread],
+    [customer, session, messages, lastId, transcript],
   );
 
-  // Replies that arrive after the chat answered (approvals, teammates) show up here.
+  // Unread: replies (Aria finishing later, a person on the team) that came in while the widget was closed.
+  const [seen, setSeen] = useState(0);
+  const visible = open || inlineMounted;
   useEffect(() => {
-    if (!thread) return;
-    const timer = setInterval(async () => {
-      if (!thread.ticketId || !thread.seen || thread.sending) return;
-      const t = await api.get<Ticket>(`/zendesk/tickets/${thread.ticketId}`).catch(() => null);
-      if (!t || !thread.seen || thread.sending) return;
-      const fresh = t.comments.filter((c) => c.public && !thread.seen!.has(c.id));
-      fresh.forEach((c) => thread.seen!.add(c.id));
-      const replies = fresh.filter((c) => c.author_type !== "customer");
-      if (replies.length) {
-        thread.messages = [...thread.messages, ...replies.map((c) => ({ id: `zd-${c.id}`, from: "bot" as const, text: c.body, at: new Date(c.created_at) }))];
-        force((n) => n + 1);
-      }
-    }, 4000);
-    return () => clearInterval(timer);
-  }, [thread]);
+    if (visible && lastId > seen) setSeen(lastId);
+  }, [visible, lastId, seen]);
+  useEffect(() => setSeen(0), [session]);
+  const unread = visible || !seen ? 0 : (stored ?? []).filter((m) => m.id > seen && m.sender !== "customer" && m.sender !== "system").length;
 
   const askAbout = useCallback((orderId: number) => {
     setDraft(`I need help with order #${orderId}. `);
@@ -224,8 +245,10 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
   const chatValue: ChatCtx = {
     open,
     setOpen,
-    messages: thread?.messages ?? [],
+    messages,
     typing,
+    agent: transcript.data?.session_id === session ? transcript.data.agent : null,
+    unread,
     draft,
     setDraft,
     send,

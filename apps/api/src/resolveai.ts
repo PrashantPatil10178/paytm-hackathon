@@ -66,6 +66,20 @@ export async function prepareShopkartToken(): Promise<"env" | "issued"> {
   return "issued";
 }
 
+/**
+ * The token the API sends when a support call's answers go back to the agent (it plays the Sarvam voice
+ * channel). Issued on first use, so the voice channel shows a token in Control Room → Channels.
+ */
+let voiceToken = "";
+export async function voiceChannelToken(): Promise<string> {
+  if (!voiceToken) {
+    const token = newToken();
+    await setChannelToken("sarvam_voice", token);
+    voiceToken = token;
+  }
+  return voiceToken;
+}
+
 function requireAgent(req: Request) {
   if (INTERNAL_KEY && req.headers.get("x-resolveai-key") !== INTERNAL_KEY) throw new HttpError(401, "This route is for the ResolveAI agent");
 }
@@ -198,6 +212,7 @@ export const resolveaiRoutes = {
       const token = newToken();
       const channel = await setChannelToken(String(req.params.id), token);
       if (channel.id === "shopkart") shopkartToken = token;
+      if (channel.id === "sarvam_voice") voiceToken = token;
       return ok({ channel, token }, 201);
     }),
   },

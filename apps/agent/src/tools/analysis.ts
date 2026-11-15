@@ -21,9 +21,10 @@ export const indianRupees = (text: string) =>
  * all 4 of its tickets", and the working-memory note then carried that into the next report.
  */
 const supportInWords = (t: AnalyticsTotals) =>
-  `${t.tickets} tickets in all. ${t.tickets_ai} (${t.ai_rate}%) were handled by the AI alone; ${t.tickets_escalated} ` +
-  `(${t.tickets ? Math.round((t.tickets_escalated / t.tickets) * 1000) / 10 : 0}%) were handed to a person. These are separate groups: ` +
-  `tickets_escalated is not a share of tickets_ai. ${t.tickets_solved} solved, ${t.tickets_open} not solved yet.`;
+  `${t.tickets + (t.chats_answered ?? 0)} requests in all: ${t.chats_answered ?? 0} questions answered in the chat without a ticket, ` +
+  `and ${t.tickets} tickets. Of the tickets, ${t.tickets_ai} were handled by the AI alone and ${t.tickets_escalated} were handed to a person ` +
+  `(separate groups: tickets_escalated is not a share of tickets_ai); ${t.tickets_solved} solved, ${t.tickets_open} not solved yet. ` +
+  `AI handled ${t.ai_rate}% of all requests on its own.`;
 
 export function analysisTools(api: DemoAPI) {
   const getMetrics = createTool({

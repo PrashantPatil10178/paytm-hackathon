@@ -12,7 +12,7 @@ import { ApprovalsCard, LeadCard, MetricsCard, TicketCard, TicketListCard } from
 
 const PAGES = {
   overview: '/', analytics: '/analytics', audit: '/audit', tickets: '/tickets', approvals: '/approvals', board: '/board',
-  leads: '/leads', calls: '/calls', campaigns: '/campaigns', sales_analytics: '/sales/analytics', channels: '/channels', connectors: '/connectors', settings: '/settings',
+  leads: '/leads', calls: '/calls', campaigns: '/campaigns', sales_analytics: '/sales/analytics', channels: '/channels', connectors: '/connectors', settings: '/settings', policies: '/policies',
 }
 
 const STATUS = z.enum(['open', 'in_progress', 'waiting', 'solved'])
@@ -149,6 +149,7 @@ export default function AriaTools() {
       { title: 'Hottest lead', message: 'Which lead should sales call first, and why?' },
       { title: 'Sales pipeline', message: 'Show me the open pipeline and which deals are hot.' },
       { title: 'New campaign leads', message: 'Fetch new leads from our campaigns.' },
+      { title: 'Refund rules', message: 'When does a refund need my approval?' },
     ],
   })
 

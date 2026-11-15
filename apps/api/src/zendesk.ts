@@ -14,6 +14,7 @@ import {
   SUPPORT_AGENTS,
 } from "@ph/shared";
 import { eq, schema as s, sql, toComment, toTicket, toTicketSummary, toZdUser, type Tx } from "@ph/db";
+import { mirrorComment } from "./chats.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, intParam, notFound, ok, oneOf } from "./http.ts";
 
@@ -146,10 +147,11 @@ export async function updateTicket(id: number, b: UpdateTicketBody): Promise<Tic
   });
 }
 
+/** Adds a reply or an internal note. A public reply on a chat's ticket also shows in that chat (chats.ts). */
 export async function addComment(id: number, b: CreateCommentBody): Promise<ZdComment> {
   if (!b.body?.trim()) throw bad("body is required");
   if (typeof b.public !== "boolean") throw bad("public must be true (reply) or false (internal note)");
-  return db.transaction(async (tx) => {
+  const comment = await db.transaction(async (tx) => {
     const [t] = await tx
       .select({ id: s.tickets.id, requester: s.zdUsers.name })
       .from(s.tickets)
@@ -172,6 +174,8 @@ export async function addComment(id: number, b: CreateCommentBody): Promise<ZdCo
     await tx.update(s.tickets).set({ updated_at: at }).where(eq(s.tickets.id, id));
     return toComment(row!);
   });
+  if (comment.public) await mirrorComment(id, comment).catch((e) => console.warn(`[chats] couldn't copy the reply on #${id} into its chat:`, (e as Error).message));
+  return comment;
 }
 
 /* ───── Routes ───── */

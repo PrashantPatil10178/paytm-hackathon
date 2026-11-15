@@ -1,5 +1,5 @@
 import { clock } from "@ph/shared";
-import { Check, CheckCheck, MessageCircle, SendHorizontal, Ticket, X } from "lucide-react";
+import { Check, CheckCheck, MessageCircle, SendHorizontal, Ticket, UserRound, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { useChat, useCustomer, type ChatMessage } from "../store.tsx";
 import { LogoMark } from "./Logo.tsx";
@@ -9,7 +9,7 @@ const QUICK = ["Where is my order?", "Item damaged, I want a refund", "₹15,000
 
 /** The floating launcher + window. Hidden while the Help page shows the chat inline. */
 export function ChatWidget() {
-  const { open, setOpen, inlineMounted } = useChat();
+  const { open, setOpen, inlineMounted, unread } = useChat();
   const launcher = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -48,13 +48,18 @@ export function ChatWidget() {
         }`}
       >
         {open ? <X size={24} /> : <MessageCircle size={26} />}
+        {!open && unread > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 grid min-w-5 animate-pop-in place-items-center rounded-full border-2 border-paper bg-bad px-1 text-[11px] leading-4 font-bold text-white" aria-label={`${unread} new ${unread === 1 ? "reply" : "replies"}`}>
+            {unread}
+          </span>
+        )}
       </button>
     </>
   );
 }
 
 export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void; autoFocus?: boolean }) {
-  const { messages, typing, draft, setDraft, send } = useChat();
+  const { messages, typing, agent, draft, setDraft, send } = useChat();
   const { customer } = useCustomer();
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -88,7 +93,13 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
         <div className="min-w-0 flex-1 leading-tight">
           <p className="font-display text-base font-bold tracking-tight">ShopKart Support</p>
           <p className="flex items-center gap-1 text-xs text-white/75">
-            {typing ? "typing…" : <><ResolveAIGlyph size={14} className="text-white" dot={BRAND.mint} />Powered by ResolveAI</>}
+            {typing ? (
+              "typing…"
+            ) : agent ? (
+              <><span className="size-2 rounded-full bg-[#4ade80]" aria-hidden />{agent} from ShopKart is here</>
+            ) : (
+              <><ResolveAIGlyph size={14} className="text-white" dot={BRAND.mint} />Powered by ResolveAI</>
+            )}
           </p>
         </div>
         {onClose && (
@@ -175,7 +186,7 @@ function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
   if (m.from === "system")
     return (
       <p className="mx-auto my-1.5 flex animate-pop-in items-center gap-1.5 rounded-lg bg-[#e1f2fb] px-3 py-1 text-[12px] font-semibold text-[#1b4f6b] shadow-[0_1px_0.5px_rgb(11_20_26/0.13)]">
-        <Ticket size={13} aria-hidden /> {m.text}
+        {m.text.startsWith("Ticket") ? <Ticket size={13} aria-hidden /> : <UserRound size={13} aria-hidden />} {m.text}
       </p>
     );
   const mine = m.from === "me";
@@ -185,6 +196,11 @@ function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
         mine ? "self-end bg-chat-out" : m.failed ? "self-start bg-bad-wash" : "self-start bg-chat-in"
       } ${tail ? (mine ? "mt-1.5 rounded-tr-none" : "mt-1.5 rounded-tl-none") : ""}`}
     >
+      {m.from === "agent" && tail && (
+        <p className="mb-0.5 text-[12.5px] font-bold text-jamun">
+          {m.author} <span className="font-semibold text-ink-3">· ShopKart team</span>
+        </p>
+      )}
       <p className="text-[14.5px] leading-snug whitespace-pre-wrap text-[#111b21] [overflow-wrap:anywhere]">{m.text}</p>
       {m.ask && <QuestionCard m={m} />}
       <span className="mt-0.5 flex items-center justify-end gap-1 self-end text-[11px] text-[#667781]">

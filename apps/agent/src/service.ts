@@ -670,6 +670,7 @@ function fallbackStatus(f: { ticket: number; status: string; with: string; waiti
   if (f.status === "solved") return `Your request (ticket #${f.ticket}) is resolved. Let me know if anything else needs fixing.`;
   if (f.waiting_for_approval) return `Your ${f.waiting_for_approval} is with a teammate for approval (ticket #${f.ticket}). You'll hear back here shortly.`;
   return `Your request (ticket #${f.ticket}) is being handled by ${f.with}. You'll get an update here as soon as there's progress.`;
+}
 
 function crmLine(c: KnownContact | null): string {
   if (!c) return "no contact with this email yet";

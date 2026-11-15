@@ -37,10 +37,11 @@ let db: {
   steps: Json[];
   approvals: Json[];
   cases: Json[];
+  responses: Json[];
+  reports: Json[];
 };
 
 const TOKEN = "rai_test_token";
-let db: { tickets: Json[]; comments: Json[]; orders: Json[]; contacts: Json[]; deals: Json[]; notes: Json[]; meetings: Json[]; responses: Json[]; reports: Json[] };
 
 const response = (id: number, x: Json) => ({
   id, campaign: { id: 1, name: "Diwali bulk gifting", channel: "meta_ads" }, phone: "", need: "bulk_order", start_when: "", budget: null,

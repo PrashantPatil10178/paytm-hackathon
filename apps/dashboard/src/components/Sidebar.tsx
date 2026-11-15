@@ -297,6 +297,8 @@ function useAreaContent(areaId: AreaId): AreaContent {
       return {
         fact: `${rupees(pipeline)} in pipeline`,
         groups: [
+          // Everything sales in one place: the live numbers first, then the pipeline, then where leads come from.
+          { label: 'Insights', items: [page('/sales/analytics')] },
           {
             label: 'Pipeline',
             items: [
@@ -310,6 +312,8 @@ function useAreaContent(areaId: AreaId): AreaContent {
               })),
             ],
           },
+          // Live from the demo API: campaign replies the leads agent turns into CRM leads.
+          { label: 'Sources', items: [page('/campaigns')] },
         ],
         extra: 'hot',
       }
@@ -328,7 +332,7 @@ function useAreaContent(areaId: AreaId): AreaContent {
       const pending = approvals.pending.length
       return {
         fact: pending ? `${pending} waiting on you` : 'Nothing waiting on you',
-        groups: [{ items: [page('/'), page('/approvals', { count: pending, countTone: 'amber' })] }],
+        groups: [{ items: [page('/'), page('/analytics'), page('/approvals', { count: pending, countTone: 'amber' })] }],
         extra: 'live',
       }
     }

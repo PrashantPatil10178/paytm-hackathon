@@ -4,62 +4,19 @@
 // Props arrive partially while the tool call streams in, so every prop is optional.
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Frame, Loading, NotFound, OpenLink } from './frame'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
-import { ArrowUpRight, Check, Flame, Hand, Inbox, X } from 'lucide-react'
+import { Check, Flame, Hand, X } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { api } from '../api'
 import { useApp } from '../store'
 import { useTheme } from '../theme'
-import { Button, ChannelTag, LevelBadge, SolvedBy, StatusBadge, Skeleton } from '../components/ui'
+import { Button, ChannelTag, LevelBadge, SolvedBy, StatusBadge } from '../components/ui'
 import ToolChain from '../components/ToolChain'
 import { CHANNELS, CHART, LEVELS, STATUSES } from '../meta'
 import { cn, num, rupees, secondsLabel } from '../lib'
 
 const MONO = '"Geist Mono Variable", ui-monospace, monospace'
-
-/** Frame shared by every card: a hairline box with a small header strip. */
-function Frame({ icon: Icon = Inbox, title, meta, action, children, className }) {
-  return (
-    <div className={cn('my-2 overflow-hidden rounded-xl border border-ink/[0.08] bg-surface text-slate-900 shadow-[0_1px_2px_rgb(0_0_0/0.04)]', className)}>
-      <div className="flex h-9 items-center gap-2 border-b border-ink/[0.06] bg-tray/60 px-3">
-        <Icon className="size-3.5 shrink-0 text-slate-500" aria-hidden />
-        <p className="flex min-w-0 flex-1 items-baseline gap-2 text-xs font-medium text-slate-950">
-          <span className="truncate">{title}</span>
-          {meta != null && <span className="ref shrink-0 font-normal text-slate-500">{meta}</span>}
-        </p>
-        {action}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function OpenLink({ to, children = 'Open' }) {
-  const navigate = useNavigate()
-  return (
-    <button
-      onClick={() => navigate(to)}
-      className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-slate-500 transition-colors hover:bg-ink/[0.06] hover:text-slate-950"
-    >
-      {children}<ArrowUpRight className="size-3" aria-hidden />
-    </button>
-  )
-}
-
-function Loading({ title }) {
-  return (
-    <Frame title={title}>
-      <div className="space-y-2 p-3">
-        <Skeleton className="h-3.5 w-2/3" />
-        <Skeleton className="h-3 w-1/2" />
-      </div>
-    </Frame>
-  )
-}
-
-const NotFound = ({ title, children }) => (
-  <Frame title={title}><p className="px-3 py-3 text-xs text-slate-500">{children}</p></Frame>
-)
 
 /* ───────── Ticket ───────── */
 

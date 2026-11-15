@@ -45,7 +45,6 @@ export function createSupportAgent(api: DemoAPI, model: AgentOptions["model"], m
     model,
     tools: supportTools(api),
     maxSteps: 10,
-    temperature: 0.2,
     ...(memory && { memory }),
   });
 }

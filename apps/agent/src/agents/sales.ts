@@ -30,7 +30,6 @@ export function createSalesAgent(api: DemoAPI, model: AgentOptions["model"], mem
     model,
     tools: salesTools(api),
     maxSteps: 8,
-    temperature: 0.2,
     ...(memory && { memory }),
   });
 }

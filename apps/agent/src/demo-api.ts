@@ -1,7 +1,14 @@
 /** Typed client for the demo API (apps/api). The agents' tools act only through this. */
 import type {
+  AnalysisReport,
+  AnalysisScope,
+  AnalyticsMetrics,
   BookMeetingBody,
+  CampaignResponse,
   Contact,
+  ConvertResponseBody,
+  ConvertResponseResult,
+  CreateReportBody,
   CreateCommentBody,
   CreateContactBody,
   CreateDealBody,
@@ -13,6 +20,7 @@ import type {
   Order,
   Quote,
   SaveQuoteBody,
+  SkipResponseBody,
   Slot,
   Ticket,
   UpdateDealBody,
@@ -31,6 +39,9 @@ export class DemoAPIError extends Error {
 }
 
 export type DemoAPI = ReturnType<typeof createDemoAPI>;
+
+/** The CRM contact a campaign response's email already belongs to (GET /campaigns/responses/{id}). */
+export type KnownContact = Contact & { deals: Pick<Deal, "id" | "name" | "stage" | "amount">[] };
 
 export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch) {
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -70,5 +81,16 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch) 
     slots: () => call<{ slots: Slot[] }>("GET", "/crm/slots"),
     bookMeeting: (body: BookMeetingBody) => call<Meeting>("POST", "/crm/meetings", body),
     saveQuote: (dealId: number, body: SaveQuoteBody) => call<Quote>("POST", `/crm/deals/${dealId}/quote`, body),
+
+    // Campaigns (the leads agent's input)
+    newResponses: () => call<{ responses: CampaignResponse[] }>("GET", "/campaigns/responses?status=new"),
+    campaignResponse: (id: number) => call<CampaignResponse & { existing_contact: KnownContact | null }>("GET", `/campaigns/responses/${id}`),
+    convertResponse: (id: number, body: ConvertResponseBody) => call<ConvertResponseResult>("POST", `/campaigns/responses/${id}/convert`, body),
+    skipResponse: (id: number, body: SkipResponseBody) => call<CampaignResponse>("POST", `/campaigns/responses/${id}/skip`, body),
+
+    // Analytics (the analysis agent's input and output)
+    metrics: () => call<AnalyticsMetrics>("GET", "/analytics/metrics"),
+    reports: (scope?: AnalysisScope) => call<{ reports: AnalysisReport[] }>("GET", `/analytics/reports${scope ? `?scope=${scope}` : ""}`),
+    saveReport: (body: CreateReportBody) => call<AnalysisReport>("POST", "/analytics/reports", body),
   };
 }

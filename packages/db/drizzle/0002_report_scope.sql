@@ -1,0 +1,1 @@
+ALTER TABLE "analysis_reports" ADD COLUMN "scope" text DEFAULT 'all' NOT NULL;

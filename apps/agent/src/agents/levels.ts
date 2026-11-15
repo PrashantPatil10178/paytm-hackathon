@@ -5,10 +5,13 @@
  * and only a hand-over to a person opens the ticket.
  */
 import { SUPPORT_AGENTS } from "@ph/shared";
-import { Agent, type AgentOptions, type Memory } from "@voltagent/core";
+import { Agent, type AgentOptions, type Memory, type ToolExecuteOptions } from "@voltagent/core";
 import type { DemoAPI } from "../demo-api.ts";
 import type { Platform } from "../platform.ts";
+import { runOf, type SupportRun } from "../tools/context.ts";
 import { supportTools, type Level } from "../tools/support.ts";
+import { withPolicies, type PolicyBook } from "../policies.ts";
+import { policyTools } from "../tools/policies.ts";
 
 const SHARED = `You are Aria, ResolveAI's support agent for ShopKart, an Indian online shop, chatting with a logged-in
 customer. ResolveAI's main agent has already opened a Zendesk ticket for this request, set its level and
@@ -72,40 +75,49 @@ const BY_LEVEL: Record<Level, string> = {
 const NAMES: Record<Level, string> = { low: "Aria · Low", medium: "Aria · Medium", high: "Aria · High" };
 
 /** `memory` keeps each chat's history (Postgres in the app); omitted, VoltAgent keeps it in memory. */
-export function createLevelAgent(level: Level, api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory) {
+export function createLevelAgent(level: Level, api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook) {
   return new Agent({
     id: level,
     name: NAMES[level],
     purpose: `Works ${level}-level ShopKart support tickets that ResolveAI's main agent routed to it`,
-    instructions: `${SHARED}\n\n${BY_LEVEL[level]}`,
+    instructions: withPolicies(`${SHARED}\n\n${BY_LEVEL[level]}`, book),
     model,
-    tools: supportTools(api, platform, level),
+    tools: [...supportTools(api, platform, level), ...policyTools(book, recordPolicyStep(platform))],
     maxSteps: 10,
     ...(memory && { memory }),
   });
 }
 
 /** Answers a low-level chat without a ticket; escalate_to_human opens one when a person must step in. */
-export function createDirectAgent(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory) {
+export function createDirectAgent(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook) {
   return new Agent({
     id: "low-direct",
     name: "Aria · Low (chat)",
     purpose: "Answers simple ShopKart questions straight in the chat, without a ticket",
-    instructions: DIRECT,
+    instructions: withPolicies(DIRECT, book),
     model,
-    tools: supportTools(api, platform, "low", { direct: true }),
+    tools: [...supportTools(api, platform, "low", { direct: true }), ...policyTools(book, recordPolicyStep(platform))],
     maxSteps: 8,
     ...(memory && { memory }),
   });
 }
 
+/** Logs a policy lookup as a "Check policy" step on the support run (Control Room trace and audit log). */
+function recordPolicyStep(platform: Platform | undefined) {
+  if (!platform) return undefined;
+  return async (opts: ToolExecuteOptions | undefined, detail: string) => {
+    const run = runOf<SupportRun>(opts);
+    await platform.addStep(run.runId, { agent: run.agent, step: "Check policy", tool: "Policies", result: "success", detail });
+  };
+}
+
 export type LevelAgents = Record<Level, Agent> & { direct: Agent };
 
-export function createLevelAgents(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory): LevelAgents {
+export function createLevelAgents(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook): LevelAgents {
   return {
-    direct: createDirectAgent(api, model, platform, memory),
-    low: createLevelAgent("low", api, model, platform, memory),
-    medium: createLevelAgent("medium", api, model, platform, memory),
-    high: createLevelAgent("high", api, model, platform, memory),
+    direct: createDirectAgent(api, model, platform, memory, book),
+    low: createLevelAgent("low", api, model, platform, memory, book),
+    medium: createLevelAgent("medium", api, model, platform, memory, book),
+    high: createLevelAgent("high", api, model, platform, memory, book),
   };
 }

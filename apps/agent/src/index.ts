@@ -32,6 +32,7 @@ import { createMainAgent, createWriterAgent } from "./agents/main.ts";
 import { createAnalysisAgent } from "./agents/analysis.ts";
 import { createLeadsAgent } from "./agents/leads.ts";
 import { createSalesAgent } from "./agents/sales.ts";
+import { createPolicyBook } from "./policies.ts";
 import { createDemoAPI } from "./demo-api.ts";
 import { createPlatform } from "./platform.ts";
 import { createAgentMemory } from "./memory.ts";
@@ -54,12 +55,14 @@ const platform = createPlatform(API_URL, fetch, INTERNAL_KEY);
 const api = createDemoAPI(API_URL, fetch, () => platform.connectors());
 // Heavy: triage and money/policy decisions with customers, and reasoning across every dataset.
 // Lite: short status messages and rule-based triage of sales enquiries and campaign responses.
-const main = createMainAgent(MODELS.heavy, memory);
-const writer = createWriterAgent(MODELS.heavy); // every customer-facing reply gets the strong model
-const levels = createLevelAgents(api, MODELS.heavy, platform, memory);
-const analysis = createAnalysisAgent(api, MODELS.heavy, analysisMemory);
-const sales = createSalesAgent(api, MODELS.lite, memory);
-const leads = createLeadsAgent(api, MODELS.lite, memory);
+// ShopKart's policy book (GET /policies): every agent gets the digest, the acting ones lookup_policies too.
+const book = createPolicyBook(API_URL);
+const main = createMainAgent(MODELS.heavy, memory, book);
+const writer = createWriterAgent(MODELS.heavy, book); // every customer-facing reply gets the strong model
+const levels = createLevelAgents(api, MODELS.heavy, platform, memory, book);
+const analysis = createAnalysisAgent(api, MODELS.heavy, analysisMemory, book);
+const sales = createSalesAgent(api, MODELS.lite, memory, book);
+const leads = createLeadsAgent(api, MODELS.lite, memory, book);
 const service = createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions, analysisMemory });
 
 const bearer = (header: string | undefined) => header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();

@@ -3,8 +3,10 @@ import { agentMode, agentRoutes } from "./agent.ts";
 import { analyticsRoutes } from "./analytics.ts";
 import { callRoutes } from "./calls.ts";
 import { campaignRoutes } from "./campaigns.ts";
+import { chatRoutes } from "./chats.ts";
 import { controlRoomRoutes } from "./controlroom.ts";
 import { crmRoutes } from "./crm.ts";
+import { policyRoutes } from "./policies.ts";
 import { prepareShopkartToken, resolveaiRoutes } from "./resolveai.ts";
 import { db, prepare } from "./db.ts";
 import { CORS, handle, ok } from "./http.ts";
@@ -32,7 +34,9 @@ const server = Bun.serve({
     ...campaignRoutes,
     ...analyticsRoutes,
     ...agentRoutes,
+    ...chatRoutes,
     ...resolveaiRoutes,
+    ...policyRoutes,
     ...callRoutes,
     ...controlRoomRoutes,
   },

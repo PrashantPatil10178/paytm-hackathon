@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 
 // Light / dark. The choice is saved per browser; until someone picks, it follows the OS.
@@ -6,10 +6,20 @@ import { flushSync } from 'react-dom'
 const KEY = 'resolveai-theme'
 const query = () => window.matchMedia('(prefers-color-scheme: dark)')
 
-const ThemeContext = createContext({ theme: 'system', resolved: 'light', setTheme: () => {}, toggle: () => {} })
+export type Theme = 'light' | 'dark'
+export type ThemePref = Theme | 'system'
+
+interface ThemeState {
+  theme: ThemePref
+  resolved: Theme
+  setTheme: (next: ThemePref) => void
+  toggle: () => void
+}
+
+const ThemeContext = createContext<ThemeState>({ theme: 'system', resolved: 'light', setTheme: () => {}, toggle: () => {} })
 export const useTheme = () => useContext(ThemeContext)
 
-function readSaved() {
+function readSaved(): ThemePref {
   try {
     const v = localStorage.getItem(KEY)
     return v === 'light' || v === 'dark' ? v : 'system'
@@ -18,14 +28,14 @@ function readSaved() {
   }
 }
 
-export function ThemeProvider({ children }) {
-  const [theme, setPref] = useState(readSaved)
-  const [system, setSystem] = useState(() => (query().matches ? 'dark' : 'light'))
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setPref] = useState<ThemePref>(readSaved)
+  const [system, setSystem] = useState<Theme>(() => (query().matches ? 'dark' : 'light'))
   const resolved = theme === 'system' ? system : theme
 
   useEffect(() => {
     const m = query()
-    const h = (e) => setSystem(e.matches ? 'dark' : 'light')
+    const h = (e: MediaQueryListEvent) => setSystem(e.matches ? 'dark' : 'light')
     m.addEventListener('change', h)
     return () => m.removeEventListener('change', h)
   }, [])
@@ -34,7 +44,7 @@ export function ThemeProvider({ children }) {
     document.documentElement.dataset.theme = resolved
   }, [resolved])
 
-  const setTheme = useCallback((next) => {
+  const setTheme = useCallback((next: ThemePref) => {
     try {
       if (next === 'system') localStorage.removeItem(KEY)
       else localStorage.setItem(KEY, next)

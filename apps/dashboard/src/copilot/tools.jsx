@@ -9,7 +9,7 @@ import { useApp } from '../store'
 import { api } from '../api'
 import { ApprovalsCard, LeadCard, MetricsCard, TicketCard, TicketListCard } from './cards'
 
-const PAGES = { overview: '/', audit: '/audit', tickets: '/tickets', approvals: '/approvals', board: '/board', channels: '/channels', connectors: '/connectors', settings: '/settings' }
+const PAGES = { overview: '/', audit: '/audit', tickets: '/tickets', approvals: '/approvals', board: '/board', leads: '/leads', channels: '/channels', connectors: '/connectors', settings: '/settings' }
 
 const STATUS = z.enum(['open', 'in_progress', 'waiting', 'solved'])
 const LEVEL = z.enum(['low', 'medium', 'high', 'critical'])

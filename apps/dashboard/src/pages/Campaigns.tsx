@@ -1,22 +1,23 @@
 import { useState } from 'react'
 import { Megaphone, Inbox, LoaderCircle, Flame, Ban, ArrowUpRight, CircleAlert } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
-import { CAMPAIGN_CHANNELS } from '@ph/shared'
+import { CAMPAIGN_CHANNELS, ENQUIRY_NEEDS, type CampaignResponse, type CampaignResponseStatus, type CampaignSummary, type LeadSyncResponse, type LeadSyncResult } from '@ph/shared'
 import { api, live } from '../api'
 import { useApp } from '../store'
-import { Panel, PageHeader, Button, Skeleton, EmptyState, Tabs } from '../components/ui'
+import { Panel, PageHeader, Button, Skeleton, EmptyState, Tabs, type Tab } from '../components/ui'
+import type { Icon } from '../meta'
 import { ago, cn, num, rupees } from '../lib'
 
 // The HubSpot look-alike, where converted leads land (deal pages live at /deals/:id).
-const HUBSPOT_URL = import.meta.env.VITE_HUBSPOT_URL || 'http://localhost:3002'
+const HUBSPOT_URL: string = import.meta.env.VITE_HUBSPOT_URL || 'http://localhost:3002'
 
-const channelLabel = (id) => CAMPAIGN_CHANNELS.find((c) => c.id === id)?.label ?? id
-const pct = (a, b) => (b ? `${((a / b) * 100).toFixed(1)}%` : '—')
-const NEEDS = { bulk_order: 'Bulk order', billing_setup: 'Billing setup', payment_setup: 'Payment setup', other: 'Something else' }
+const channelLabel = (id: string) => CAMPAIGN_CHANNELS.find((c) => c.id === id)?.label ?? id
+const needLabel = (id: string) => ENQUIRY_NEEDS.find((x) => x.id === id)?.label ?? id
+const pct = (a: number, b: number) => (b ? `${((a / b) * 100).toFixed(1)}%` : '—')
 
 /* ───────── Campaign table ───────── */
 
-function CampaignTable({ campaigns }) {
+function CampaignTable({ campaigns }: { campaigns?: CampaignSummary[] }) {
   return (
     <Panel icon={Megaphone} title="Campaigns" meta={campaigns && `${campaigns.length} running or recent`}>
       {!campaigns ? <div className="p-4"><Skeleton className="h-32" /></div> : (
@@ -63,7 +64,7 @@ function CampaignTable({ campaigns }) {
 
 /* ───────── Responses ───────── */
 
-function StatusTag({ r }) {
+function StatusTag({ r }: { r: CampaignResponse }) {
   if (r.status === 'converted') {
     return <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700 ring-1 ring-brand-200 ring-inset"><ResolveAIGlyph className="size-3" />Lead created</span>
   }
@@ -73,7 +74,13 @@ function StatusTag({ r }) {
   return <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-ink/10 ring-inset"><Inbox className="size-3" />New</span>
 }
 
-function ResponseRow({ r }) {
+const DealLink = ({ id, short }: { id: number; short?: boolean }) => (
+  <a href={`${HUBSPOT_URL}/deals/${id}`} target="_blank" rel="noreferrer" className="ref inline-flex shrink-0 items-center gap-0.5 text-xs font-medium text-slate-900 hover:underline">
+    {short ? `#${id}` : <>Deal #{id}<ArrowUpRight className="size-3" aria-hidden /></>}
+  </a>
+)
+
+function ResponseRow({ r }: { r: CampaignResponse }) {
   return (
     <li className="px-4 py-3.5">
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
@@ -87,43 +94,45 @@ function ResponseRow({ r }) {
         </div>
       </div>
       <p className="mt-0.5 text-xs text-slate-500">
-        {r.campaign.name} · {channelLabel(r.campaign.channel)} · {NEEDS[r.need] ?? r.need} · <span className="ref">{r.budget == null ? 'no budget given' : rupees(r.budget)}</span>{r.start_when && ` · ${r.start_when}`}
+        {r.campaign.name} · {channelLabel(r.campaign.channel)} · {needLabel(r.need)} · <span className="ref">{r.budget == null ? 'no budget given' : rupees(r.budget)}</span>{r.start_when && ` · ${r.start_when}`}
       </p>
       <p className="mt-2 line-clamp-2 text-[13px] text-pretty text-slate-700">“{r.message}”</p>
       {r.status !== 'new' && (
         <p className="mt-2 flex items-start gap-1.5 text-xs text-slate-600">
           <ResolveAIGlyph className="mt-px size-3.5 shrink-0 text-brand-600" aria-label="Aria" />
           <span className="min-w-0 flex-1">{r.note}</span>
-          {r.deal_id && (
-            <a href={`${HUBSPOT_URL}/deals/${r.deal_id}`} target="_blank" rel="noreferrer" className="ref inline-flex shrink-0 items-center gap-0.5 font-medium text-slate-900 hover:underline">
-              Deal #{r.deal_id}<ArrowUpRight className="size-3" aria-hidden />
-            </a>
-          )}
+          {r.deal_id && <DealLink id={r.deal_id} />}
         </p>
       )}
     </li>
   )
 }
 
-function Responses({ campaigns }) {
-  const [status, setStatus] = useState('new')
-  const { data, error } = live.useResponses(status === 'all' ? '' : status)
+type View = CampaignResponseStatus | 'all'
+
+function Responses({ campaigns }: { campaigns?: CampaignSummary[] }) {
+  const [view, setView] = useState<View>('new')
+  const { data, error } = live.useResponses(view === 'all' ? undefined : view)
   const list = data?.responses
-  const count = (k) => campaigns?.reduce((a, c) => a + c[k], 0)
-  const tabs = [
+  const count = (k: 'new' | 'converted' | 'skipped' | 'responses') => campaigns?.reduce((a, c) => a + c[k], 0)
+  const tabs: Tab<View>[] = [
     { value: 'new', label: 'New', count: count('new') },
     { value: 'converted', label: 'Leads created', count: count('converted') },
     { value: 'skipped', label: 'Skipped', count: count('skipped') },
     { value: 'all', label: 'All', count: count('responses') },
   ]
   return (
-    <Panel icon={Inbox} title="Responses" action={<Tabs tabs={tabs} value={status} onChange={setStatus} />}>
+    <Panel icon={Inbox} title="Responses" action={<Tabs tabs={tabs} value={view} onChange={setView} />}>
       {error ? (
         <p className="px-4 py-6 text-[13px] text-red-700">{error}</p>
       ) : !list ? (
         <div className="p-4"><Skeleton className="h-16" /><Skeleton className="mt-3 h-16" /></div>
       ) : list.length === 0 ? (
-        <EmptyState icon={Inbox} title={status === 'new' ? 'Inbox zero' : 'Nothing here yet'} text={status === 'new' ? 'Every campaign response has been handled. New ones show up here as they arrive.' : 'Fetch new leads and Aria will work through the new responses.'} />
+        <EmptyState
+          icon={Inbox}
+          title={view === 'new' ? 'Inbox zero' : 'Nothing here yet'}
+          text={view === 'new' ? 'Every campaign response has been handled. New ones show up here as they arrive.' : 'Fetch new leads and Aria will work through the new responses.'}
+        />
       ) : (
         <ul className="divide-y divide-ink/[0.06]">{list.map((r) => <ResponseRow key={r.id} r={r} />)}</ul>
       )}
@@ -133,9 +142,14 @@ function Responses({ campaigns }) {
 
 /* ───────── Last run ───────── */
 
-function LastRun({ run }) {
+const OUTCOME: Record<LeadSyncResult['outcome'], { icon: Icon; tone: string }> = {
+  converted: { icon: ResolveAIGlyph, tone: 'text-brand-600' },
+  skipped: { icon: Ban, tone: 'text-slate-500' },
+  failed: { icon: CircleAlert, tone: 'text-red-600' },
+}
+
+function LastRun({ run }: { run: LeadSyncResponse | null }) {
   if (!run) return null
-  const icon = { converted: ResolveAIGlyph, skipped: Ban, failed: CircleAlert }
   return (
     <Panel
       icon={ResolveAIGlyph}
@@ -148,17 +162,17 @@ function LastRun({ run }) {
       ) : (
         <ul className="divide-y divide-ink/[0.06]">
           {run.results.map((x) => {
-            const Icon = icon[x.outcome]
+            const o = OUTCOME[x.outcome]
             return (
               <li key={x.response_id} className="flex items-start gap-3 px-4 py-2.5 text-[13px]">
-                <Icon className={cn('mt-0.5 size-3.5 shrink-0', x.outcome === 'converted' ? 'text-brand-600' : x.outcome === 'failed' ? 'text-red-600' : 'text-slate-500')} aria-hidden />
+                <o.icon className={cn('mt-0.5 size-3.5 shrink-0', o.tone)} aria-hidden />
                 <span className="min-w-0 flex-1">
                   <span className="font-medium text-slate-950">{x.company || x.name}</span>
                   <span className="text-slate-500"> · {x.outcome === 'converted' ? `lead created${x.score ? `, ${x.score}` : ''}` : x.outcome}</span>
                   <span className="mt-0.5 block text-xs text-slate-600">{x.reason}</span>
                 </span>
-                {x.score === 'hot' && <Flame className="mt-0.5 size-3.5 shrink-0 text-amber-600" aria-label="hot lead" />}
-                {x.deal_id && <a href={`${HUBSPOT_URL}/deals/${x.deal_id}`} target="_blank" rel="noreferrer" className="ref shrink-0 text-xs font-medium text-slate-900 hover:underline">#{x.deal_id}</a>}
+                {x.score === 'hot' && <span className="mt-0.5 shrink-0 text-amber-600" title="Hot lead"><Flame className="size-3.5" aria-hidden /></span>}
+                {x.deal_id && <DealLink id={x.deal_id} short />}
               </li>
             )
           })}
@@ -174,7 +188,7 @@ export default function Campaigns() {
   const { toast } = useApp()
   const { data, error, refresh } = live.useCampaigns()
   const [running, setRunning] = useState(false)
-  const [run, setRun] = useState(null)
+  const [run, setRun] = useState<LeadSyncResponse | null>(null)
   const campaigns = data?.campaigns
   const waiting = campaigns?.reduce((a, c) => a + c.new, 0) ?? 0
 
@@ -190,7 +204,7 @@ export default function Campaigns() {
         desc: res.processed ? `${res.skipped} skipped${res.failed ? `, ${res.failed} failed` : ''}${res.remaining ? ` · ${res.remaining} still waiting` : ''}` : 'Every campaign response is already handled.',
       })
     } catch (err) {
-      toast({ title: "Couldn't fetch leads", desc: err.message })
+      toast({ title: "Couldn't fetch leads", desc: (err as Error).message })
     } finally {
       setRunning(false)
     }

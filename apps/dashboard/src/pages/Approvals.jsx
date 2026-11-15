@@ -56,7 +56,7 @@ export default function Approvals() {
                   <div className="flex-1 p-5">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge className={tone.badge}><tone.icon className="size-3" />{a.reason}</Badge>
-                      <Link to={a.kind === 'ticket' ? `/tickets?id=${a.ref}` : `/audit?ref=${a.ref}`} className="ref text-xs font-medium text-brand-700 hover:underline">{a.ref}</Link>
+                      <Link to={a.kind === 'ticket' ? `/tickets?id=${a.ref}` : `/leads?id=${a.ref}`} className="ref text-xs font-medium text-brand-700 hover:underline">{a.ref}</Link>
                       <span className="ml-auto inline-flex items-center gap-1 text-xs text-slate-500 tabular"><Clock className="size-3" aria-hidden />waiting {ago(a.createdAt).replace(' ago', '')}</span>
                     </div>
                     <div className="mt-3 flex items-baseline justify-between gap-3">

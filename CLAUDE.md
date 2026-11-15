@@ -13,7 +13,7 @@ Judges watch the agent's work appear live, so the screens matter as much as the 
 | `apps/zendesk` | Zendesk look-alike: views, tickets, replies, internal notes | 3001 | Bun HTML bundler, React 19, Tailwind v4 |
 | `apps/hubspot` | HubSpot CRM look-alike: deals pipeline (drag and drop), contacts | 3002 | same |
 | `apps/shopkart` | Customer side: shop, My Orders, support chat, business enquiry | 3003 | same |
-| `apps/dashboard` | ResolveAI Control Room (KPIs, audit, tickets, approvals, board, connectors, settings) | 3004 | Vite 8, React 19 (JSX), Tailwind v4, Recharts |
+| `apps/dashboard` | ResolveAI Control Room: areas Home, Support, Sales, Connect, Aria (KPIs, analytics, tickets, leads, campaigns, approvals, board, connectors, audit, settings) | 3004 | Vite 8, React 19 (TS + some JSX), Tailwind v4, Recharts |
 | `apps/agent` | The ResolveAI agents (support, sales, analysis, leads): `/chat`, `/lead`, `/analysis`, `/campaigns/sync` | 8000 | Bun, VoltAgent (`@voltagent/core`, `server-hono`) |
 | `apps/copilot` | CopilotKit runtime behind the dashboard's "Ask Aria" chat (`/api/copilotkit`) | 4100 | Bun, `@copilotkit/runtime/v2` |
 | `packages/db` | Postgres: Drizzle schema, SQL migrations, seed data, row → API type mappers | – | Drizzle ORM on `Bun.SQL` |
@@ -30,7 +30,7 @@ bun run dev:dashboard    # dashboard + the Ask Aria runtime (apps/copilot)
 bun run reset            # wipe and re-seed the demo data in Postgres. Do this before every demo run.
 bun run db:generate      # new SQL migration after editing packages/db/src/schema.ts (commit it)
 bun run db:migrate       # apply migrations + seed an empty DB (the API does this on startup too)
-bun run check-types      # tsc for the TS apps and packages/shared
+bun run check-types      # tsc for the TS apps, the dashboard's .ts/.tsx and packages/shared
 bun run lint             # oxlint (dashboard)
 bun run test:agent       # bun test for apps/agent (no other services or API keys needed)
 bun run build
@@ -119,24 +119,33 @@ To change memory: keep thread keys in `service.ts` built from `personKey` / `ANA
 
 ## Dashboard (`apps/dashboard`)
 
-- Data comes **only** through `src/api.js`. Most pages read mock JSON in `src/data/` (timestamps shifted so the newest
-  event is always recent); swap function bodies there, keep the return shapes. **Analytics** and **Campaigns** are live:
-  `live.use*()` polls the demo API through `/api` (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100).
+- Data comes **only** through `src/api.ts`. Most pages read mock JSON in `src/data/` (timestamps shifted so the newest
+  event is always recent); swap function bodies there, keep the return shapes. **Analytics** (`/analytics`, Home area)
+  and **Campaigns** (`/campaigns`, Sales area) are live: `live.use*()` in `api.ts` polls the demo API through `/api`
+  (vite proxies it to `API_URL`; `/api/copilotkit` still goes to :4100). Their shapes come from `@ph/shared`.
 - Analytics charts: one y-axis per chart (a second measure goes in the tooltip), `ai`/`human` only for AI vs people,
   `bar` (neutral) for single series, `track` for the remainder of a part-of-whole bar; every chart has a Table view.
-- Shared state and the audit log are in `src/store.jsx`; labels/colours/icons per channel, level, status, tool in `src/meta.js`.
-- **Theming** (`src/index.css`, `src/theme.jsx`): light is the default token set, `[data-theme="dark"]` on `<html>`
+- Shared state and the audit log are in `src/store.tsx`; labels/colours/icons per channel, level, status, tool in `src/meta.ts`.
+  Data shapes are in `src/types.ts` (keep them in step with `src/data/*.json`).
+- TypeScript: new files are `.ts`/`.tsx`. The core (types, api, store, meta, lib, nav, theme, layout, sidebar, `ui`, `Trace`,
+  `ToolChain`, Leads, Analytics, Campaigns) is typed; the older pages and `src/copilot/` are still `.jsx` (`allowJs`,
+  unchecked). Moving a file to `.tsx` turns checking on for it. Restart Vite after renaming a file: it keeps resolving the old path.
+- Navigation is two levels (`src/nav.ts`, `src/components/Sidebar.tsx`): the rail holds the global areas (Home, Support,
+  Sales, Connect, Aria) and widens on hover; the panel beside it lists the current area's pages, its filtered views
+  (ticket status, lead stage, driven by `?status=` / `?stage=`) and live lists. ⌘B hides the panel. A new page goes in
+  one area's `paths` and in `PAGES`.
+- **Theming** (`src/index.css`, `src/theme.tsx`): light is the default token set, `[data-theme="dark"]` on `<html>`
   overrides it. `index.html` sets the attribute before first paint (saved choice, else the OS); the topbar toggle
   switches it. Rules that keep both themes working:
   - Use tokens, never raw `white`/`black`: `bg-canvas` (page), `bg-tray` (card frame), `bg-surface` (panels),
     `bg-raised` (popovers), `slate-*` for text/lines (slate-900 = primary text, slate-200 = border),
     `ink/[alpha]` for hairlines and hovers (`border-ink/[0.07]`, `hover:bg-ink/[0.03]`).
   - Hue `-50/-100/-200` are translucent tints (chips, callouts); `-600/-700` are readable hue text.
-  - Recharts can't read CSS vars: chart colours live in a per-theme map (`CHART` in `src/meta.js`) chosen with `useTheme()`.
-- Card pattern: `Panel` in `src/components/ui.jsx` (header in a tinted tray, content in an inset panel).
+  - Recharts can't read CSS vars: chart colours live in a per-theme map (`CHART` in `src/meta.ts`) chosen with `useTheme()`.
+- Card pattern: `Panel` in `src/components/ui.tsx` (header in a tinted tray, content in an inset panel).
 - Colour carries meaning only: mint (`brand`) = the AI, periwinkle (`human`) = a person, amber = waiting on a human
   gate, red = blocked/critical. Icon tiles are otherwise neutral.
-- Icons: lucide-react with a global 1.5 stroke (`LucideProvider` in `src/main.jsx`). Type: Geist + Geist Mono;
+- Icons: lucide-react with a global 1.5 stroke (`LucideProvider` in `src/main.tsx`). Type: Geist + Geist Mono;
   IDs, refs, times and money use the `.ref` mono class.
 - No fake controls: every button, filter and switch must do something with the data that exists.
 

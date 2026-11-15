@@ -7,7 +7,7 @@ import type { AgentLevel } from "./types.ts";
 
 /* ───── Channels: where requests come from. The agent accepts a request only with the channel's token. ───── */
 
-export type ChannelKind = "chat" | "whatsapp" | "email" | "webchat" | "api";
+export type ChannelKind = "chat" | "voice" | "form" | "whatsapp" | "email" | "webchat" | "api";
 
 export interface Channel {
   id: string;
@@ -28,7 +28,8 @@ export interface ChannelToken {
 
 /* ───── Connectors: the tools the agents act in, and how to reach them. ───── */
 
-export type ConnectorId = "zendesk" | "shop" | "hubspot";
+/** `sarvam` is the voice platform the agents place sales calls through (base URL + API key). */
+export type ConnectorId = "zendesk" | "shop" | "hubspot" | "sarvam";
 export type ConnectorStatus = "connected" | "error" | "disabled";
 
 export interface Connector {
@@ -190,3 +191,71 @@ export interface ResolvedCase {
 }
 
 export type CreateCaseBody = Omit<ResolvedCase, "id" | "created_at">;
+
+/* ───── Voice calls (Sarvam): outbound sales calls by the Aria voice agent. ───── */
+
+export type CallStatus = "queued" | "ringing" | "in_progress" | "completed" | "no_answer" | "failed";
+/** What the voice agent's post-call analysis decided (Sarvam `call_outcome`). */
+export type CallOutcome = "meeting_booked" | "send_details" | "callback" | "not_interested" | "do_not_call" | "wrong_person" | "unclear";
+
+/** The fields the Sarvam app extracts after a call. Any may be missing. */
+export interface CallExtraction {
+  call_outcome?: CallOutcome;
+  lead_score?: "hot" | "warm" | "cold";
+  need?: "bulk_order" | "billing_setup" | "payment_setup" | "other" | "not_discussed";
+  start_when?: string;
+  budget_inr?: number | null;
+  is_decision_maker?: "yes" | "no" | "shared" | "not_discussed";
+  whatsapp_ok?: boolean;
+  score_reason?: string;
+  contact_name_captured?: string;
+  business_name_captured?: string;
+  business_type?: string;
+  city?: string;
+  current_setup?: string;
+  need_details?: string;
+  monthly_volume?: string;
+  email?: string;
+  meeting_time?: string;
+  objections?: string;
+  call_summary?: string;
+}
+
+export interface TranscriptLine {
+  role: "agent" | "user";
+  text: string;
+}
+
+export interface Call {
+  id: number;
+  provider: "sarvam";
+  direction: "outbound";
+  status: CallStatus;
+  /** E.164, e.g. +919876543210 */
+  phone: string;
+  name: string;
+  business_name: string;
+  /** The CRM records this call is about. A call placed from a deal has both; a cold call gets them when it ends. */
+  contact_id: number | null;
+  deal_id: number | null;
+  /** Sarvam's id for the call / interaction */
+  external_id: string | null;
+  outcome: CallOutcome | null;
+  lead_score: "hot" | "warm" | "cold" | null;
+  extracted: CallExtraction;
+  transcript: TranscriptLine[];
+  summary: string | null;
+  duration_s: number | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  ended_at: string | null;
+}
+
+export interface PlaceCallBody {
+  phone: string;
+  name: string;
+  business_name?: string;
+  /** Call about an existing CRM deal (its contact is used when phone/name are omitted) */
+  deal_id?: number;
+}

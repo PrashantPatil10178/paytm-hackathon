@@ -3,8 +3,13 @@
  * almost one to one (see ./map.ts). Enum-like columns are text typed with the shared unions; the API
  * validates values before writing.
  */
+import type { Settings as ControlRoomSettings } from "@ph/shared/controlroom";
 import type {
   ActivityType,
+  CallExtraction,
+  CallOutcome,
+  CallStatus,
+  TranscriptLine,
   AgentLevel,
   ApprovalStatus,
   CaseOutcome,
@@ -300,6 +305,52 @@ export const resolvedCases = pgTable(
   (t) => [index().on(t.intent)],
 );
 
+/** Outbound voice calls placed through Sarvam (the Aria sales caller), with what the call collected. */
+export const calls = pgTable(
+  "rai_calls",
+  {
+    id: serial().primaryKey(),
+    provider: text().$type<"sarvam">().notNull().default("sarvam"),
+    direction: text().$type<"outbound">().notNull().default("outbound"),
+    status: text().$type<CallStatus>().notNull().default("queued"),
+    phone: text().notNull(),
+    name: text().notNull(),
+    business_name: text().notNull().default(""),
+    contact_id: integer(),
+    deal_id: integer(),
+    external_id: text(),
+    outcome: text().$type<CallOutcome>(),
+    lead_score: text().$type<LeadScore>(),
+    extracted: jsonb().$type<CallExtraction>().notNull().default({}),
+    transcript: jsonb().$type<TranscriptLine[]>().notNull().default([]),
+    summary: text(),
+    duration_s: integer(),
+    error: text(),
+    created_at: at().notNull().defaultNow(),
+    updated_at: at().notNull().defaultNow(),
+    ended_at: at(),
+  },
+  (t) => [index().on(t.external_id), index().on(t.deal_id)],
+);
+
+/** Control Room settings (one row, id "default"). Kept across demo resets. */
+export const settings = pgTable("rai_settings", {
+  id: text().primaryKey(),
+  value: jsonb().$type<ControlRoomSettings>().notNull(),
+  updated_at: at().notNull().defaultNow(),
+});
+
+/** The team's task board in the Control Room. Kept across demo resets. */
+export const boardTasks = pgTable("board_tasks", {
+  id: serial().primaryKey(),
+  title: text().notNull(),
+  owner: text().notNull().default(""),
+  tag: text().notNull().default(""),
+  column: text().$type<"todo" | "doing" | "done">().notNull().default("todo"),
+  position: integer().notNull().default(0),
+  created_at: at().notNull().defaultNow(),
+});
+
 /* ───── Campaigns (lead sources for the leads agent) ───── */
 
 export const campaigns = pgTable("campaigns", {
@@ -376,4 +427,4 @@ export const agentStepsRelations = relations(agentSteps, ({ one }) => ({ run: on
 export const activitiesRelations = relations(activities, ({ one }) => ({ deal: one(deals, { fields: [activities.deal_id], references: [deals.id] }) }));
 
 /** Every demo table, children first: the order `reset` truncates in. */
-export const DEMO_TABLES = ["rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+export const DEMO_TABLES = ["rai_calls", "rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;

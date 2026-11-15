@@ -29,6 +29,13 @@
       "when": 1794729854010,
       "tag": "0003_resolveai_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794730944629,
+      "tag": "0004_calls_settings_board",
+      "breakpoints": true
     }
   ]
 }

@@ -102,6 +102,14 @@ export function TicketDetail({ id }: { id: number }) {
             </select>
             {t.assignee === BOT ? <AiTag /> : t.escalated_by_ai ? <EscalatedTag /> : null}
           </Field>
+          {t.level && (
+            // Set by ResolveAI's main agent when it triages the ticket.
+            <Field label="ResolveAI level">
+              <span className="text-[13px]">
+                {cap(t.level)} · {t.handled_by === "human" ? "handed to a person" : `${t.handled_by} agent`}
+              </span>
+            </Field>
+          )}
           <Field label="Status">
             <select className="zd-select" value={t.status} onChange={(e) => update({ status: e.target.value as TicketStatus })}>
               {(["new", "open", "pending", "solved"] as const).map((s) => (

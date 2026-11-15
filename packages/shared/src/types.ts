@@ -55,6 +55,10 @@ export interface Ticket {
   via: TicketChannel;
   order_id: number | null;
   csat: number | null;
+  /** Criticality the ResolveAI main agent gave it (null for tickets it didn't triage) */
+  level: AgentLevel | null;
+  /** Which ResolveAI agent works it: low, medium or high, or human for critical ones */
+  handled_by: "low" | "medium" | "high" | "human" | null;
   created_at: string;
   updated_at: string;
   comments: ZdComment[];
@@ -86,6 +90,8 @@ export interface UpdateTicketBody {
   tags?: string[];
   escalated_by_ai?: boolean;
   csat?: number | null;
+  level?: AgentLevel | null;
+  handled_by?: "low" | "medium" | "high" | "human" | null;
   /** "human" when a person changed it in the UI; anything else counts as the AI */
   actor?: "human" | "ai";
 }

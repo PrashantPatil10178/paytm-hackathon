@@ -5,6 +5,17 @@
  */
 import type {
   ActivityType,
+  AgentLevel,
+  ApprovalStatus,
+  CaseOutcome,
+  ChannelKind,
+  ConnectorId,
+  ConnectorStatus,
+  HandledBy,
+  RunKind,
+  RunStatus,
+  StepAgent,
+  StepResult,
   Contact,
   DealStage,
   LeadScore,
@@ -21,7 +32,7 @@ import type {
   ZdComment,
 } from "@ph/shared";
 import { relations } from "drizzle-orm";
-import { boolean, doublePrecision, index, integer, jsonb, pgTable, real, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, doublePrecision, index, integer, jsonb, pgTable, real, serial, text, timestamp } from "drizzle-orm/pg-core";
 
 const id = () => integer().primaryKey().generatedByDefaultAsIdentity();
 const at = () => timestamp({ withTimezone: true, mode: "date" });
@@ -88,6 +99,9 @@ export const tickets = pgTable(
     via: text().$type<TicketChannel>().notNull(),
     order_id: integer(),
     csat: integer(),
+    /** Set by the ResolveAI main agent when it triages the ticket */
+    level: text().$type<AgentLevel>(),
+    handled_by: text().$type<HandledBy>(),
     created_at: at().notNull(),
     updated_at: at().notNull(),
   },
@@ -173,6 +187,112 @@ export const activities = pgTable(
   (t) => [index().on(t.deal_id)],
 );
 
+/* ───── ResolveAI: channels, connectors and what the agents did ───── */
+
+/** Where requests come from. The agent only accepts a request carrying the channel's token (stored hashed). */
+export const channels = pgTable("rai_channels", {
+  id: text().primaryKey(),
+  name: text().notNull(),
+  kind: text().$type<ChannelKind>().notNull(),
+  enabled: boolean().notNull().default(true),
+  token_hash: text(),
+  token_hint: text(),
+  last_used_at: at(),
+  created_at: at().notNull().defaultNow(),
+});
+
+/** The tools the agents act in. The token is an outbound credential the agent sends, so it is kept retrievable (never sent to the browser). */
+export const connectors = pgTable("rai_connectors", {
+  id: text().$type<ConnectorId>().primaryKey(),
+  name: text().notNull(),
+  category: text().notNull(),
+  base_url: text().notNull(),
+  token: text(),
+  enabled: boolean().notNull().default(true),
+  status: text().$type<ConnectorStatus>().notNull().default("connected"),
+  last_checked_at: at(),
+  last_error: text(),
+});
+
+/** One per incoming request: the main agent's triage, plan and outcome. */
+export const agentRuns = pgTable(
+  "rai_runs",
+  {
+    id: serial().primaryKey(),
+    channel_id: text().notNull(),
+    session_id: text().notNull(),
+    customer_id: integer().notNull(),
+    ticket_id: integer(),
+    kind: text().$type<RunKind>().notNull().default("request"),
+    message: text().notNull(),
+    intent: text(),
+    level: text().$type<AgentLevel>(),
+    level_reason: text(),
+    handled_by: text().$type<HandledBy>(),
+    status: text().$type<RunStatus>().notNull().default("triaging"),
+    plan: jsonb().$type<string[]>().notNull().default([]),
+    reply: text(),
+    created_at: at().notNull().defaultNow(),
+    updated_at: at().notNull().defaultNow(),
+  },
+  (t) => [index().on(t.ticket_id), index().on(t.session_id)],
+);
+
+/** Every step an agent took on a run: the audit trail. */
+export const agentSteps = pgTable(
+  "rai_steps",
+  {
+    id: serial().primaryKey(),
+    run_id: integer().notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+    agent: text().$type<StepAgent>().notNull(),
+    step: text().notNull(),
+    tool: text().notNull(),
+    result: text().$type<StepResult>().notNull(),
+    detail: text().notNull(),
+    created_at: at().notNull().defaultNow(),
+  },
+  (t) => [index().on(t.run_id)],
+);
+
+/** High-level actions waiting for a person. */
+export const approvals = pgTable("rai_approvals", {
+  id: serial().primaryKey(),
+  run_id: integer().notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  ticket_id: integer().notNull(),
+  action: text().$type<"refund">().notNull(),
+  order_id: integer().notNull(),
+  amount: money(),
+  reason: text().notNull(),
+  summary: text().notNull(),
+  suggestion: text().notNull(),
+  status: text().$type<ApprovalStatus>().notNull().default("pending"),
+  decided_by: text(),
+  note: text(),
+  created_at: at().notNull().defaultNow(),
+  decided_at: at(),
+});
+
+/** The main agent's memory: every finished case, so similar ones are solved faster later. Survives demo resets. */
+export const resolvedCases = pgTable(
+  "rai_cases",
+  {
+    id: serial().primaryKey(),
+    run_id: integer().notNull(),
+    ticket_id: integer(),
+    customer_id: integer().notNull(),
+    intent: text().notNull(),
+    level: text().$type<AgentLevel>().notNull(),
+    handled_by: text().$type<HandledBy>().notNull(),
+    problem: text().notNull(),
+    steps: jsonb().$type<string[]>().notNull().default([]),
+    resolution: text().notNull(),
+    outcome: text().$type<CaseOutcome>().notNull(),
+    tags: text().array().notNull().default([]),
+    created_at: at().notNull().defaultNow(),
+  },
+  (t) => [index().on(t.intent)],
+);
+
 /* ───── Relations (for db.query.*.findMany({ with })) ───── */
 
 export const customersRelations = relations(customers, ({ many }) => ({ orders: many(orders) }));
@@ -189,7 +309,9 @@ export const dealsRelations = relations(deals, ({ one, many }) => ({
   activities: many(activities),
 }));
 export const meetingsRelations = relations(meetings, ({ one }) => ({ deal: one(deals, { fields: [meetings.deal_id], references: [deals.id] }) }));
+export const agentRunsRelations = relations(agentRuns, ({ many }) => ({ steps: many(agentSteps) }));
+export const agentStepsRelations = relations(agentSteps, ({ one }) => ({ run: one(agentRuns, { fields: [agentSteps.run_id], references: [agentRuns.id] }) }));
 export const activitiesRelations = relations(activities, ({ one }) => ({ deal: one(deals, { fields: [activities.deal_id], references: [deals.id] }) }));
 
 /** Every demo table, children first: the order `reset` truncates in. */
-export const DEMO_TABLES = ["chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+export const DEMO_TABLES = ["rai_approvals", "rai_steps", "rai_runs", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;

@@ -1,4 +1,4 @@
-import type { ChatResponse, Customer } from "@ph/shared";
+import type { ChatResponse, Customer, Ticket } from "@ph/shared";
 import { api, usePoll } from "@ph/shared/react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
@@ -90,7 +90,9 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // One chat thread per customer, kept while you switch back and forth.
-  const threads = useRef(new Map<number, { session: string; messages: ChatMessage[]; ticketId?: number }>());
+  // `seen` holds the ticket's public comment ids already in the thread, so later replies (an approved
+  // refund, a teammate's answer) can be picked up from the ticket without repeating earlier ones.
+  const threads = useRef(new Map<number, { session: string; messages: ChatMessage[]; ticketId?: number; seen?: Set<number>; sending?: boolean }>());
   const [, force] = useState(0);
   const [open, setOpen] = useState(false);
   const [typing, setTyping] = useState(false);
@@ -121,6 +123,7 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
         force((n) => n + 1);
       };
       push({ id: crypto.randomUUID(), from: "me", text: msg, at: new Date() });
+      thread.sending = true;
       setDraft("");
       setTyping(true);
       try {
@@ -130,6 +133,13 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
           push({ id: crypto.randomUUID(), from: "system", text: `Ticket #${res.ticket_id} opened with ShopKart support`, at: new Date() });
         }
         push({ id: crypto.randomUUID(), from: "bot", text: res.reply, at: new Date() });
+        if (thread.ticketId) {
+          const t = await api.get<Ticket>(`/zendesk/tickets/${thread.ticketId}`).catch(() => null);
+          // Seen = what the thread already shows: customer messages, earlier replies and this answer.
+          // A later reply (the level agent finishing, an approval) is left for the poll to pick up.
+          const before = thread.seen;
+          if (t) thread.seen = new Set(t.comments.filter((c) => c.public && (before?.has(c.id) || c.author_type === "customer" || c.body === res.reply)).map((c) => c.id));
+        }
       } catch (e) {
         push({
           id: crypto.randomUUID(),
@@ -139,11 +149,30 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
           failed: true,
         });
       } finally {
+        thread.sending = false;
         setTyping(false);
       }
     },
     [customer, thread],
   );
+
+  // Replies that arrive after the chat answered (approvals, teammates) show up here.
+  useEffect(() => {
+    if (!thread) return;
+    const timer = setInterval(async () => {
+      if (!thread.ticketId || !thread.seen || thread.sending) return;
+      const t = await api.get<Ticket>(`/zendesk/tickets/${thread.ticketId}`).catch(() => null);
+      if (!t || !thread.seen || thread.sending) return;
+      const fresh = t.comments.filter((c) => c.public && !thread.seen!.has(c.id));
+      fresh.forEach((c) => thread.seen!.add(c.id));
+      const replies = fresh.filter((c) => c.author_type !== "customer");
+      if (replies.length) {
+        thread.messages = [...thread.messages, ...replies.map((c) => ({ id: `zd-${c.id}`, from: "bot" as const, text: c.body, at: new Date(c.created_at) }))];
+        force((n) => n + 1);
+      }
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [thread]);
 
   const askAbout = useCallback((orderId: number) => {
     setDraft(`I need help with order #${orderId}. `);

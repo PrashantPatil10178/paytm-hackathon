@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Plus, Search, Settings2, Unplug, RefreshCw, Loader2, Star, Zap, CheckCircle2, ShieldCheck, Lock } from 'lucide-react'
 import { api } from '../api'
 import { useApp } from '../store'
+import { ConnectorAccess } from '../components/AgentAccess'
 import { Card, PageHeader, Badge, Button, Modal, Drawer, Toggle, Select, Skeleton } from '../components/ui'
 import { ago, cn, rupees } from '../lib'
 
@@ -61,6 +62,8 @@ export default function Connectors() {
         description="The tools the agent can work inside. Plug in a new one and it just works, with no code."
         actions={<Button variant="primary" icon={Plus} onClick={() => setAdding(true)}>Add connector</Button>}
       />
+
+      <ConnectorAccess />
 
       <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <MiniStat icon={Zap} label="Connected tools" value={connectors ? `${live} of ${connectors.length}` : '–'} />

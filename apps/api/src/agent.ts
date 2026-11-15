@@ -22,24 +22,31 @@ import { eq, schema as s } from "@ph/db";
 import { createContact, createDeal, logActivity } from "./crm.ts";
 import { db } from "./db.ts";
 import { bad, body, CORS, handle, ok } from "./http.ts";
+import { shopkartChannelToken } from "./resolveai.ts";
 import { customerOrders, findCustomer, refundOrder } from "./shop.ts";
 import { addComment, createTicket, findTicket, ticketExists, updateTicket } from "./zendesk.ts";
 
 const AGENT_URL = process.env.AGENT_URL?.replace(/\/$/, "");
 const AUTO_REFUND_LIMIT = 1000;
 
-async function forward(path: string, payload: unknown): Promise<Response | null> {
+async function forward(path: string, payload: unknown, token?: string): Promise<Response | null> {
   if (!AGENT_URL) return null;
   try {
     const res = await fetch(`${AGENT_URL}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(token && { authorization: `Bearer ${token}` }) },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(110_000),
     });
     const headers = { ...CORS, "content-type": res.headers.get("content-type") ?? "application/json", "x-answered-by": "agent" };
     return new Response(res.body, { status: res.status, headers });
   } catch (e) {
+    // Slow is not down: the agent may still be acting on this request, so the stand-in must not act too
+    // (it would open a second ticket and could refund twice). Only an unreachable agent falls back.
+    if ((e as Error).name === "TimeoutError") {
+      console.warn(`[agent] ${AGENT_URL}${path} is taking longer than 110 s; told the customer to wait`);
+      return ok({ reply: "Sorry, this is taking a little longer than usual. I'm still on it and will update you here shortly." });
+    }
     console.warn(`[agent] ${AGENT_URL}${path} failed, using the built-in stand-in:`, (e as Error).message);
     return null;
   }
@@ -208,7 +215,8 @@ export const agentRoutes = {
     POST: handle(async (req) => {
       const b = await body<ChatRequest>(req);
       if (!b.session_id || !b.customer_id || !b.message?.trim()) throw bad("session_id, customer_id and message are required");
-      const forwarded = await forward("/chat", b);
+      // ShopKart is a ResolveAI channel: its chats go to the agent's intake with the channel token.
+      const forwarded = await forward("/intake", b, shopkartChannelToken());
       if (forwarded) return forwarded;
       return ok(await simulateChat({ ...b, message: b.message.trim() }));
     }),

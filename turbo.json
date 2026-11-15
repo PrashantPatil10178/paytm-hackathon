@@ -17,7 +17,10 @@
     "OPENAI_BASE_URL",
     "COPILOT_PORT",
     "COPILOT_URL",
-    "COPILOT_MODEL"
+    "COPILOT_MODEL",
+    "SHOPKART_CHANNEL_TOKEN",
+    "RESOLVEAI_INTERNAL_KEY",
+    "VITE_AGENT_URL"
   ],
   "tasks": {
     "build": {

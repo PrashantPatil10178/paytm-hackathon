@@ -1,5 +1,5 @@
 /** Rows → the API shapes in @ph/shared. The only real work is Date → ISO string. */
-import type { Activity, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
+import type { Activity, AgentRun, AgentStep, Approval, Channel, Connector, ResolvedCase, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
 import type * as s from "./schema.ts";
 
 type Row<T extends { $inferSelect: unknown }> = T["$inferSelect"];
@@ -39,3 +39,36 @@ export function toDeal(r: Row<typeof s.deals> & { meeting: Row<typeof s.meetings
 }
 
 export const toActivity = ({ deal_id: _, ...r }: Row<typeof s.activities>): Activity => ({ ...r, created_at: iso(r.created_at) });
+
+/* ───── ResolveAI ───── */
+
+
+const isoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
+
+export const toChannel = ({ token_hash: _, ...r }: Row<typeof s.channels>): Channel => ({
+  ...r,
+  last_used_at: isoOrNull(r.last_used_at),
+  created_at: iso(r.created_at),
+});
+
+export const toConnector = ({ token, ...r }: Row<typeof s.connectors>): Connector => ({
+  ...r,
+  token_hint: token ? token.slice(-4) : null,
+  last_checked_at: isoOrNull(r.last_checked_at),
+});
+
+export const toStep = (r: Row<typeof s.agentSteps>): AgentStep => ({ ...r, created_at: iso(r.created_at) });
+
+export function toRun({ steps, ...r }: Row<typeof s.agentRuns> & { steps?: Row<typeof s.agentSteps>[] }): AgentRun {
+  const run: AgentRun = { ...r, created_at: iso(r.created_at), updated_at: iso(r.updated_at) };
+  if (steps) run.steps = [...steps].sort((a, b) => a.id - b.id).map(toStep);
+  return run;
+}
+
+export const toApproval = (r: Row<typeof s.approvals>): Approval => ({
+  ...r,
+  created_at: iso(r.created_at),
+  decided_at: isoOrNull(r.decided_at),
+});
+
+export const toCase = (r: Row<typeof s.resolvedCases>): ResolvedCase => ({ ...r, created_at: iso(r.created_at) });

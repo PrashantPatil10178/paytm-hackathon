@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Plus, Camera, Send, MessageSquareText, Phone, Loader2, Check, Radio } from 'lucide-react'
 import { api } from '../api'
 import { useApp } from '../store'
+import { ChannelAccess } from '../components/AgentAccess'
 import { Card, PageHeader, Toggle, Badge, Button, Modal, Skeleton } from '../components/ui'
 import { CHANNELS } from '../meta'
 import { cn, num } from '../lib'
@@ -48,6 +49,8 @@ export default function Channels() {
         description="Where customer messages come in. Turn one on and the agent starts answering there."
         actions={<Button variant="primary" icon={Plus} onClick={() => setAdding(true)}>Add channel</Button>}
       />
+
+      <ChannelAccess />
 
       <div className="mb-5 flex flex-wrap gap-6 rounded-xl border border-slate-200/80 bg-surface px-5 py-4 text-sm">
         <div><p className="text-xs text-slate-500">Active channels</p><p className="mt-0.5 text-lg font-semibold tabular">{channels?.filter((c) => c.enabled).length ?? '–'}</p></div>

@@ -6,14 +6,18 @@
  * deal id, approvals "AP-<id>".
  */
 
-import type { ChatMessage, ChatSender } from './types.ts'
+import type { Attachment, ChatMessage, ChatSender } from './types.ts'
 
 /** Where a request came in. `chat` = ShopKart chat, `voice` = Sarvam calls, `form` = the business enquiry form. */
 export type ChannelId = 'chat' | 'voice' | 'form' | 'whatsapp' | 'email' | 'webchat' | 'appchat' | 'api'
 export type Level = 'low' | 'medium' | 'high' | 'critical'
 export type Status = 'open' | 'in_progress' | 'waiting' | 'solved'
 export type StepResult = 'success' | 'blocked' | 'escalated'
-export type Solver = 'ai' | 'human'
+/**
+ * Who solved a ticket. `ai` = Aria alone; `ai_approved` = Aria did the work after a person approved it in
+ * Approvals (e.g. a refund above the limit); `human` = a person handled it.
+ */
+export type Solver = 'ai' | 'ai_approved' | 'human'
 
 /** One thing the agent did, with the tool it used. */
 export interface Step {
@@ -28,6 +32,8 @@ export interface Message {
   from: 'customer' | 'ai' | 'agent'
   time: string
   text: string
+  /** Photos sent with it */
+  attachments?: Attachment[]
 }
 
 export interface Ticket {
@@ -136,6 +142,10 @@ export interface Approval {
   evidence: string[]
   confidence: number
   createdAt: string
+  /** Photos on the ticket (damage claims) */
+  photos?: Attachment[]
+  /** Aria's checks behind it: "Check photo" (vision verdict) and "Check risk" (refund history), newest per kind */
+  checks?: { step: string; result: StepResult; detail: string }[]
 }
 
 export type Decision = 'approved' | 'rejected'
@@ -150,15 +160,32 @@ export interface Approvals {
 
 export type Autonomy = 'suggest' | 'approval' | 'autonomous'
 
+/**
+ * Aria's settings (Control Room → Aria → Settings). Every field changes what the agents do; see the Settings
+ * page for one line each. Money and risk rules stay in code: no toggle turns off a refund limit or an approval.
+ */
 export interface Settings {
+  /** The name Aria uses with customers (every agent's instructions, the chat author) */
   agentName: string
+  /** Aria's avatar colour in the Control Room */
   avatarColor: string
+  /** Tone of voice, in every agent's instructions */
   tone: string
+  /** Off: that agent doesn't act (support chats go to the owner with a ticket; enquiries are logged in the CRM unscored) */
   playbooks: { support: boolean; sales: boolean }
+  /** suggest: every refund waits for approval · approval: refunds within limits on clean cases, the rest wait · autonomous: also refunds within limits when a photo check is only unclear */
   autonomy: Autonomy
+  /** ₹ Aria may refund alone */
   refundLimit: number
-  escalation: Record<string, boolean>
+  /** Photo-verified damage claims (verified photo, no risk signal) may be refunded alone up to this ₹ (≥ refundLimit to matter) */
+  verifiedDamageLimit: number
+  /** On: every damage claim needs a photo; off: only where POL-DMG asks (orders above ₹1,000) */
+  requireDamagePhotos: boolean
+  /** Always to a person when on. fraud / legal: those mentions; vip: lifetime spend ≥ ₹15,000; negative: upset twice in a row or upset with 2+ recent tickets */
+  escalation: { fraud: boolean; legal: boolean; vip: boolean; negative: boolean }
+  /** Aria replies in the customer's language when it is one of these, else in the first one */
   languages: string[]
+  /** Outside these hours (IST) Aria works in the afterHours mode and tells customers when a person is back */
   hours: { days: string[]; from: string; to: string; afterHours: Autonomy }
 }
 
@@ -168,7 +195,8 @@ export interface Spark {
 }
 
 export interface Stats {
-  daily: { ai: number[]; human: number[] }
+  /** Per IST day: solved/handled by Aria alone, by Aria after a person's approval, by a person */
+  daily: { ai: number[]; aiApproved: number[]; human: number[] }
   deltas: { queries: number; aiRate: number; escalated: number; solveTime: number; hotLeads: number }
   escalated: Spark
   solveTime: { seconds: number; spark: number[] }

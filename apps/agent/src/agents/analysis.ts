@@ -2,6 +2,7 @@ import { Agent, type AgentOptions, type Memory } from "@voltagent/core";
 import type { DemoAPI } from "../demo-api.ts";
 import { analysisTools } from "../tools/analysis.ts";
 import { withPolicies, type PolicyBook } from "../policies.ts";
+import { withPersona, type SettingsSource } from "../settings.ts";
 import { policyTools } from "../tools/policies.ts";
 
 const INSTRUCTIONS = `You are Aria, ResolveAI's analyst for ShopKart. Someone in the ResolveAI Control Room asked for an
@@ -27,12 +28,12 @@ Rules
 - Your final message is a one-line summary for the person who asked.`;
 
 /** `memory` keeps the analysis thread (Postgres in the app); omitted, VoltAgent keeps it in memory. */
-export function createAnalysisAgent(api: DemoAPI, model: AgentOptions["model"], memory?: Memory, book?: PolicyBook) {
+export function createAnalysisAgent(api: DemoAPI, model: AgentOptions["model"], memory?: Memory, book?: PolicyBook, persona?: SettingsSource) {
   return new Agent({
     id: "analysis",
     name: "Aria · Analysis",
     purpose: "Analyses live support, shop, pipeline and campaign numbers and publishes findings for the Control Room charts",
-    instructions: withPolicies(INSTRUCTIONS, book),
+    instructions: withPersona(withPolicies(INSTRUCTIONS, book), persona, false),
     model,
     tools: [...analysisTools(api), ...policyTools(book)],
     maxSteps: 6,

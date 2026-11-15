@@ -1,5 +1,5 @@
 /** Rows → the API shapes in @ph/shared. The only real work is Date → ISO string. */
-import type { Activity, AgentRun, AnalysisReport, Call, Campaign, CampaignResponse, ChatMessage, AgentStep, Approval, Channel, Connector, ResolvedCase, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
+import type { Activity, AgentRun, Attachment, AnalysisReport, Call, Campaign, CampaignResponse, ChatMessage, AgentStep, Approval, Channel, Connector, ResolvedCase, Contact, Customer, Deal, Meeting, Order, Product, Ticket, TicketSummary, ZdComment, ZdUser } from "@ph/shared";
 import type * as s from "./schema.ts";
 
 type Row<T extends { $inferSelect: unknown }> = T["$inferSelect"];
@@ -95,4 +95,21 @@ export const toCall = (r: Row<typeof s.calls>): Call => ({
   updated_at: iso(r.updated_at),
   ended_at: r.ended_at ? iso(r.ended_at) : null,
   continued_at: r.continued_at ? iso(r.continued_at) : null,
+});
+
+/** Attachment metadata (never the bytes). `url` is the API path that serves the image. */
+export type AttachmentMeta = Omit<Row<typeof s.attachments>, "data">;
+export const toAttachment = (r: AttachmentMeta): Attachment => ({
+  id: r.id,
+  url: `/attachments/${r.id}`,
+  mime: r.mime,
+  size: r.size,
+  width: r.width,
+  height: r.height,
+  sha256: r.sha256,
+  name: r.name,
+  customer_id: r.customer_id,
+  ticket_id: r.ticket_id,
+  order_id: r.order_id,
+  created_at: iso(r.created_at),
 });

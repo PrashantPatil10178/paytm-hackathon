@@ -1,14 +1,43 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, X, PartyPopper, Clock, ShieldAlert, Wallet, Handshake, History } from 'lucide-react'
+import { Check, X, PartyPopper, Clock, ShieldAlert, Wallet, Handshake, History, Camera, ShieldCheck } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { OWNER } from '@ph/shared'
 import { useApp } from '../store'
 import { Card, PageHeader, Tabs, Button, Badge, Modal, EmptyState } from '../components/ui'
+import Photos from '../components/Photos'
 import { ago, cn, rupees } from '../lib'
 
 /** 0–1, clamped; a missing confidence reads as 0. */
 const conf = (a) => (Number.isFinite(a.confidence) ? Math.min(1, Math.max(0, a.confidence)) : 0)
+
+/** Aria's photo and risk checks behind an approval. Colour by result: success = neutral tick, escalated = amber, blocked = red. */
+const CHECK = {
+  'Check photo': { icon: Camera, label: 'Photo check' },
+  'Check risk': { icon: ShieldCheck, label: 'Risk check' },
+}
+const CHECK_TONE = { success: 'text-slate-600', escalated: 'text-amber-700', blocked: 'text-red-700' }
+
+function Checks({ photos, checks }) {
+  if (!photos?.length && !checks?.length) return null
+  return (
+    <div className="mt-4 rounded-lg border border-ink/[0.07] p-3">
+      {photos?.length > 0 && <Photos items={photos} size="size-24" />}
+      {photos?.length === 0 && <p className="mb-2 text-xs text-slate-500">No photos on this ticket.</p>}
+      <ul className="space-y-1.5">
+        {(checks ?? []).map((c) => {
+          const m = CHECK[c.step] ?? { icon: ShieldCheck, label: c.step }
+          return (
+            <li key={c.step} className="flex items-start gap-2 text-xs">
+              <m.icon className={cn('mt-px size-3.5 shrink-0', CHECK_TONE[c.result])} aria-hidden />
+              <span><span className={cn('font-medium', CHECK_TONE[c.result])}>{m.label}:</span> <span className="text-slate-600">{c.detail}</span></span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
 
 const TONE = {
   amber: { badge: 'bg-amber-50 text-amber-800 ring-amber-200', icon: Wallet },
@@ -67,7 +96,13 @@ export default function Approvals() {
                       <h3 className="text-[17px] font-semibold tracking-[-0.01em] text-slate-900">{a.customer}</h3>
                       <span className="ref text-xl font-semibold tracking-[-0.02em] text-slate-900">{rupees(a.amount)}</span>
                     </div>
-                    <p className="mt-1.5 text-sm text-slate-600">{a.summary}</p>
+                    {/* Aria's summary; for a damage claim the checks follow it in the record and are shown below instead. */}
+                    <p className="mt-1.5 text-sm whitespace-pre-line text-slate-600">{a.summary.split('\nPhoto:')[0]}</p>
+                    {a.summary.includes('\nWhy it needs you:') && (
+                      <p className="mt-2 text-xs text-amber-800">{a.summary.split('\nWhy it needs you:')[1].trim().replace(/^./, (x) => x.toUpperCase())}</p>
+                    )}
+
+                    <Checks photos={a.photos} checks={a.checks} />
 
                     {a.suggestion && <div className="mt-4 rounded-lg border border-brand-100 bg-brand-50/50 p-3">
                       <p className="flex items-center gap-1.5 text-xs font-medium text-brand-700"><ResolveAIGlyph className="size-3.5" />Suggested action</p>

@@ -33,7 +33,8 @@ export default function App() {
             <Route path="conversations" element={<Conversations />} />
             <Route path="board" element={<Board />} />
             <Route path="leads" element={<Leads />} />
-            <Route path="calls" element={<Calls />} />
+            <Route path="calls" element={<Calls purpose="sales" />} />
+            <Route path="support/calls" element={<Calls purpose="support" />} />
             <Route path="campaigns" element={<Campaigns />} />
             <Route path="sales/analytics" element={<SalesAnalytics />} />
             <Route path="channels" element={<Channels />} />

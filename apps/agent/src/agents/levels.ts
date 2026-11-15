@@ -11,6 +11,8 @@ import type { Platform } from "../platform.ts";
 import { runOf, type SupportRun } from "../tools/context.ts";
 import { supportTools, type Level } from "../tools/support.ts";
 import { withPolicies, type PolicyBook } from "../policies.ts";
+import type { VisionAgent } from "../evidence.ts";
+import { withPersona, type SettingsSource } from "../settings.ts";
 import { policyTools } from "../tools/policies.ts";
 
 const SHARED = `You are Aria, ResolveAI's support agent for ShopKart, an Indian online shop, chatting with a logged-in
@@ -56,45 +58,58 @@ const BY_LEVEL: Record<Level, string> = {
   re-check: escalate_to_human so the team follows up.
 - If it turns out to need a refund, a change or a judgement call, escalate_to_human (${SUPPORT_AGENTS[0]}, the owner) with a clear note.`,
   medium: `You are the MEDIUM-level agent: actions within limits, such as small refunds.
-- The auto-refund limit is in the message (a Control Room setting). Damaged or broken item on a delivered order
-  up to that limit: start_refund. Refunds reach the original payment method in 3–5 working days; nothing
-  needs to be sent back. Then update_ticket to solved.
+- Damaged, defective or wrong item: call check_damage_claim first. It checks the photos and the customer's refund
+  history and says what to do: refund → start_refund, then update_ticket to solved; approval → request_approval
+  (summary of what you checked, the exact refund you propose), then tell the customer a teammate will confirm
+  shortly; needs_photos → ask for photos and refund nothing. ShopKart can't send replacements from the chat, so a
+  verified claim is refunded. Refunds reach the original payment method in 3–5 working days; nothing needs to be sent back.
+- Other refunds up to the auto-refund limit (in the message, a Control Room setting): start_refund, then update_ticket to solved.
+  If start_refund says it needs approval, request_approval instead.
 - Only refund an order the customer named. If they have several orders and it isn't clear which one, ask them
   (name the items) and refund nothing yet; start_refund refuses an order they didn't name.
 - Anything above the limit, a failed payment, or anything you can't resolve: escalate_to_human
   (${SUPPORT_AGENTS[0]}, the owner) with a clear note.
 - start_refund and escalate_to_human write their own notes; use add_internal_note only for other decisions.`,
   high: `You are the HIGH-level agent: actions a person must approve, such as refunds above the auto-refund limit (in the message).
-- You never refund directly. Check the order, then request_approval with a summary of what you checked and
-  the exact action you propose. Do it in this same turn: don't ask the customer for photos or other proof
-  first; the approver decides what evidence is enough and can ask for it. Tell the customer their request is with a teammate for a quick approval and
+- You never refund directly. Check the order (for a damaged, defective or wrong item, check_damage_claim too),
+  then request_approval with a summary of what you checked and the exact action you propose, in this same turn.
+  If request_approval says photos are needed, ask the customer for them instead. Tell the customer their request is with a teammate for a quick approval and
   they'll hear back here shortly (mention the ticket number).
 - If the case is not something an approval can fix (abuse, fraud, a failed payment), escalate_to_human instead.`,
 };
 
 const NAMES: Record<Level, string> = { low: "Aria · Low", medium: "Aria · Medium", high: "Aria · High" };
 
+/** Extra parts the level agents share: the photo checker and the Control Room settings for their persona. */
+export interface LevelExtras {
+  vision?: VisionAgent;
+  /** Name, tone, languages (Control Room settings); defaults to the platform's settings */
+  persona?: SettingsSource;
+}
+
+const personaOf = (platform: Platform | undefined, x: LevelExtras) => x.persona ?? (platform ? () => platform.settings() : undefined);
+
 /** `memory` keeps each chat's history (Postgres in the app); omitted, VoltAgent keeps it in memory. */
-export function createLevelAgent(level: Level, api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook) {
+export function createLevelAgent(level: Level, api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook, x: LevelExtras = {}) {
   return new Agent({
     id: level,
     name: NAMES[level],
     purpose: `Works ${level}-level ShopKart support tickets that ResolveAI's main agent routed to it`,
-    instructions: withPolicies(`${SHARED}\n\n${BY_LEVEL[level]}`, book),
+    instructions: withPersona(withPolicies(`${SHARED}\n\n${BY_LEVEL[level]}`, book), personaOf(platform, x)),
     model,
-    tools: [...supportTools(api, platform, level), ...policyTools(book, recordPolicyStep(platform))],
+    tools: [...supportTools(api, platform, level, { vision: x.vision, book }), ...policyTools(book, recordPolicyStep(platform))],
     maxSteps: 10,
     ...(memory && { memory }),
   });
 }
 
 /** Answers a low-level chat without a ticket; escalate_to_human opens one when a person must step in. */
-export function createDirectAgent(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook) {
+export function createDirectAgent(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook, x: LevelExtras = {}) {
   return new Agent({
     id: "low-direct",
     name: "Aria · Low (chat)",
     purpose: "Answers simple ShopKart questions straight in the chat, without a ticket",
-    instructions: withPolicies(DIRECT, book),
+    instructions: withPersona(withPolicies(DIRECT, book), personaOf(platform, x)),
     model,
     tools: [...supportTools(api, platform, "low", { direct: true }), ...policyTools(book, recordPolicyStep(platform))],
     maxSteps: 8,
@@ -113,11 +128,11 @@ function recordPolicyStep(platform: Platform | undefined) {
 
 export type LevelAgents = Record<Level, Agent> & { direct: Agent };
 
-export function createLevelAgents(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook): LevelAgents {
+export function createLevelAgents(api: DemoAPI, model: AgentOptions["model"], platform?: Platform, memory?: Memory, book?: PolicyBook, x: LevelExtras = {}): LevelAgents {
   return {
-    direct: createDirectAgent(api, model, platform, memory, book),
-    low: createLevelAgent("low", api, model, platform, memory, book),
-    medium: createLevelAgent("medium", api, model, platform, memory, book),
-    high: createLevelAgent("high", api, model, platform, memory, book),
+    direct: createDirectAgent(api, model, platform, memory, book, x),
+    low: createLevelAgent("low", api, model, platform, memory, book, x),
+    medium: createLevelAgent("medium", api, model, platform, memory, book, x),
+    high: createLevelAgent("high", api, model, platform, memory, book, x),
   };
 }

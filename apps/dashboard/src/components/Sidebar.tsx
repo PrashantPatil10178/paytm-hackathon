@@ -216,7 +216,7 @@ function AriaCard({ settings, i, onNavigate }: { settings: Settings | null; i: n
   if (!settings) return null
   const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0)
   const ai = stats ? sum(stats.daily.ai) : 0
-  const all = stats ? ai + sum(stats.daily.human) : 0
+  const all = stats ? ai + sum(stats.daily.aiApproved ?? []) + sum(stats.daily.human) : 0
   const c = cascade(i)
   return (
     <Link to="/settings" onClick={onNavigate} style={c.style} className={cn(c.className, 'mt-4 block rounded-xl border border-ink/[0.07] bg-surface p-3 transition-colors hover:border-ink/[0.12]')}>
@@ -289,6 +289,7 @@ function useAreaContent(areaId: AreaId): AreaContent {
               page('/conversations'),
             ],
           },
+          { label: 'Voice', items: [page('/support/calls')] },
           { label: 'Views', items: [page('/board')] },
         ],
         extra: 'live',

@@ -16,8 +16,8 @@ import type {
   UpdateRunBody,
 } from "@ph/shared";
 import type { Settings } from "@ph/shared/controlroom";
-import { AUTO_REFUND_LIMIT } from "./criticality.ts";
 import { DemoAPIError } from "./demo-api.ts";
+import { DEFAULT_SETTINGS, normalizeSettings } from "./settings.ts";
 
 export type Platform = ReturnType<typeof createPlatform>;
 
@@ -44,26 +44,29 @@ export function createPlatform(baseUrl: string, fetchImpl: typeof fetch = fetch,
     return data as T;
   }
 
-  let limit: { at: number; value: number } | null = null;
+  let cached: { at: number; value: Settings } | null = null;
 
   /**
-   * The auto-refund limit (₹) from the Control Room settings (GET /control-room/settings), cached for 10 s.
-   * If the demo API can't say, the default ₹1,000 applies: the rule never switches off.
+   * The Control Room settings (GET /control-room/settings), over the defaults, cached for 10 s. If the demo API
+   * can't say, the last copy or the defaults apply (₹1,000 auto-refund limit): the money rules never switch off.
    */
-  async function refundLimit(): Promise<number> {
-    if (limit && Date.now() - limit.at < SETTINGS_CACHE_MS) return limit.value;
-    let value = AUTO_REFUND_LIMIT;
+  async function settings(): Promise<Settings> {
+    if (cached && Date.now() - cached.at < SETTINGS_CACHE_MS) return cached.value;
+    let value = cached?.value ?? DEFAULT_SETTINGS;
     try {
-      const s = await call<Settings>("GET", "/settings", undefined, "/control-room");
-      if (typeof s.refundLimit === "number" && Number.isFinite(s.refundLimit) && s.refundLimit >= 0) value = s.refundLimit;
+      value = normalizeSettings(await call<Partial<Settings>>("GET", "/settings", undefined, "/control-room"));
     } catch (e) {
-      log.warn(`[agent] couldn't read the refund limit, using ${AUTO_REFUND_LIMIT}: ${(e as Error).message}`);
+      log.warn(`[agent] couldn't read the Control Room settings, using ${cached ? "the last copy" : "the defaults"}: ${(e as Error).message}`);
     }
-    limit = { at: Date.now(), value };
+    cached = { at: Date.now(), value };
     return value;
   }
 
+  /** The auto-refund limit (₹), a Control Room setting. */
+  const refundLimit = async () => (await settings()).refundLimit;
+
   return {
+    settings,
     refundLimit,
     /** Which channel a token belongs to. 401 for unknown tokens, 403 for channels that are off. */
     authenticate: (token: string) => call<{ channel: Channel }>("POST", "/channels/authenticate", { token }).then((r) => r.channel),

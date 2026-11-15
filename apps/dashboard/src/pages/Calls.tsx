@@ -6,7 +6,7 @@ import { api, errorText, live } from '../api'
 import { useApp } from '../store'
 import { Button, Drawer, EmptyState, Modal, PageHeader, Panel, SectionTitle, Skeleton, Tabs } from '../components/ui'
 import { CallStatusBadge, RealCallWarning, ScoreChip } from '../components/Calls'
-import { CALL_OUTCOME, CALL_STATUS, callDuration, isLive } from '../components/callMeta'
+import { CALL_STATUS, WANTS, callDuration, isLive, outcomeLabel } from '../components/callMeta'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { ago, clock, cn, rupees } from '../lib'
 
@@ -18,9 +18,22 @@ const VIEW: Record<View, (c: Call) => boolean> = {
   unreached: (c) => c.status === 'no_answer' || c.status === 'failed',
 }
 
-/** Sales: every call Aria's voice agent placed through Sarvam, live, with what it learned. */
-export default function Calls() {
-  const { data, error, refresh } = live.useCalls()
+const COPY = {
+  sales: {
+    description: "Sales calls Aria's voice agent placed through Sarvam to leads: whether it reached them, what it learned and how hot the lead is. Each speaks the customer's language.",
+    empty: 'Open a lead and press Call with Aria, or place one here with New call. Each call and its result shows up here.',
+  },
+  support: {
+    description: "Support calls Aria placed to collect the details a customer's request was missing, in the customer's language. The answers go back onto the ticket and Aria carries on.",
+    empty: "Aria calls a customer when their request is missing details, or press Call customer on an open ticket. Each call and what it collected shows up here.",
+  },
+} as const
+
+/** Voice calls Aria placed through Sarvam, live, with what each learned. Sales calls under Sales, support calls under Support. */
+export default function Calls({ purpose }: { purpose: 'sales' | 'support' }) {
+  const { data: all, error, refresh } = live.useCalls()
+  const data = all && { ...all, calls: all.calls.filter((c) => (c.purpose ?? 'sales') === purpose) }
+  const sales = purpose === 'sales'
   const [params, setParams] = useSearchParams()
   const [view, setView] = useState<View>('all')
   const [q, setQ] = useState('')
@@ -36,9 +49,9 @@ export default function Calls() {
   return (
     <div>
       <PageHeader
-        title="Calls"
-        description="Sales calls Aria's voice agent placed through Sarvam: who it rang, how it went, and what it learned."
-        actions={<Button variant="primary" icon={PhoneCall} onClick={() => setPlacing(true)}>New call</Button>}
+        title={sales ? 'Sales calls' : 'Support calls'}
+        description={COPY[purpose].description}
+        actions={sales && <Button variant="primary" icon={PhoneCall} onClick={() => setPlacing(true)}>New call</Button>}
       />
 
       <Panel
@@ -70,8 +83,8 @@ export default function Calls() {
           <EmptyState
             icon={Phone}
             title="No calls yet"
-            text="Open a lead and press Call with Aria, or place one here with New call. Each call and its result shows up here."
-            action={<Button icon={PhoneCall} onClick={() => setPlacing(true)}>New call</Button>}
+            text={COPY[purpose].empty}
+            action={sales ? <Button icon={PhoneCall} onClick={() => setPlacing(true)}>New call</Button> : <Link to="/tickets?status=open" className="text-sm font-medium text-brand-700 hover:underline">Open tickets</Link>}
           />
         )}
         {data && calls.length > 0 && rows.length === 0 && <EmptyState icon={Search} title="No calls match" text="Pick another view or clear the search." />}
@@ -83,7 +96,7 @@ export default function Calls() {
                   <th className="px-4 py-2.5 font-medium">Who</th>
                   <th className="px-3 py-2.5 font-medium">Status</th>
                   <th className="px-3 py-2.5 font-medium">Outcome</th>
-                  <th className="px-3 py-2.5 font-medium">Lead score</th>
+                  <th className="px-3 py-2.5 font-medium">{sales ? 'Lead score' : 'Ticket'}</th>
                   <th className="px-3 py-2.5 text-right font-medium">Duration</th>
                   <th className="px-4 py-2.5 text-right font-medium">Placed</th>
                 </tr>
@@ -93,11 +106,14 @@ export default function Calls() {
                   <tr key={c.id} onClick={() => open(c)} className={cn('cursor-pointer transition-colors hover:bg-ink/[0.025]', selected?.id === c.id && 'bg-ink/[0.03]')}>
                     <td className="px-4 py-3">
                       <span className="block font-medium text-slate-900">{c.name || 'Unknown'}{c.business_name && <span className="font-normal text-slate-500"> · {c.business_name}</span>}</span>
-                      <span className="ref block text-xs text-slate-500">{c.phone}</span>
+                      <span className="block text-xs text-slate-500">
+                        <span className="ref">{c.phone}</span> · {c.purpose === 'support' ? <>Support{c.ticket_id ? <> · <span className="ref">#{c.ticket_id}</span></> : null}</> : 'Sales'}
+                        {(c.extracted.language_used || c.language) && <> · {c.extracted.language_used ?? c.language}</>}
+                      </span>
                     </td>
                     <td className="px-3 py-3"><CallStatusBadge status={c.status} /></td>
-                    <td className="px-3 py-3 text-slate-700">{c.outcome ? CALL_OUTCOME[c.outcome] ?? c.outcome : <span className="text-slate-400">—</span>}</td>
-                    <td className="px-3 py-3"><ScoreChip score={c.lead_score} /></td>
+                    <td className="px-3 py-3 text-slate-700">{outcomeLabel(c) ?? <span className="text-slate-400">—</span>}</td>
+                    <td className="px-3 py-3">{sales ? <ScoreChip score={c.lead_score} /> : c.ticket_id ? <Link to={`/tickets?id=${c.ticket_id}`} onClick={(e) => e.stopPropagation()} className="ref text-slate-700 hover:underline">#{c.ticket_id}</Link> : <span className="text-xs text-slate-400">—</span>}</td>
                     <td className="ref px-3 py-3 text-right text-slate-700">{callDuration(c.duration_s)}</td>
                     <td className="ref px-4 py-3 text-right text-xs text-slate-500">{ago(c.created_at)}</td>
                   </tr>
@@ -128,12 +144,21 @@ export default function Calls() {
         {selected && <CallDetail c={selected} refresh={refresh} />}
       </Drawer>
 
-      <NewCall refresh={refresh} open={placing} onClose={() => setPlacing(false)} onPlaced={(c) => { setPlacing(false); open(c) }} />
+      {sales && <NewCall refresh={refresh} open={placing} onClose={() => setPlacing(false)} onPlaced={(c) => { setPlacing(false); open(c) }} />}
     </div>
   )
 }
 
 /** Labels for the extracted fields, in reading order. Missing ones are skipped. */
+const SUPPORT_FIELDS: [keyof CallExtraction, string][] = [
+  ['order_number', 'Order'],
+  ['product', 'Product'],
+  ['issue_details', 'What is wrong'],
+  ['wants', 'Wants'],
+  ['best_time', 'Call back'],
+  ['language_used', 'Language spoken'],
+]
+
 const FIELDS: [keyof CallExtraction, string][] = [
   ['contact_name_captured', 'Name'],
   ['business_name_captured', 'Business'],
@@ -175,15 +200,17 @@ function CallDetail({ c, refresh }: { c: Call; refresh: () => Promise<void> }) {
     }
   }
   const x = c.extracted ?? {}
-  const fields = FIELDS.filter(([k]) => x[k] != null && x[k] !== '' && x[k] !== 'not_discussed')
+  const fields = (c.purpose === 'support' ? SUPPORT_FIELDS : FIELDS).filter(([k]) => x[k] != null && x[k] !== '' && x[k] !== 'not_discussed')
   const summary = c.summary || x.call_summary
 
   return (
     <div className="space-y-6 p-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Status" value={CALL_STATUS[c.status]?.label ?? c.status} />
-        <Stat label="Outcome" value={c.outcome ? CALL_OUTCOME[c.outcome] ?? c.outcome : '—'} />
-        <Stat label="Lead score" value={c.lead_score ?? '—'} />
+        <Stat label="Outcome" value={outcomeLabel(c) ?? '—'} />
+        {c.purpose === 'support'
+          ? <Stat label="Language" value={c.extracted.language_used ?? c.language ?? '—'} />
+          : <Stat label="Lead score" value={c.lead_score ?? '—'} />}
         <Stat label="Duration" value={callDuration(c.duration_s)} />
       </div>
 
@@ -193,6 +220,11 @@ function CallDetail({ c, refresh }: { c: Call; refresh: () => Promise<void> }) {
         <Button size="sm" icon={syncing ? Loader2 : RefreshCw} className={syncing ? '[&>svg]:animate-spin' : ''} onClick={sync} disabled={syncing}>
           {syncing ? 'Refreshing' : 'Refresh result'}
         </Button>
+        {c.ticket_id != null && (
+          <Link to={`/tickets?id=${c.ticket_id}`} className="inline-flex h-7 items-center gap-1 rounded-full px-3 text-xs font-medium text-slate-600 hover:bg-ink/[0.06] hover:text-slate-950">
+            Ticket <span className="ref">#{c.ticket_id}</span><ArrowUpRight className="size-3.5" aria-hidden />
+          </Link>
+        )}
         {c.deal_id != null && (
           <Link to={`/leads?id=${c.deal_id}`} className="inline-flex h-7 items-center gap-1 rounded-full px-3 text-xs font-medium text-slate-600 hover:bg-ink/[0.06] hover:text-slate-950">
             Lead <span className="ref">{c.deal_id}</span><ArrowUpRight className="size-3.5" aria-hidden />
@@ -200,6 +232,13 @@ function CallDetail({ c, refresh }: { c: Call; refresh: () => Promise<void> }) {
         )}
         <span className="ml-auto text-xs text-slate-500">Updated {ago(c.updated_at)}</span>
       </div>
+
+      {c.purpose === 'support' && c.reason && (
+        <p className="rounded-xl border border-ink/[0.08] px-4 py-3 text-sm text-slate-700">
+          <span className="text-xs font-medium text-slate-500">Why Aria called</span><br />{c.reason}
+          {c.language && <span className="mt-1 block text-xs text-slate-500">The customer lives where {c.language} is spoken; Aria speaks whatever language they answer in.</span>}
+        </p>
+      )}
 
       <section>
         <SectionTitle>Summary</SectionTitle>
@@ -215,7 +254,7 @@ function CallDetail({ c, refresh }: { c: Call; refresh: () => Promise<void> }) {
             {fields.map(([k, label]) => (
               <div key={k}>
                 <dt className="text-xs text-slate-500">{label}</dt>
-                <dd className={cn('mt-0.5 text-slate-900', k === 'budget_inr' && 'ref')}>{k === 'budget_inr' ? rupees(x.budget_inr) : pretty(x[k])}</dd>
+                <dd className={cn('mt-0.5 text-slate-900', (k === 'budget_inr' || k === 'order_number') && 'ref')}>{k === 'budget_inr' ? rupees(x.budget_inr) : k === 'wants' && x.wants ? WANTS[x.wants] : pretty(x[k])}</dd>
               </div>
             ))}
           </dl>

@@ -7,6 +7,7 @@
  * /resolveai/connectors/access (the agent's route), never by the list the browser reads.
  */
 import {
+  BOT,
   OWNER,
   type ConnectorId,
   type CreateApprovalBody,
@@ -17,7 +18,8 @@ import {
   type UpdateConnectorBody,
   type UpdateRunBody,
 } from "@ph/shared";
-import { and, desc, eq, schema as s, sql, toApproval, toCase, toChannel, toConnector, toRun, toStep } from "@ph/db";
+import { and, desc, eq, inArray, lt, schema as s, sql, toApproval, toCase, toChannel, toConnector, toRun, toStep } from "@ph/db";
+import { mirrorRunReply } from "./chats.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, HttpError, intParam, notFound, ok, oneOf } from "./http.ts";
 
@@ -155,6 +157,41 @@ function runChanges(b: UpdateRunBody) {
   return next;
 }
 
+/* ───── Stuck runs ───── */
+
+/** A run with no progress (no update, no new step) for this long while triaging or working was cut off. */
+export const STUCK_AFTER_MS = 5 * 60_000;
+
+/**
+ * Marks runs that have been triaging or working for over 5 minutes without progress as failed, with a step saying
+ * so and an internal note on their ticket. That happens when a request dies mid-way (a restart, a dropped
+ * connection); left alone the run would make its ticket or chat look busy forever. A run waiting on a live support
+ * call (ringing, on the line) is left alone. The API runs it at startup and every minute.
+ */
+export async function sweepStuckRuns(): Promise<number> {
+  const cutoff = new Date(Date.now() - STUCK_AFTER_MS);
+  const stuck = await db
+    .update(s.agentRuns)
+    .set({ status: "failed", updated_at: new Date() })
+    .where(
+      and(
+        inArray(s.agentRuns.status, ["triaging", "working"]),
+        lt(s.agentRuns.updated_at, cutoff),
+        sql`not exists (select 1 from ${s.calls} c where c.run_id = ${s.agentRuns.id} and c.status in ('queued', 'ringing', 'in_progress'))`,
+      ),
+    )
+    .returning({ id: s.agentRuns.id, ticket_id: s.agentRuns.ticket_id, status: s.agentRuns.status });
+  if (!stuck.length) return 0;
+  const note = "No progress for 5 minutes: the request was cut off (a restart or a dropped connection), so the run is marked failed. Check the ticket or chat and reply if the customer is still waiting.";
+  await db.insert(s.agentSteps).values(stuck.map((r) => ({ run_id: r.id, agent: "main" as const, step: "Stopped", tool: "ResolveAI", result: "blocked" as const, detail: note })));
+  const tickets = [...new Set(stuck.flatMap((r) => (r.ticket_id ? [r.ticket_id] : [])))];
+  if (tickets.length) {
+    const at = new Date();
+    await db.insert(s.ticketComments).values(tickets.map((id) => ({ ticket_id: id, author: BOT, author_type: "bot" as const, body: `ResolveAI: a run on this ticket stopped mid-way. ${note}`, public: false, created_at: at })));
+  }
+  return stuck.length;
+}
+
 /* ───── Approvals ───── */
 
 async function notifyAgent(approvalId: number) {
@@ -289,8 +326,10 @@ export const resolveaiRoutes = {
     GET: handle(async (req) => ok(await findRun(intParam(req.params.id, "Run id")))),
     PATCH: handle(async (req) => {
       const id = intParam(req.params.id, "Run id");
-      const [row] = await db.update(s.agentRuns).set(runChanges(await body<UpdateRunBody>(req))).where(eq(s.agentRuns.id, id)).returning();
+      const b = await body<UpdateRunBody>(req);
+      const [row] = await db.update(s.agentRuns).set(runChanges(b)).where(eq(s.agentRuns.id, id)).returning();
       if (!row) throw notFound(`Run ${id}`);
+      if (b.reply) await mirrorRunReply(row).catch((e) => console.warn(`[chats] couldn't copy run ${id}'s reply into its chat:`, (e as Error).message));
       return ok(await findRun(id));
     }),
   },

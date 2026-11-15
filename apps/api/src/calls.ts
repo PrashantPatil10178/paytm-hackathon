@@ -12,7 +12,7 @@
  * every start), so webhooks for calls placed before a restart still verify and nothing extra is stored.
  * A token only ever opens its own call, and a webhook naming another attempt id is refused.
  */
-import { BOT, DEAL_STAGES, ENQUIRY_NEEDS, languageFor, rupees, type Call, type CallExtraction, type CallStatus, type DealStage, type PlaceCallBody, type SupportCallBody, OWNER } from "@ph/shared";
+import { BOT, DEAL_STAGES, ENQUIRY_NEEDS, languageFor, rupees, type Call, type Customer, type Order, type Ticket, type CallExtraction, type CallStatus, type DealStage, type PlaceCallBody, type SupportCallBody, OWNER } from "@ph/shared";
 import { timingSafeEqual } from "node:crypto";
 import { and, desc, eq, inArray, schema as s, sql, toCall } from "@ph/db";
 import { createContact, createDeal, findDeal, logActivity, updateDeal } from "./crm.ts";
@@ -20,7 +20,7 @@ import { db } from "./db.ts";
 import { bad, body, handle, HttpError, intParam, notFound, ok } from "./http.ts";
 import { appFor, getTranscript, listAttempts, parseAttempt, parseWebhook, placeOutbound, SarvamError, sarvamConfig, type CallResult, type SarvamConfig } from "./sarvam.ts";
 import { voiceChannelToken } from "./resolveai.ts";
-import { findCustomer } from "./shop.ts";
+import { customerOrders, findCustomer } from "./shop.ts";
 import { addComment, findTicket, updateTicket } from "./zendesk.ts";
 
 type CallRow = typeof s.calls.$inferSelect;
@@ -164,6 +164,74 @@ async function placeCall(b: PlaceCall): Promise<Call> {
   return toCall(placed);
 }
 
+/* ───── What the Support Caller knows: the customer's verified records ───── */
+
+/** "2,499 rupees". Sarvam's text ingestion mangles the ₹ sign, so amounts are written out. */
+const inr = (n: number) => `${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(n)} rupees`;
+/** "15 Nov, 3:22 pm" in IST. */
+const when = (d: Date | string) =>
+  new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: true })
+    .format(new Date(d))
+    .replace(/\s?(am|pm)$/i, (m) => m.toLowerCase().replace(/^\s?/, " "));
+const day = (d: Date | string) => new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" }).format(new Date(d));
+
+/** The order a support call is about: the one asked for, else the ticket's, else the one its subject names. Only the customer's own. */
+function orderOfRequest(orderId: number | null, ticket: Ticket | null, orders: Order[]): Order | null {
+  const fromSubject = Number(ticket?.subject.match(/order\s*#?\s*(\d{3,})/i)?.[1] ?? NaN);
+  const id = orderId ?? ticket?.order_id ?? (Number.isFinite(fromSubject) ? fromSubject : null);
+  return id == null ? null : (orders.find((o) => o.id === id) ?? null);
+}
+
+const items = (o: Order) => o.items.map((i) => `${i.qty > 1 ? `${i.qty} x ` : ""}${i.name}`).join(", ");
+
+function orderLine(o: Order, full: boolean): string {
+  const state =
+    o.status === "placed" ? `placed on ${day(o.placed_at)}, not shipped yet`
+    : o.status === "shipped" ? `placed on ${day(o.placed_at)}, shipped (last update ${day(o.updated_at)})`
+    : o.status === "delivered" ? `placed on ${day(o.placed_at)}, delivered (last update ${day(o.updated_at)})`
+    : `placed on ${day(o.placed_at)}, delivered and reported damaged (last update ${day(o.updated_at)})`;
+  const pay =
+    o.payment_status === "paid" ? "paid online"
+    : o.payment_status === "cod" ? "cash on delivery"
+    : o.payment_status === "refunded" ? `refunded (${day(o.updated_at)})`
+    : o.payment_status === "refund_initiated" ? `refund started on ${day(o.updated_at)}, going back to the original payment method`
+    : "the payment failed but the money was debited";
+  return full
+    ? `Order ${o.id}: ${items(o)}, total ${inr(o.amount)}, ${state}. Payment: ${pay}.`
+    : `Order ${o.id}: ${items(o)}, ${inr(o.amount)}, ${o.status === "damaged" ? "delivered damaged" : o.status}, ${pay}.`;
+}
+
+/**
+ * A compact, plain-sentence summary of what ShopKart knows about this customer's request, sent with the
+ * call as `customer_context`. No email or phone number: the caller only needs what the customer may hear.
+ */
+async function supportContext(customer: Customer, ticket: Ticket | null, order: Order | null, orders: Order[]): Promise<string> {
+  const lines = [`Customer: ${customer.name}, ${customer.city}.`];
+  if (ticket) {
+    const owner = ticket.assignee && ticket.assignee !== BOT ? `with ${ticket.assignee.split(" ")[0]} from the shop` : "being handled by Aria";
+    lines.push(`Support request: ticket ${ticket.id}, "${ticket.subject.replace(/₹\s?(\d+(?:,\d+)*)/g, "$1 rupees")}", opened ${when(ticket.created_at)}, status ${ticket.status}, ${owner}.`);
+    const [approvals, photos] = await Promise.all([
+      db.select().from(s.approvals).where(eq(s.approvals.ticket_id, ticket.id)).orderBy(desc(s.approvals.id)).limit(3),
+      db.select({ n: sql<number>`count(*)::int` }).from(s.attachments).where(eq(s.attachments.ticket_id, ticket.id)),
+    ]);
+    for (const a of approvals) {
+      const what = `a refund of ${inr(a.amount)} for order ${a.order_id}`;
+      if (a.status === "pending") lines.push(`Pending: ${what} is waiting for approval by the shop since ${when(a.created_at)}. Nothing is refunded until it is approved.`);
+      else if (a.status === "approved") lines.push(`Decided: ${what} was approved${a.decided_at ? ` on ${when(a.decided_at)}` : ""}.`);
+      else lines.push(`Decided: ${what} was not approved${a.decided_at ? ` on ${when(a.decided_at)}` : ""}${a.note ? ` (note from the shop: ${a.note})` : ""}.`);
+    }
+    if (photos[0]?.n) lines.push(`Photos the customer sent for this request: ${photos[0].n}.`);
+    // The last two things support told the customer, oldest first (they explain where the request stands).
+    const said = ticket.comments.filter((c) => c.public && c.author_type !== "customer").slice(-2);
+    for (const c of said) lines.push(`Support told the customer (${when(c.created_at)}): "${c.body.replace(/₹\s?(\d+(?:,\d+)*)/g, "$1 rupees").replace(/\s+/g, " ").slice(0, 280)}"`);
+  }
+  if (order) lines.push(`The order this request is about: ${orderLine(order, true)}`);
+  const others = orders.filter((o) => o.id !== order?.id).slice(0, 5);
+  if (others.length) lines.push(`Other recent orders: ${others.map((o) => orderLine(o, false)).join(" ")}`);
+  if (!order && !others.length) lines.push("No orders on this account.");
+  return lines.join("\n");
+}
+
 /* ───── Support calls: phone a customer for the details their request is missing ───── */
 
 /** A step on the agent run this call belongs to, so the request's trace shows the call. */
@@ -177,14 +245,28 @@ async function ticketNote(ticketId: number | null, body: string, publicReply = f
   await addComment(ticketId, { body, public: publicReply }).catch((e) => console.warn(`calls: couldn't comment on ticket #${ticketId}: ${e instanceof Error ? e.message : e}`));
 }
 
+/** The agent's chat session for a ticket (agent_chat_sessions is the agent's table; it may not exist yet). */
+async function sessionOfTicket(ticketId: number): Promise<string | null> {
+  try {
+    const rows = await db.execute<{ session_id: string }>(sql`select session_id from agent_chat_sessions where ticket_id = ${ticketId} order by updated_at desc limit 1`);
+    return (rows as unknown as { session_id: string }[])[0]?.session_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function placeSupportCall(b: SupportCallBody): Promise<Call> {
   const customer = await findCustomer(intParam(String(b.customer_id ?? ""), "customer_id"));
   const reason = String(b.reason ?? "").trim();
   const questions = (Array.isArray(b.questions) ? b.questions : []).map((q) => String(q).trim()).filter(Boolean);
   if (!reason) throw bad("reason is required: why Aria is calling, e.g. \"you wrote that an item arrived damaged, but we couldn't tell which order\"");
-  if (!questions.length || questions.length > 5) throw bad("questions needs 1 to 5 details to collect");
+  // Calls stay short: at most three details per call.
+  if (!questions.length) throw bad("questions needs 1 to 3 details to collect");
+  questions.splice(3);
   const ticketId = b.ticket_id == null ? null : intParam(String(b.ticket_id), "ticket_id");
-  if (ticketId) await findTicket(ticketId);
+  const ticket = ticketId ? await findTicket(ticketId) : null;
+  // Placed from the Control Room on a ticket: find the chat that ticket belongs to, so the answers continue there.
+  const sessionId = b.session_id?.trim() || (ticketId ? await sessionOfTicket(ticketId) : null);
 
   // One support call at a time per customer: a second request while one is live gets that call back.
   const [live] = await db
@@ -203,6 +285,10 @@ async function placeSupportCall(b: SupportCallBody): Promise<Call> {
   const dial = toE164(cfg.config.supportTestNumber || customer.phone);
   if (!dial) throw bad(`${customer.name}'s number ${customer.phone} isn't an Indian mobile number`);
   const language = languageFor(customer.city);
+  // The customer's real records, so the caller can confirm what we know and answer questions about it.
+  const orders = await customerOrders(customer.id);
+  const order = orderOfRequest(b.order_id ?? null, ticket, orders);
+  const customerContext = await supportContext(customer, ticket, order, orders);
 
   const [row] = await db
     .insert(s.calls)
@@ -213,7 +299,7 @@ async function placeSupportCall(b: SupportCallBody): Promise<Call> {
       business_name: "",
       customer_id: customer.id,
       ticket_id: ticketId,
-      session_id: b.session_id?.trim() || null,
+      session_id: sessionId,
       run_id: b.run_id ?? null,
       language,
       reason,
@@ -235,7 +321,8 @@ async function placeSupportCall(b: SupportCallBody): Promise<Call> {
         preferred_language: language,
         reason,
         questions: questions.join("; "),
-        order_ref: b.order_id ? `#${b.order_id}` : "",
+        order_ref: order ? String(order.id) : "",
+        customer_context: customerContext,
         ticket_ref: ticketId ? `#${ticketId}` : "",
       },
       webhook: PUBLIC_API_URL ? { url: `${PUBLIC_API_URL}/sarvam/webhook/${webhookToken(call.id)}`, metadata: { call_id: String(call.id) } } : undefined,
@@ -576,6 +663,17 @@ export const callRoutes = {
       return ok({ calls: rows.map(toCall) });
     }),
     POST: handle(async (req) => ok(await placeCall(await body<PlaceCall>(req)), 201)),
+  },
+  /** What the Support Caller would be told about this customer and ticket (the customer_context variable). Read-only. */
+  "/resolveai/calls/context": {
+    GET: handle(async (req) => {
+      const q = new URL(req.url).searchParams;
+      const customer = await findCustomer(intParam(q.get("customer_id") ?? "", "customer_id"));
+      const ticket = q.get("ticket_id") ? await findTicket(intParam(q.get("ticket_id")!, "ticket_id")) : null;
+      const orders = await customerOrders(customer.id);
+      const order = orderOfRequest(q.get("order_id") ? intParam(q.get("order_id")!, "order_id") : null, ticket, orders);
+      return ok({ customer_context: await supportContext(customer, ticket, order, orders), order_id: order?.id ?? null, language: languageFor(customer.city) });
+    }),
   },
   "/resolveai/calls/:id": {
     GET: handle(async (req) => ok(toCall(await findCall(intParam(req.params.id, "Call id"))))),

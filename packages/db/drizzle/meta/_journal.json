@@ -57,6 +57,13 @@
       "when": 1794734988470,
       "tag": "0007_support_calls",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794736007992,
+      "tag": "0008_photos_landing",
+      "breakpoints": true
     }
   ]
 }

@@ -19,6 +19,12 @@ export interface SupportRun {
    * their only order. Set by the service in code; the money tools refuse every other order.
    */
   orderIds: number[];
+  /** The main agent's intent: damaged_item makes the refund and approval tools check photos and risk first */
+  intent?: string;
+  /** What the customer said, for the photo check */
+  claim?: string;
+  /** The damage-claim assessment made in this run (evidence.ts), so the tools agree on one verdict */
+  damage?: import("../evidence.ts").DamageAssessment;
   /** Opens the ticket when a ticketless chat has to go to a person (the service attaches the conversation). */
   openTicket?: () => Promise<number>;
   /** The ticket being opened, so two tool calls never open two tickets */

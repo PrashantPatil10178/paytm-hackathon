@@ -4,7 +4,9 @@
  * connector's token. A connector that is turned off refuses every call.
  */
 import type {
+  AttachmentWithReuse,
   ChatTranscript,
+  Product,
   AnalysisReport,
   AnalysisScope,
   AnalyticsMetrics,
@@ -99,11 +101,29 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
     return data as T;
   }
 
+  /** A binary GET through the path's connector (attachments): the bytes and their type. */
+  async function raw(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
+    const id = (Object.keys(PREFIX) as ToolConnector[]).find((k) => path.startsWith(`${PREFIX[k]}/`));
+    const c = await access(id);
+    if (!c.enabled) throw new DemoAPIError(503, `The ${id ? NAMES[id] : "demo API"} connector is turned off in the Control Room`);
+    const url = `${c.base_url.replace(/\/$/, "")}${id ? path.slice(PREFIX[id].length) : path}`;
+    let res: Response;
+    try {
+      res = await fetchImpl(url, { headers: { ...(c.token && { authorization: `Bearer ${c.token}` }) }, signal: AbortSignal.timeout(30_000) });
+    } catch (e) {
+      throw new DemoAPIError(0, `Can't reach ${url}: ${(e as Error).message}`);
+    }
+    if (!res.ok) throw new DemoAPIError(res.status, res.statusText);
+    return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get("content-type") ?? "image/jpeg" };
+  }
+
   return {
     // Shop
     customerOrders: (customerId: number) => call<{ customer: Customer; orders: Order[] }>("GET", `/shop/customers/${customerId}/orders`),
     order: (orderId: number) => call<Order>("GET", `/shop/orders/${orderId}`),
     refundOrder: (orderId: number) => call<Order>("POST", `/shop/orders/${orderId}/refund`),
+    /** The catalogue (for product categories: POL-DMG has rules per category) */
+    products: () => call<{ products: Product[] }>("GET", "/shop/products").then((r) => r.products),
 
     // Zendesk
     ticket: (ticketId: number) => call<Ticket>("GET", `/zendesk/tickets/${ticketId}`),
@@ -111,6 +131,13 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
     updateTicket: (ticketId: number, changes: UpdateTicketBody) => call<Ticket>("PATCH", `/zendesk/tickets/${ticketId}`, changes),
     addComment: (ticketId: number, body: CreateCommentBody) => call<ZdComment>("POST", `/zendesk/tickets/${ticketId}/comments`, body),
     customerTickets: (customerId: number) => call<{ tickets: TicketSummary[] }>("GET", `/zendesk/users/${customerId}/tickets`).then((r) => r.tickets),
+    /** Photos on a ticket, each with earlier uses of the same image elsewhere (sha256) */
+    ticketAttachments: (ticketId: number) => call<{ attachments: AttachmentWithReuse[] }>("GET", `/zendesk/tickets/${ticketId}/attachments`).then((r) => r.attachments),
+    /** One photo's bytes, for the vision check */
+    attachmentData: (id: number) => raw(`/zendesk/attachments/${id}`),
+    /** Phone the customer for the details a request is missing (Aria · Support Caller). The API records the step. */
+    placeSupportCall: (b: { customer_id: number; ticket_id: number | null; session_id: string; run_id: number; reason: string; questions: string[]; order_id?: number | null }) =>
+      call<{ id: number; status: string }>("POST", "/resolveai/calls", { purpose: "support", ...b }),
     /** The stored chat (ResolveAI's own record in the demo API): its newest ticket, e.g. one a person opened from the Control Room. */
     chatSession: (sessionId: string) => call<ChatTranscript>("GET", `/chat/sessions/${encodeURIComponent(sessionId)}`),
 

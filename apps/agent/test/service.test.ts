@@ -44,6 +44,9 @@ let db: {
 };
 
 const TOKEN = "rai_test_token";
+const DAY_MS = 86_400_000;
+/** An ISO time `n` days ago: orders are delivered "yesterday", inside POL-DMG's 48-hour report window. */
+const daysAgo = (n: number) => new Date(Date.now() - n * DAY_MS).toISOString();
 
 const response = (id: number, x: Json) => ({
   id, campaign: { id: 1, name: "Diwali bulk gifting", channel: "meta_ads" }, phone: "", need: "bulk_order", start_when: "", budget: null,
@@ -55,13 +58,13 @@ beforeEach(() => {
     tickets: [],
     comments: [],
     orders: [
-      { id: 1023, customer_id: 101, status: "delivered", payment_status: "paid", amount: 500, items: [{ name: "Mug", qty: 2 }], placed_at: "2026-11-10", updated_at: "2026-11-13" },
-      { id: 1030, customer_id: 101, status: "delivered", payment_status: "paid", amount: 4200, items: [{ name: "Lamp", qty: 1 }], placed_at: "2026-11-09", updated_at: "2026-11-12" },
-      { id: 1040, customer_id: 102, status: "delivered", payment_status: "paid", amount: 300, items: [{ name: "Tea", qty: 1 }], placed_at: "2026-11-09", updated_at: "2026-11-12" },
-      { id: 1050, customer_id: 101, status: "shipped", payment_status: "paid", amount: 900, items: [{ name: "Kettle", qty: 1 }], placed_at: "2026-11-13", updated_at: "2026-11-14" },
-      { id: 1060, customer_id: 101, status: "placed", payment_status: "failed_debited", amount: 15000, items: [{ name: "Phone", qty: 1 }], placed_at: "2026-11-14", updated_at: "2026-11-14" },
-      { id: 1070, customer_id: 101, status: "delivered", payment_status: "paid", amount: 250, items: [{ name: "Spoon", qty: 4 }], placed_at: "2026-11-08", updated_at: "2026-11-11" },
-      { id: 1080, customer_id: 103, status: "delivered", payment_status: "paid", amount: 700, items: [{ name: "Vase", qty: 1 }], placed_at: "2026-11-08", updated_at: "2026-11-11" },
+      { id: 1023, customer_id: 101, status: "delivered", payment_status: "paid", amount: 500, items: [{ name: "Mug", qty: 2 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1030, customer_id: 101, status: "delivered", payment_status: "paid", amount: 4200, items: [{ name: "Lamp", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1040, customer_id: 102, status: "delivered", payment_status: "paid", amount: 300, items: [{ name: "Tea", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1050, customer_id: 101, status: "shipped", payment_status: "paid", amount: 900, items: [{ name: "Kettle", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1060, customer_id: 101, status: "placed", payment_status: "failed_debited", amount: 15000, items: [{ name: "Phone", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1070, customer_id: 101, status: "delivered", payment_status: "paid", amount: 250, items: [{ name: "Spoon", qty: 4 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
+      { id: 1080, customer_id: 103, status: "delivered", payment_status: "paid", amount: 700, items: [{ name: "Vase", qty: 1 }], placed_at: daysAgo(3), updated_at: daysAgo(1) },
     ],
     contacts: [],
     deals: [],
@@ -79,7 +82,9 @@ beforeEach(() => {
       response(3, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, message: "Still interested in billing." }),
     ],
     reports: [],
-    settings: { agentName: "Aria", refundLimit: 1000 },
+    // Always in business hours (00:00–24:00 every day), so replies don't depend on when the tests run. Photos
+    // are only required where POL-DMG asks (above ₹1,000); the photo tests switch the setting on.
+    settings: { agentName: "Aria", refundLimit: 1000, requireDamagePhotos: false, hours: { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], from: "00:00", to: "24:00", afterHours: "autonomous" } },
   };
 });
 
@@ -263,7 +268,7 @@ function triage(t: Partial<Triage> & Pick<Triage, "intent">): Step {
     kind: "new_request",
     order_id: null,
     summary: "Customer needs help with an order",
-    signals: { angry: false, urgent: false, legal_or_fraud: false, wants_human: false },
+    signals: { angry: false, urgent: false, fraud: false, legal: false, wants_human: false },
     confidence: 0.9,
     plan: ["Check the order", "Resolve and reply"],
     ...t,
@@ -328,7 +333,7 @@ const ACK = "Thanks, Ananya. I'm on it: this is ticket #2041, and I'll get back 
 
 /* ───── Criticality rules ───── */
 
-const calm = { angry: false, urgent: false, legal_or_fraud: false, wants_human: false };
+const calm = { angry: false, urgent: false, fraud: false, legal: false, wants_human: false };
 
 test("criticality: hard rules for money and risk, signals push it up", () => {
   const paid = { status: "delivered", payment_status: "paid" } as const;
@@ -336,7 +341,7 @@ test("criticality: hard rules for money and risk, signals push it up", () => {
   expect(assessCriticality({ intent: "damaged_item", signals: calm, confidence: 0.9, order: { ...paid, amount: 500 }, recentTickets: 0 }).level).toBe("medium");
   expect(assessCriticality({ intent: "damaged_item", signals: calm, confidence: 0.9, order: { ...paid, amount: 4200 }, recentTickets: 0 }).level).toBe("high");
   expect(assessCriticality({ intent: "question", signals: calm, confidence: 0.9, order: { status: "placed", payment_status: "failed_debited", amount: 15000 }, recentTickets: 0 })).toMatchObject({ level: "critical", handled_by: "human" });
-  expect(assessCriticality({ intent: "refund", signals: { ...calm, legal_or_fraud: true }, confidence: 0.9, recentTickets: 0 }).level).toBe("critical");
+  expect(assessCriticality({ intent: "refund", signals: { ...calm, fraud: true }, confidence: 0.9, recentTickets: 0 }).level).toBe("critical");
   expect(assessCriticality({ intent: "order_tracking", signals: calm, confidence: 0.4, recentTickets: 0 }).level).toBe("medium");
   expect(assessCriticality({ intent: "order_tracking", signals: { ...calm, angry: true }, confidence: 0.9, recentTickets: 2 }).level).toBe("medium");
   expect(assessCriticality({ intent: "order_tracking", signals: { ...calm, wants_human: true }, confidence: 0.9, recentTickets: 0 }).level).toBe("high");
@@ -424,7 +429,7 @@ test("low: an upset follow-up asking for a person opens the ticket with the earl
     scripted([
       triage({ intent: "order_tracking", order_id: 1050 }),
       { text: "Your kettle has shipped and arrives in 1–2 days." },
-      triage({ kind: "status_check", intent: "order_tracking", signals: { angry: true, urgent: true, legal_or_fraud: false, wants_human: true } }),
+      triage({ kind: "status_check", intent: "order_tracking", signals: { angry: true, urgent: true, fraud: false, legal: false, wants_human: true } }),
       { tool: "escalate_to_human", args: { assignee: "Kabir Malhotra", priority: "high", note: "Upset about the kettle delivery, wants a person." } },
       { text: "I've passed this to Kabir, who'll reply here (ticket #2041)." },
     ]),
@@ -476,8 +481,6 @@ test("which order: a damage claim that names no order is asked about, not guesse
     scripted([
       triage({ intent: "damaged_item", order_id: 1023 }), // the model guesses; code doesn't take it
       triage({ intent: "damaged_item", order_id: 1030 }),
-      { tool: "request_approval", args: { order_id: 1030, reason: "lamp broken", summary: "Delivered lamp arrived broken.", suggestion: "Refund ₹4,200" } },
-      { text: "Your refund is with a teammate for approval (ticket #2041)." },
     ]),
   );
   const asked = await chat(svc, "s-which", "My item arrived broken, I want a refund");
@@ -489,11 +492,13 @@ test("which order: a damage claim that names no order is asked about, not guesse
   expect(db.orders.every((o) => o.payment_status !== "refund_initiated")).toBe(true);
   expect(db.steps.at(-1)).toMatchObject({ step: "Ask which order" });
 
-  await chat(svc, "s-which", "The lamp", 101);
-  // A typed answer naming one order right after the question is taken as the answer.
+  const next = await chat(svc, "s-which", "The lamp", 101);
+  // A typed answer naming one order right after the question is taken as the answer. ₹4,200 is above POL-DMG's
+  // ₹1,000 photo threshold, so before anything else Aria asks for photos (in code: no agent, no approval yet).
   expect(db.tickets).toHaveLength(1);
   expect(db.tickets[0]!.subject).toContain("order #1030");
-  expect(db.approvals[0]).toMatchObject({ order_id: 1030, amount: 4200 });
+  expect((next.body as { ask: { kind: string } }).ask.kind).toBe("photos");
+  expect(db.approvals).toHaveLength(0);
 });
 
 test("which order: a picked choice is worked as the original request plus that order", async () => {
@@ -637,13 +642,13 @@ test("tools can't touch another customer's order", async () => {
 test("high: the high agent asks for approval; once approved the refund runs, the customer is told and the case is saved", async () => {
   const svc = service(
     scripted([
-      triage({ intent: "damaged_item", order_id: 1030, summary: "Lamp arrived broken" }),
+      triage({ intent: "refund", order_id: 1030, summary: "Wants a refund on the lamp" }),
       { tool: "get_order", args: { order_id: 1030 } },
-      { tool: "request_approval", args: { order_id: 1030, reason: "lamp broken", summary: "Delivered lamp arrived broken; ₹4,200 paid.", suggestion: "Refund ₹4,200 to the original payment method" } },
+      { tool: "request_approval", args: { order_id: 1030, reason: "doesn't want the lamp", summary: "Delivered lamp; ₹4,200 paid.", suggestion: "Refund ₹4,200 to the original payment method" } },
       { text: "Your refund is with a teammate for a quick approval (ticket #2041)." },
     ]),
   );
-  await chat(svc, "s-high", "The lamp arrived broken, refund please");
+  await chat(svc, "s-high", "I don't want the lamp, refund please");
 
   expect(db.orders[1]!.payment_status).toBe("paid");
   expect(db.approvals[0]).toMatchObject({ status: "pending", amount: 4200, order_id: 1030, ticket_id: 2041, run_id: 1 });
@@ -667,12 +672,12 @@ test("high: a second chat about an order already waiting for approval doesn't qu
   db.approvals.push({ id: 1, status: "pending", order_id: 1030, ticket_id: 2099, run_id: 99, amount: 4200, decided_by: null, note: null });
   const svc = service(
     scripted([
-      triage({ intent: "damaged_item", order_id: 1030 }),
-      { tool: "request_approval", args: { order_id: 1030, reason: "lamp broken", summary: "Delivered lamp arrived broken.", suggestion: "Refund ₹4,200" } },
+      triage({ intent: "refund", order_id: 1030 }),
+      { tool: "request_approval", args: { order_id: 1030, reason: "doesn't want it", summary: "Delivered lamp, wants a refund.", suggestion: "Refund ₹4,200" } },
       { text: "It's already with a teammate for approval." },
     ]),
   );
-  await chat(svc, "s-dup", "My lamp arrived broken");
+  await chat(svc, "s-dup", "Refund my lamp please");
   expect(db.approvals).toHaveLength(1);
   expect(db.steps.find((s) => s.step === "Request approval")!.detail).toContain("already waiting");
 });
@@ -738,14 +743,14 @@ test("the main agent answers at once while the level agent works in the backgrou
 test("status check: answers from the ticket and pending approval, without opening a new ticket", async () => {
   const svc = service(
     scripted([
-      triage({ intent: "damaged_item", order_id: 1030 }),
-      { tool: "request_approval", args: { order_id: 1030, reason: "lamp broken", summary: "Lamp arrived broken.", suggestion: "Refund ₹4,200" } },
+      triage({ intent: "refund", order_id: 1030 }),
+      { tool: "request_approval", args: { order_id: 1030, reason: "doesn't want it", summary: "Wants a refund on the lamp.", suggestion: "Refund ₹4,200" } },
       { text: "It's with a teammate for approval." },
       triage({ kind: "status_check", intent: "refund", order_id: 1030 }),
       { text: "Your ₹4,200 refund is waiting for a quick approval (ticket #2041)." },
     ]),
   );
-  await chat(svc, "s-status", "Lamp broken, refund please");
+  await chat(svc, "s-status", "Refund the lamp please");
   const res = await chat(svc, "s-status", "Any update on my refund?");
 
   expect(res.body).toEqual({ reply: "Your ₹4,200 refund is waiting for a quick approval (ticket #2041).", ticket_id: 2041 });

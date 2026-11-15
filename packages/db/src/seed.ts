@@ -8,7 +8,7 @@
  */
 import type { Settings } from "@ph/shared/controlroom";
 import type { Campaign, Customer, Order, Product, ZdUser } from "@ph/shared";
-import { count, sql } from "drizzle-orm";
+import { count, eq, sql } from "drizzle-orm";
 import type { Db, Tx } from "./client.ts";
 import * as s from "./schema.ts";
 
@@ -17,11 +17,11 @@ const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString
 function build() {
   /* ───── ShopKart ───── */
   const customers: Customer[] = [
-    { id: 101, name: "Rohan Mehta", email: "rohan.mehta@mail.example", phone: "+91 90000 10101", city: "Pune" },
-    { id: 102, name: "Ananya Iyer", email: "ananya.iyer@mail.example", phone: "+91 90000 10102", city: "Bengaluru" },
-    { id: 103, name: "Vikram Singh", email: "vikram.singh@mail.example", phone: "+91 90000 10103", city: "New Delhi" },
-    { id: 104, name: "Sneha Kulkarni", email: "sneha.k@mail.example", phone: "+91 90000 10104", city: "Mumbai" },
-    { id: 105, name: "Arjun Nair", email: "arjun.nair@mail.example", phone: "+91 90000 10105", city: "Kochi" },
+    { id: 101, name: "Rohan Mehta", email: "rohan.mehta@mail.example", phone: "+91 86685 92601", city: "Pune" },
+    { id: 102, name: "Ananya Iyer", email: "ananya.iyer@mail.example", phone: "+91 86685 92601", city: "Bengaluru" },
+    { id: 103, name: "Vikram Singh", email: "vikram.singh@mail.example", phone: "+91 86685 92601", city: "New Delhi" },
+    { id: 104, name: "Sneha Kulkarni", email: "sneha.k@mail.example", phone: "+91 86685 92601", city: "Mumbai" },
+    { id: 105, name: "Arjun Nair", email: "arjun.nair@mail.example", phone: "+91 86685 92601", city: "Kochi" },
   ];
 
   const img = (f: string) => `/static/${f}.jpg`;
@@ -57,9 +57,10 @@ function build() {
 
   const orders: Order[] = [
     order(1018, 101, [line(1)], "delivered", "paid", 21),
-    // Refund demo: delivered, then reported damaged. ₹500.
-    order(1023, 102, [line(8)], "damaged", "paid", 6),
-    order(1027, 104, [line(7, 2)], "delivered", "paid", 12),
+    // Refund demo: delivered yesterday, then reported damaged. ₹500. Inside POL-DMG's 48-hour report window.
+    order(1023, 102, [line(8)], "damaged", "paid", 3),
+    // Photo-proof demo: Sneha's T-shirts (₹1,198, above the ₹1,000 photo rule) were delivered yesterday.
+    order(1027, 104, [line(7, 2)], "delivered", "paid", 3),
     order(1031, 105, [line(5)], "shipped", "paid", 3),
     order(1034, 101, [line(4)], "shipped", "cod", 2),
     order(1038, 102, [line(6), line(7)], "placed", "paid", 1),
@@ -92,14 +93,33 @@ const date = (iso: string) => new Date(iso);
 
 function buildCampaigns(): Campaign[] {
   return [
-    { id: 1, name: "Diwali bulk gifting", channel: "meta_ads", status: "active", budget: 60000, spend: 38400, impressions: 182000, clicks: 3640, started_at: daysAgo(12) },
-    { id: 2, name: "GST billing for restaurants", channel: "google_ads", status: "active", budget: 40000, spend: 27150, impressions: 64000, clicks: 2180, started_at: daysAgo(9) },
-    { id: 3, name: "UPI payments for D2C stores", channel: "whatsapp", status: "active", budget: 15000, spend: 9800, impressions: 21000, clicks: 1460, started_at: daysAgo(6) },
-    { id: 4, name: "Wholesale catalogue mailer", channel: "email", status: "paused", budget: 8000, spend: 8000, impressions: 12500, clicks: 410, started_at: daysAgo(20) },
+    {
+      id: 1, name: "Diwali bulk gifting", channel: "meta_ads", status: "active", budget: 60000, spend: 38400, impressions: 182000, clicks: 3640, started_at: daysAgo(12),
+      slug: "diwali-bulk-gifting", headline: "Diwali gifts for your whole team, sorted",
+      pitch: "Branded hampers, sweets boxes and gift sets from ShopKart, packed with your logo and delivered to every office or home address in India. Bulk pricing from 50 boxes.",
+      landing_visits: 0,
+    },
+    {
+      id: 2, name: "GST billing for restaurants", channel: "google_ads", status: "active", budget: 40000, spend: 27150, impressions: 64000, clicks: 2180, started_at: daysAgo(9),
+      slug: "gst-billing-for-restaurants", headline: "GST billing that keeps up with a busy kitchen",
+      pitch: "ShopKart's billing setup gives restaurants GST invoices, table and takeaway orders and daily reports in one place, set up by our team in a day.",
+      landing_visits: 0,
+    },
+    {
+      id: 3, name: "UPI payments for D2C stores", channel: "whatsapp", status: "active", budget: 15000, spend: 9800, impressions: 21000, clicks: 1460, started_at: daysAgo(6),
+      slug: "upi-payments-for-d2c-stores", headline: "Take UPI payments on your store this week",
+      pitch: "Paytm-powered UPI, cards and payment links for direct-to-consumer brands, with instant settlement reports. We set it up with you.",
+      landing_visits: 0,
+    },
+    {
+      id: 4, name: "Wholesale catalogue mailer", channel: "email", status: "paused", budget: 8000, spend: 8000, impressions: 12500, clicks: 410, started_at: daysAgo(20),
+      slug: "wholesale-catalogue-mailer", headline: "ShopKart's wholesale catalogue, at trade prices",
+      pitch: "Stock up on ShopKart's best sellers at wholesale prices: audio, wearables, bags and home goods, with GST invoices and doorstep delivery.",
+      landing_visits: 0,
+    },
   ];
 }
 
-/** The 4 campaigns, with no responses: people answering them is real data, not seed. */
 async function writeCampaigns(tx: Tx) {
   await tx.insert(s.campaigns).values(buildCampaigns().map((c) => ({ ...c, started_at: date(c.started_at) })));
   await tx.execute(sql.raw(`select setval(pg_get_serial_sequence('campaigns', 'id'), (select max(id) from campaigns))`));
@@ -163,7 +183,9 @@ export const DEFAULT_SETTINGS: Settings = {
   playbooks: { support: true, sales: true },
   autonomy: "approval",
   refundLimit: 1000,
-  escalation: { critical: true, fraud: true, legal: true, vip: false, negative: true },
+  verifiedDamageLimit: 1000,
+  requireDamagePhotos: true,
+  escalation: { fraud: true, legal: true, vip: false, negative: true },
   languages: ["English", "Hindi", "Hinglish"],
   hours: { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], from: "09:00", to: "21:00", afterHours: "autonomous" },
 };
@@ -194,4 +216,23 @@ export async function ensureResolveAIConfig(db: Db, apiOrigin: string) {
       .onConflictDoNothing(),
     db.insert(s.settings).values({ id: "default", value: DEFAULT_SETTINGS }).onConflictDoNothing(),
   ]);
+  await addMissingSettings(db);
+}
+
+/**
+ * Settings fields added after a row was saved get their default written in (top level and inside escalation /
+ * hours). Values people set are never touched; escalation switches that no longer exist are dropped.
+ */
+async function addMissingSettings(db: Db) {
+  const [row] = await db.select().from(s.settings).where(eq(s.settings.id, "default"));
+  if (!row) return;
+  const v = (typeof row.value === "string" ? JSON.parse(row.value) : row.value) as Partial<Settings> & { escalation?: Record<string, boolean> };
+  const known = Object.keys(DEFAULT_SETTINGS.escalation);
+  const next: Settings = {
+    ...DEFAULT_SETTINGS,
+    ...v,
+    escalation: { ...DEFAULT_SETTINGS.escalation, ...Object.fromEntries(Object.entries(v.escalation ?? {}).filter(([k]) => known.includes(k))) },
+    hours: { ...DEFAULT_SETTINGS.hours, ...(v.hours ?? {}) },
+  } as Settings;
+  if (JSON.stringify(next) !== JSON.stringify(v)) await db.update(s.settings).set({ value: next, updated_at: new Date() }).where(eq(s.settings.id, "default"));
 }

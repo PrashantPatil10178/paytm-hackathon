@@ -12,6 +12,7 @@
 import type * as CR from "@ph/shared/controlroom";
 import { BOT, OWNER, type ChatAnswer, type ChatMessage, type ChatQuestion, type ChatSender, type ChatTranscript, type ZdComment } from "@ph/shared";
 import { and, desc, eq, gt, inArray, ne, schema as s, sql, toChatMessage } from "@ph/db";
+import { attachmentsByChatMessage } from "./attachments.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, notFound, ok } from "./http.ts";
 import { addComment, createTicket, updateTicket } from "./zendesk.ts";
@@ -135,11 +136,30 @@ export async function mirrorComment(ticketId: number, c: ZdComment) {
   await record(chat, { sender: "human", author: c.author, body: c.body, ticket_id: ticketId });
 }
 
+/**
+ * Aria's answer as the agent saved it on its run. Usually /chat records the same text a moment later (deduped);
+ * this keeps the chat whole when that response never makes it back, e.g. the connection dropped mid-request.
+ */
+export async function mirrorRunReply(run: { session_id: string; ticket_id: number | null; reply: string | null }) {
+  if (!run.reply?.trim()) return;
+  const [chat] = await db
+    .select({ session_id: s.chatMessages.session_id, customer_id: s.chatMessages.customer_id, channel_id: s.chatMessages.channel_id })
+    .from(s.chatMessages)
+    .where(eq(s.chatMessages.session_id, run.session_id))
+    .limit(1);
+  if (!chat) return;
+  if (run.ticket_id) await linkTicket(chat, run.ticket_id);
+  await recordAria(chat, run.reply, { ticket_id: run.ticket_id });
+}
+
 /* ───── Reads ───── */
 
 async function messagesOf(sessionId: string): Promise<ChatMessage[]> {
-  const rows = await db.select().from(s.chatMessages).where(eq(s.chatMessages.session_id, sessionId)).orderBy(s.chatMessages.id);
-  return rows.map(toChatMessage);
+  const [rows, photos] = await Promise.all([
+    db.select().from(s.chatMessages).where(eq(s.chatMessages.session_id, sessionId)).orderBy(s.chatMessages.id),
+    attachmentsByChatMessage([sessionId]),
+  ]);
+  return rows.map((r) => ({ ...toChatMessage(r), ...(photos.has(r.id) && { attachments: photos.get(r.id) }) }));
 }
 
 async function transcript(sessionId: string): Promise<ChatTranscript> {

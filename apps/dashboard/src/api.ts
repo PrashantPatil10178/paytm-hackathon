@@ -3,7 +3,7 @@
 import { ApiRequestError, api as http, usePoll } from '@ph/shared/react'
 import type {
   AnalysisReport, AnalysisResponse, AnalysisScope, AnalyticsMetrics, Call, CampaignResponse, CampaignResponseStatus, CampaignSummary,
-  DealCard, DealDetail, DealStage, LeadSyncResponse, PlaceCallBody, PolicyArea, PolicyEffect, PolicyWithRules,
+  DealCard, DealDetail, DealStage, LeadSyncResponse, PlaceCallBody, SupportCallBody, PolicyArea, PolicyEffect, PolicyWithRules,
 } from '@ph/shared'
 import type {
   Approvals, ChannelConnection, ChannelId, ChannelOffer, ChatDetail, ChatThread, Connector, ConnectorOffer, Conversation, Decision, Lead, Settings, Stats, Status,
@@ -61,8 +61,17 @@ export const api = {
   deleteTask: (id: string) => send<unknown>('DELETE', `/control-room/board/${encodeURIComponent(id)}`),
 
   // Voice calls (Sarvam). Placing one rings a real phone.
-  placeCall: (body: PlaceCallBody | { deal_id: number; phone?: string; name?: string; business_name?: string }) =>
+  placeCall: (body: PlaceCallBody | SupportCallBody | { deal_id: number; phone?: string; name?: string; business_name?: string }) =>
     http.post<Call>('/resolveai/calls', body),
+  /** The ShopKart customer who raised a Zendesk ticket (its requester) and the order it is about. */
+  ticketCustomer: (ticketId: string) =>
+    http.get<{ requester: { id: number; name: string }; order_id: number | null }>(`/zendesk/tickets/${encodeURIComponent(ticketId)}`)
+      .then((t) => ({ customerId: t.requester.id, name: t.requester.name, orderId: t.order_id ?? null })),
+  /** What the Support Caller would be told about this customer and ticket (its customer_context). */
+  callContext: (customerId: number, ticketId: string, orderId: number | null) =>
+    http.get<{ customer_context: string; order_id: number | null; language: string }>(
+      `/resolveai/calls/context?customer_id=${customerId}&ticket_id=${encodeURIComponent(ticketId)}${orderId ? `&order_id=${orderId}` : ''}`,
+    ),
   syncCall: (id: number) => http.post<Call>(`/resolveai/calls/${id}/sync`, {}),
 
   // Policies (read-only). `q` matches any word, best first.

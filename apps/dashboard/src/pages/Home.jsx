@@ -247,6 +247,7 @@ function ChartTooltip({ active, payload, label, c }) {
     <div className="min-w-44 rounded-lg border border-ink/10 bg-raised px-3 py-2.5 text-xs shadow-[0_16px_40px_-12px_rgb(0_0_0/0.35)]">
       <p className="ref mb-2 text-slate-500">{label}</p>
       <p className="flex items-center gap-2 text-slate-600"><span className="size-2 rounded-sm" style={{ background: c.ai }} />Solved by AI <span className="ref ml-auto pl-4 text-slate-950">{d.ai}</span></p>
+      <p className="mt-1 flex items-center gap-2 text-slate-600"><span className="size-2 rounded-sm" style={{ background: c.aiApproved }} />AI, after your approval <span className="ref ml-auto pl-4 text-slate-950">{d.aiApproved}</span></p>
       <p className="mt-1 flex items-center gap-2 text-slate-600"><span className="size-2 rounded-sm" style={{ background: c.human }} />Human <span className="ref ml-auto pl-4 text-slate-950">{d.human}</span></p>
       <p className="mt-2 flex items-center gap-2 border-t border-ink/[0.06] pt-2 text-slate-600"><span className="h-px w-2 bg-slate-950" />Automated <span className="ref ml-auto pl-4 text-slate-950">{d.rate.toFixed(0)}%</span></p>
     </div>
@@ -268,6 +269,7 @@ function QueriesChart({ derived }) {
           <>
             <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <span className="flex items-center gap-1.5"><span className="size-2 rounded-sm" style={{ background: c.ai }} />AI <span className="ref text-slate-900">{num(derived.aiTotal)}</span></span>
+              <span className="flex items-center gap-1.5"><span className="size-2 rounded-sm" style={{ background: c.aiApproved }} />AI after approval <span className="ref text-slate-900">{num(derived.approvedTotal)}</span></span>
               <span className="flex items-center gap-1.5"><span className="size-2 rounded-sm" style={{ background: c.human }} />Human <span className="ref text-slate-900">{num(derived.humanTotal)}</span></span>
               <span className="flex items-center gap-1.5"><span className="h-px w-3 bg-slate-950" />Automated</span>
             </span>
@@ -290,6 +292,7 @@ function QueriesChart({ derived }) {
               <YAxis yAxisId="rate" orientation="right" hide domain={[0, 100]} />
               <Tooltip content={<ChartTooltip c={c} />} cursor={{ fill: c.cursor, radius: 4 }} />
               <Bar yAxisId="q" dataKey="ai" stackId="q" fill={c.ai} stroke={c.surface} strokeWidth={1} isAnimationActive={false} />
+              <Bar yAxisId="q" dataKey="aiApproved" stackId="q" fill={c.aiApproved} stroke={c.surface} strokeWidth={1} isAnimationActive={false} />
               <Bar yAxisId="q" dataKey="human" stackId="q" fill={c.human} stroke={c.surface} strokeWidth={1} radius={[2, 2, 0, 0]} isAnimationActive={false} />
               <Line yAxisId="rate" dataKey="rate" type="monotone" stroke={c.line} strokeWidth={1.25} dot={false} activeDot={{ r: 3, fill: c.line, stroke: c.surface, strokeWidth: 2 }} isAnimationActive={false} />
             </ComposedChart>
@@ -468,20 +471,23 @@ export default function Home() {
       const d = new Date(today)
       d.setDate(today.getDate() - (n - 1 - i))
       const human = stats.daily.human[i] ?? 0
-      return { label: fmtDay(d), ai, human, rate: pct(ai, ai + human) }
+      // Done by the AI after a person approved it: its own bucket, not counted as automated.
+      const aiApproved = stats.daily.aiApproved?.[i] ?? 0
+      return { label: fmtDay(d), ai, aiApproved, human, rate: pct(ai, ai + aiApproved + human) }
     })
     const aiTotal = sum(stats.daily.ai)
+    const approvedTotal = sum(stats.daily.aiApproved ?? [])
     const humanTotal = sum(stats.daily.human)
-    const total = aiTotal + humanTotal
+    const total = aiTotal + approvedTotal + humanTotal
     // Even ticks, with ~40% headroom so the automation line rides above the bars.
-    const peak = Math.max(0, ...daily.map((d) => d.ai + d.human))
+    const peak = Math.max(0, ...daily.map((d) => d.ai + d.aiApproved + d.human))
     const step = peak <= 7 ? 2 : peak <= 35 ? 10 : 50
     const yTop = Math.max(step, Math.ceil((peak * 1.4) / step) * step)
     return {
       yTop, yTicks: Array.from({ length: yTop / step + 1 }, (_, i) => i * step),
-      daily, aiTotal, humanTotal, total,
+      daily, aiTotal, approvedTotal, humanTotal, total,
       aiPct: pct(aiTotal, total),
-      spark: daily.map((d) => d.ai + d.human),
+      spark: daily.map((d) => d.ai + d.aiApproved + d.human),
       aiSpark: daily.map((d) => d.rate),
       range: daily.length ? `${daily[0].label} – ${daily.at(-1).label}` : undefined,
     }

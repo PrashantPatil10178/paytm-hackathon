@@ -45,7 +45,7 @@ export function ToneChip({ tone, count = 1 }: { tone: InsightTone; count?: numbe
 /* How each dataset is drawn. One y-axis per chart: a second measure goes in the tooltip, never a second scale.
    `color` names a CHART token; ai/human only where the series really is the AI or a person. */
 interface View {
-  series: { key: string; color: 'ai' | 'human' | 'bar' }[]
+  series: { key: string; color: 'ai' | 'aiApproved' | 'human' | 'bar' }[]
   extra?: string[]
   stacked?: boolean
   horizontal?: boolean
@@ -53,7 +53,7 @@ interface View {
   campaigns?: boolean
 }
 const VIEWS: Record<AnalyticsDatasetId, View> = {
-  tickets_per_day: { series: [{ key: 'ai', color: 'ai' }, { key: 'human', color: 'human' }], stacked: true },
+  tickets_per_day: { series: [{ key: 'ai', color: 'ai' }, { key: 'ai_approved', color: 'aiApproved' }, { key: 'human', color: 'human' }], stacked: true },
   orders_per_day: { series: [{ key: 'revenue', color: 'bar' }], extra: ['orders'] },
   deals_by_stage: { series: [{ key: 'value', color: 'bar' }], extra: ['deals'] },
   pipeline_by_score: { series: [{ key: 'value', color: 'bar' }], extra: ['deals'] },
@@ -246,7 +246,7 @@ function summary(ds: AnalyticsDataset): string | null {
   const main = ds.series.find((s) => s.key === view.series[0]!.key)
   if (!main) return null
   const sumOf = (key: string) => ds.rows.reduce((a, r) => a + n(r, key), 0)
-  if (ds.id === 'tickets_per_day') return `${num(sumOf('ai') + sumOf('human'))} · 14d`
+  if (ds.id === 'tickets_per_day') return `${num(sumOf('ai') + sumOf('ai_approved') + sumOf('human'))} · 14d`
   if (ds.id === 'orders_per_day') return `${rupees(sumOf('revenue'))} · 14d`
   if (view.campaigns) return `${num(sumOf('leads'))} leads · ${num(sumOf('responses'))} responses`
   return fmt(main.unit, sumOf(main.key))

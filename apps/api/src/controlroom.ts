@@ -12,9 +12,10 @@ import type * as CR from "@ph/shared/controlroom";
 import { BOT, DEAL_STAGES, OWNER, rupees, type DealStage, type TicketChannel } from "@ph/shared";
 import { and, count, DEFAULT_SETTINGS, desc, eq, gte, inArray, isNotNull, isNull, schema as s, sql } from "@ph/db";
 import { updateContact, updateDeal } from "./crm.ts";
+import { attachmentsByComment, attachmentsByTicket } from "./attachments.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, intParam, notFound, ok, oneOf } from "./http.ts";
-import { decideApproval, listConnectors, newToken, setChannelToken } from "./resolveai.ts";
+import { decideApproval, listConnectors, newToken, setChannelToken, STUCK_AFTER_MS } from "./resolveai.ts";
 import { updateTicket } from "./zendesk.ts";
 
 type TicketRow = typeof s.tickets.$inferSelect;
@@ -74,7 +75,13 @@ export async function getSettings(): Promise<CR.Settings> {
   if (settingsCache && Date.now() - settingsCache.at < 5_000) return settingsCache.value;
   const [row] = await db.select().from(s.settings).where(eq(s.settings.id, "default"));
   // Stored settings over the defaults, so a field added later still has a value.
-  const value: CR.Settings = { ...DEFAULT_SETTINGS, ...(row?.value ?? {}) };
+  const stored = (row?.value ?? {}) as Partial<CR.Settings>;
+  const value: CR.Settings = {
+    ...DEFAULT_SETTINGS,
+    ...stored,
+    escalation: { ...DEFAULT_SETTINGS.escalation, ...(stored.escalation ?? {}) },
+    hours: { ...DEFAULT_SETTINGS.hours, ...(stored.hours ?? {}) },
+  };
   settingsCache = { at: Date.now(), value };
   return value;
 }
@@ -100,6 +107,7 @@ function validSettings(b: CR.Settings): CR.Settings {
     return v;
   };
   if (typeof b.refundLimit !== "number" || !Number.isFinite(b.refundLimit) || b.refundLimit < 0) throw bad("refundLimit must be a number ≥ 0 (₹)");
+  if (typeof b.verifiedDamageLimit !== "number" || !Number.isFinite(b.verifiedDamageLimit) || b.verifiedDamageLimit < 0) throw bad("verifiedDamageLimit must be a number ≥ 0 (₹)");
   if (typeof b.avatarColor !== "string" || !/^#[0-9a-f]{6}$/i.test(b.avatarColor)) throw bad("avatarColor must be a hex colour like #0F9D8A");
   const playbooks = obj(b.playbooks, "playbooks");
   const escalation = obj(b.escalation, "escalation");
@@ -113,7 +121,10 @@ function validSettings(b: CR.Settings): CR.Settings {
     playbooks: { support: bool(playbooks.support, "playbooks.support"), sales: bool(playbooks.sales, "playbooks.sales") },
     autonomy: oneOf(b.autonomy, AUTONOMY, "autonomy"),
     refundLimit: b.refundLimit,
-    escalation: Object.fromEntries(Object.entries(escalation).map(([k, v]) => [k, bool(v, `escalation.${k}`)])),
+    verifiedDamageLimit: b.verifiedDamageLimit,
+    requireDamagePhotos: bool(b.requireDamagePhotos, "requireDamagePhotos"),
+    // Only the switches the agent acts on; anything else is dropped (failed payments always go to a person).
+    escalation: { fraud: bool(escalation.fraud, "escalation.fraud"), legal: bool(escalation.legal, "escalation.legal"), vip: bool(escalation.vip, "escalation.vip"), negative: bool(escalation.negative, "escalation.negative") },
     languages: [...new Set(b.languages.map((l, i) => str(l, `languages[${i}]`, 30)))],
     hours: {
       days: WEEKDAYS.filter((d) => (hours.days as string[]).includes(d)),
@@ -127,7 +138,7 @@ function validSettings(b: CR.Settings): CR.Settings {
 async function saveSettings(b: Partial<CR.Settings>): Promise<CR.Settings> {
   // A partial body is merged onto the current settings, then the whole thing is checked.
   const current = await getSettings();
-  const value = validSettings({ ...current, ...b, hours: { ...current.hours, ...(b.hours ?? {}) } } as CR.Settings);
+  const value = validSettings({ ...current, ...b, escalation: { ...current.escalation, ...(b.escalation ?? {}) }, hours: { ...current.hours, ...(b.hours ?? {}) } } as CR.Settings);
   await db
     .insert(s.settings)
     .values({ id: "default", value, updated_at: new Date() })
@@ -151,7 +162,9 @@ function withPerson(t: TicketRow, comments: CommentRow[]): boolean {
 
 function crStatus(t: TicketRow, latest: RunRow | undefined): CR.Status {
   if (t.status === "solved") return "solved";
-  if (latest?.status === "triaging" || latest?.status === "working") return "in_progress";
+  // A run still triaging or working is only "in progress" while it moves; one cut off mid-way (no progress for
+  // 5 minutes) isn't, even before the sweep marks it failed.
+  if ((latest?.status === "triaging" || latest?.status === "working") && Date.now() - latest.updated_at.getTime() < STUCK_AFTER_MS) return "in_progress";
   if (latest?.status === "waiting_approval") return "waiting";
   return t.status === "pending" ? "waiting" : "open";
 }
@@ -165,6 +178,8 @@ interface TicketView {
   ticket: CR.Ticket;
   created: Date;
   person: boolean;
+  /** Who handles it: Aria alone, Aria after a person's approval, or a person */
+  solver: CR.Solver;
   escalated: boolean;
   /** Seconds from the request arriving to the last public AI or agent reply, for solved tickets (the reply that solved it) */
   solvedIn: number | null;
@@ -195,21 +210,21 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
   const ticketIds = rows.map((r) => r.ticket.id);
   const orderIds = [...new Set(rows.flatMap((r) => { const o = orderIdOf(r.ticket); return o ? [o] : []; }))];
   const requesterIds = [...new Set(rows.map((r) => r.requester.id))];
-  const [comments, runs, customers, orders, approvals] = await Promise.all([
+  const [comments, runs, customers, orders, approvals, photos] = await Promise.all([
     db.select().from(s.ticketComments).where(inArray(s.ticketComments.ticket_id, ticketIds)),
     db.query.agentRuns.findMany({ where: inArray(s.agentRuns.ticket_id, ticketIds), with: { steps: true } }),
     db.select({ id: s.customers.id, city: s.customers.city }).from(s.customers).where(inArray(s.customers.id, requesterIds)),
     orderIds.length ? db.select({ id: s.orders.id, customer_id: s.orders.customer_id, amount: s.orders.amount }).from(s.orders).where(inArray(s.orders.id, orderIds)) : [],
-    db
-      .select({ ticket_id: s.approvals.ticket_id, amount: s.approvals.amount })
-      .from(s.approvals)
-      .where(and(inArray(s.approvals.ticket_id, ticketIds), eq(s.approvals.status, "pending"))),
+    db.select({ ticket_id: s.approvals.ticket_id, amount: s.approvals.amount, status: s.approvals.status }).from(s.approvals).where(inArray(s.approvals.ticket_id, ticketIds)),
+    attachmentsByComment(ticketIds),
   ]);
 
   const kindOf = new Map(channels.map((c) => [c.id, c.kind as CR.ChannelId]));
   const cityOf = new Map(customers.map((c) => [c.id, c.city]));
   const orderOf = new Map(orders.map((o) => [o.id, o]));
-  const pendingOf = new Map(approvals.map((a) => [a.ticket_id, a.amount]));
+  const pendingOf = new Map(approvals.filter((a) => a.status === "pending").map((a) => [a.ticket_id, a.amount]));
+  /** A person approved an action on it (and Aria carried it out) */
+  const approved = new Set(approvals.filter((a) => a.status === "approved").map((a) => a.ticket_id));
   const commentsOf = Map.groupBy(
     [...comments].sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id - b.id),
     (c) => c.ticket_id,
@@ -225,6 +240,7 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
     const latest = myRuns.at(-1);
     const pub = mine.filter((c) => c.public);
     const person = withPerson(t, mine);
+    const solver: CR.Solver = person ? "human" : approved.has(t.id) ? "ai_approved" : "ai";
     const status = crStatus(t, latest);
     const lastNote = mine.filter((c) => !c.public).at(-1);
     const lastReply = pub.filter((c) => c.author_type !== "customer").at(-1);
@@ -235,7 +251,7 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
       channel: (latest && (kindOf.get(latest.channel_id) ?? (latest.channel_id === "shopkart" ? "chat" : undefined))) || VIA[t.via] || "api",
       level: t.level ?? latest?.level ?? myRuns.findLast((r) => r.level)?.level ?? "low",
       status,
-      solvedBy: status === "solved" ? (person ? "human" : "ai") : null,
+      solvedBy: status === "solved" ? solver : null,
       helpdesk: "zendesk",
       helpdeskId: `#${t.id}`,
       amount: ticketOrder(t, orderOf)?.amount ?? pendingOf.get(t.id) ?? null,
@@ -244,6 +260,7 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
         from: c.author_type === "customer" ? "customer" : c.author_type === "bot" || c.author === BOT ? "ai" : "agent",
         time: iso(c.created_at),
         text: c.body,
+        ...(photos.has(c.id) && { attachments: photos.get(c.id) }),
       })),
       steps: myRuns
         .flatMap((r) => r.steps)
@@ -258,6 +275,7 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
       ticket,
       created: t.created_at,
       person,
+      solver,
       escalated: t.escalated_by_ai || t.handled_by === "human",
       // From when the request reached ResolveAI (its first run; the ticket itself is opened after triage), else
       // from the ticket opening, to the reply that solved it. Not the first reply: that is an instant "I'm on it".
@@ -408,12 +426,35 @@ async function loadApprovals(): Promise<CR.Approvals> {
   const ticketIds = [...new Set(rows.map((a) => a.ticket_id))];
   const orderIds = [...new Set(rows.map((a) => a.order_id))];
   const runIds = [...new Set(rows.map((a) => a.run_id))];
-  const [requesters, orders, triage, perCustomer] = await Promise.all([
+  const [requesters, orders, triage, perCustomer, photos, checks] = await Promise.all([
     db.select({ id: s.tickets.id, name: s.zdUsers.name }).from(s.tickets).innerJoin(s.zdUsers, eq(s.tickets.requester_id, s.zdUsers.id)).where(inArray(s.tickets.id, ticketIds)),
     db.select().from(s.orders).where(inArray(s.orders.id, orderIds)),
     db.select({ run_id: s.agentSteps.run_id, detail: s.agentSteps.detail }).from(s.agentSteps).where(and(inArray(s.agentSteps.run_id, runIds), eq(s.agentSteps.step, "Triage"))),
     db.select({ customer_id: s.orders.customer_id, n: count() }).from(s.orders).groupBy(s.orders.customer_id),
+    attachmentsByTicket(ticketIds),
+    db
+      .select({ run_id: s.agentSteps.run_id, id: s.agentSteps.id, step: s.agentSteps.step, result: s.agentSteps.result, detail: s.agentSteps.detail })
+      .from(s.agentSteps)
+      .innerJoin(s.agentRuns, eq(s.agentSteps.run_id, s.agentRuns.id))
+      .where(and(inArray(s.agentRuns.ticket_id, ticketIds), inArray(s.agentSteps.step, ["Check photo", "Check risk"])))
+      .orderBy(s.agentSteps.id),
   ]);
+  /** The newest "Check photo" and "Check risk" on each ticket (they may come from an earlier run on it) */
+  const ticketOfRun = new Map(rows.map((a) => [a.run_id, a.ticket_id]));
+  const runTicket = await (async () => {
+    const runIdsOfChecks = [...new Set(checks.map((c) => c.run_id))].filter((id) => !ticketOfRun.has(id));
+    if (!runIdsOfChecks.length) return ticketOfRun;
+    const more = await db.select({ id: s.agentRuns.id, ticket_id: s.agentRuns.ticket_id }).from(s.agentRuns).where(inArray(s.agentRuns.id, runIdsOfChecks));
+    return new Map([...ticketOfRun, ...more.flatMap((r) => (r.ticket_id ? [[r.id, r.ticket_id] as const] : []))]);
+  })();
+  const checksOf = new Map<number, Map<string, { step: string; result: CR.StepResult; detail: string }>>();
+  for (const c of checks) {
+    const tid = runTicket.get(c.run_id);
+    if (!tid) continue;
+    const m = checksOf.get(tid) ?? new Map();
+    m.set(c.step, { step: c.step, result: c.result, detail: c.detail });
+    checksOf.set(tid, m);
+  }
   const nameOf = new Map(requesters.map((r) => [r.id, r.name]));
   const orderOf = new Map(orders.map((o) => [o.id, o]));
   const triageOf = new Map(triage.map((t) => [t.run_id, t.detail]));
@@ -440,6 +481,8 @@ async function loadApprovals(): Promise<CR.Approvals> {
       ].filter((x): x is string => !!x),
       confidence: triageConfidence(triageOf.get(a.run_id)),
       createdAt: iso(a.created_at),
+      photos: photos.get(a.ticket_id) ?? [],
+      checks: [...(checksOf.get(a.ticket_id)?.values() ?? [])],
     };
   };
 
@@ -470,7 +513,7 @@ interface ConversationView {
 }
 
 /** The main agent's reading in a run's "Triage" step: "new request, order_tracking, confidence 90%: <summary>" */
-const triageSummary = (detail: string | undefined) => detail?.replace(/^[^:]*confidence \d+%:\s*/, "") ?? "";
+const triageSummary = (detail: string | undefined) => detail?.replace(/^[^:]*confidence \d+%(?:, upset)?:\s*/, "") ?? "";
 
 async function loadConversations(): Promise<ConversationView[]> {
   const [runs, channels] = await Promise.all([
@@ -536,10 +579,12 @@ async function computeStats(): Promise<CR.Stats> {
   /** The two halves of a 14-day series: [previous 7 days, last 7 days]. */
   const halves = (xs: number[]): [number[], number[]] => [xs.slice(0, 7), xs.slice(7)];
 
-  const aiTickets = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => !t.person).length);
+  const aiTickets = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => t.solver === "ai").length);
   const aiChats = perDay(answered, (c) => c.created, (xs) => xs.length);
   const ai = aiTickets.map((n, i) => n + aiChats[i]!);
-  const human = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => t.person).length);
+  // Aria did the work, but only after a person approved it: its own bucket, neither "AI" nor "a person".
+  const aiApproved = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => t.solver === "ai_approved").length);
+  const human = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => t.solver === "human").length);
   const escalatedDaily = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => t.escalated).length);
   // Solve time: a solved ticket from the request to the reply that solved it; a chat answer from message to answer.
   const solved = [
@@ -549,7 +594,7 @@ async function computeStats(): Promise<CR.Stats> {
   const solveDaily = perDay(solved, (t) => t.created, (xs) => median(xs.map((t) => t.seconds)));
   const hotDaily = perDay(leads, (l) => l.created, (xs) => xs.filter((l) => l.lead.hot).length);
 
-  const total = days.map((_, i) => ai[i]! + human[i]!);
+  const total = days.map((_, i) => ai[i]! + aiApproved[i]! + human[i]!);
   const [prevTotal, nowTotal] = halves(total).map(sum) as [number, number];
   const [prevAi, nowAi] = halves(ai).map(sum) as [number, number];
   const since = (t: { created: Date }, d: number) => Date.now() - t.created.getTime() < d * DAY;
@@ -563,7 +608,7 @@ async function computeStats(): Promise<CR.Stats> {
   const LEVELS: CR.Level[] = ["low", "medium", "high", "critical"];
 
   return {
-    daily: { ai, human },
+    daily: { ai, aiApproved, human },
     deltas: {
       queries: pct(nowTotal, prevTotal),
       // AI share of tickets, in percentage points: this week's rate minus last week's.

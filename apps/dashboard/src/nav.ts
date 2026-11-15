@@ -19,7 +19,7 @@ export interface Area {
 
 export const AREAS: Area[] = [
   { id: 'home', label: 'Home', icon: House, home: '/', paths: ['/', '/analytics', '/approvals'] },
-  { id: 'support', label: 'Support', icon: LifeBuoy, home: '/tickets', paths: ['/tickets', '/chats', '/conversations', '/board'] },
+  { id: 'support', label: 'Support', icon: LifeBuoy, home: '/tickets', paths: ['/tickets', '/chats', '/conversations', '/support/calls', '/board'] },
   { id: 'sales', label: 'Sales', icon: Handshake, home: '/sales/analytics', paths: ['/sales/analytics', '/leads', '/calls', '/campaigns'] },
   { id: 'connect', label: 'Connect', icon: Cable, home: '/channels', paths: ['/channels', '/connectors'] },
   { id: 'agent', label: 'Aria', icon: ResolveAIGlyph, home: '/settings', paths: ['/settings', '/policies', '/audit'] },
@@ -37,6 +37,7 @@ export const PAGES: Record<string, { label: string; icon: Icon }> = {
   '/board': { label: 'Board', icon: SquareKanban },
   '/leads': { label: 'Leads', icon: Users },
   '/calls': { label: 'Calls', icon: Phone },
+  '/support/calls': { label: 'Calls', icon: Phone },
   '/campaigns': { label: 'Campaigns', icon: Megaphone },
   '/sales/analytics': { label: 'Sales analytics', icon: ChartPie },
   '/channels': { label: 'Channels', icon: Radio },

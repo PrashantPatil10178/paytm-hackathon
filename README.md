@@ -91,7 +91,11 @@ Run `bun run reset` first. In ShopKart (pick the customer top right) open the su
    is told in the chat.
 5. **Payment escalation.** Vikram: "₹15,000 was debited for order 1050 but the payment failed". Critical: ticket assigned
    to Kabir, urgent, with a brief; Aria never acts on it.
-6. **Hot sales lead.** ShopKart → Business enquiry with a ₹60,000 budget starting this week: contact + deal in HubSpot,
+6. **Chat with the customer yourself.** Any chat (try Vikram's from story 5) shows live in Control Room → Support →
+   Chats. Write a reply there: it appears in the customer's ShopKart chat as Kabir, goes on the Zendesk ticket (one is
+   opened, with the chat so far, if the chat had none), and Aria stays quiet while you talk. "Hand back to Aria" or
+   "Mark solved" ends it. A public reply on the ticket in Zendesk reaches the chat too.
+7. **Hot sales lead.** ShopKart → Business enquiry with a ₹60,000 budget starting this week: contact + deal in HubSpot,
    scored hot, intro call booked with Kabir (IST slots), visible in Control Room → Sales → Leads.
 
 ## API
@@ -139,11 +143,15 @@ Stages: `new_lead → qualified → meeting_booked → quote_sent → closed_won
 | GET | `/shop/orders/{id}` |
 | POST | `/shop/orders/{id}/refund` (delivered or damaged orders that are paid; marks it damaged, `refund_initiated`) |
 | POST | `/chat` |
+| GET | `/chat/sessions/{id}` (the stored chat: `{ messages, handler: ai \| human, agent, ticket_id }`; the widget polls it) |
 | POST | `/lead` |
 | POST | `/admin/reset` (same as `bun run reset`) |
 
 `POST /chat` goes to the agent's `POST /intake` with ShopKart's channel token (`SHOPKART_CHANNEL_TOKEN`, or one the
-API issues at startup) when `AGENT_URL` is set.
+API issues at startup) when `AGENT_URL` is set. Every chat line is stored in `chat_messages` (`apps/api/src/chats.ts`): the customer's
+message, Aria's answer, public replies on the chat's ticket, and a person's messages from the Control Room. While a
+person owns the chat's open ticket, `POST /chat` puts the message on their ticket and doesn't call the agent; the reply
+is empty while they're talking (they wrote in the last 30 minutes), else a one-line "Kabir is on it".
 
 ### ResolveAI (agent config and records)
 
@@ -175,6 +183,10 @@ What the ResolveAI Control Room reads, built from the live records. Shapes are i
 | --- | --- | --- |
 | GET | `/control-room/tickets` | `{ tickets }`, newest first: Zendesk ticket + comments + requester + order + every run and step on it |
 | GET / PATCH | `/control-room/tickets/{id}` | PATCH `{ status: open \| in_progress \| waiting \| solved }` → the Zendesk ticket (waiting = pending). `{ ticket }` |
+| GET | `/control-room/chats` | `{ chats }`: every chat (last 30 days), newest activity first, with who answers it (`handler`) and its ticket |
+| GET | `/control-room/chats/{id}` | `{ chat, messages }` |
+| POST | `/control-room/chats/{id}/messages` | `{ body }` from Kabir. Takes the chat over: its ticket (opened now, chat copied on, if it has none) is assigned to him. `{ chat, messages }` |
+| POST | `/control-room/chats/{id}/handback` · `/solve` | Ticket back to the bot, or solved. Each adds a notice to the chat. `{ chat, messages }` |
 | GET | `/control-room/conversations` | `{ conversations }`: chats Aria answered without a ticket (one per run, ids `C-<run id>`), newest first |
 | GET | `/control-room/leads` | `{ leads }`: CRM deals with their contact, activities and Sarvam calls |
 | GET / PATCH | `/control-room/leads/{id}` | PATCH `{ stage? (label or id), value?, name?, company? }` → deal / contact. `{ lead }` |

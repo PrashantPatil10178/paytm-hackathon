@@ -1,11 +1,92 @@
 import { clock } from "@ph/shared";
-import { Check, CheckCheck, MessageCircle, SendHorizontal, Ticket, UserRound, X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
-import { useChat, useCustomer, type ChatMessage } from "../store.tsx";
+import { Camera, Check, CheckCheck, Clock3, ImagePlus, Loader2, MessageCircle, SendHorizontal, Ticket, UserRound, X } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { preparePhoto, useChat, useCustomer, type ChatMessage, type PickedPhoto } from "../store.tsx";
 import { LogoMark } from "./Logo.tsx";
 import { BRAND, ResolveAIGlyph } from "@ph/shared/brand";
 
 const QUICK = ["Where is my order?", "Item damaged, I want a refund", "₹15,000 debited but payment failed"];
+const MAX_PHOTOS = 3;
+
+/**
+ * Photos picked for the next message: a hidden file input (camera or gallery, images only), shrunk in the browser
+ * before upload. Shared by the composer and Aria's "Add photos" card.
+ */
+function usePhotoPicker() {
+  const input = useRef<HTMLInputElement>(null);
+  const [photos, setPhotos] = useState<PickedPhoto[]>([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const add = useCallback(
+    async (files: FileList | null) => {
+      if (!files?.length) return;
+      setError("");
+      const room = MAX_PHOTOS - photos.length;
+      const list = [...files];
+      if (list.length > room) setError(`You can send up to ${MAX_PHOTOS} photos at a time.`);
+      setBusy(true);
+      try {
+        const ready: PickedPhoto[] = [];
+        for (const f of list.slice(0, Math.max(0, room))) {
+          try {
+            ready.push(await preparePhoto(f));
+          } catch (e) {
+            setError((e as Error).message);
+          }
+        }
+        setPhotos((p) => [...p, ...ready].slice(0, MAX_PHOTOS));
+      } finally {
+        setBusy(false);
+        if (input.current) input.current.value = "";
+      }
+    },
+    [photos.length],
+  );
+  const picker = (
+    <input
+      ref={input}
+      type="file"
+      accept="image/jpeg,image/png,image/webp,image/*"
+      multiple
+      className="sr-only"
+      tabIndex={-1}
+      aria-hidden
+      onChange={(e) => void add(e.target.files)}
+    />
+  );
+  return {
+    photos,
+    error,
+    setError,
+    busy,
+    picker,
+    open: () => input.current?.click(),
+    remove: (id: string) => setPhotos((p) => p.filter((x) => x.id !== id)),
+    clear: () => setPhotos([]),
+  };
+}
+
+/** Thumbnails of picked photos, each removable. */
+function PhotoTray({ photos, onRemove, size = "size-16" }: { photos: PickedPhoto[]; onRemove: (id: string) => void; size?: string }) {
+  if (!photos.length) return null;
+  return (
+    <ul className="flex gap-2" aria-label="Photos to send">
+      {photos.map((p, i) => (
+        <li key={p.id} className={`relative ${size} flex-none animate-pop-in overflow-hidden rounded-xl border border-line bg-wash`}>
+          <img src={p.dataUrl} alt={`Photo ${i + 1}: ${p.name}`} className="size-full object-cover" />
+          <button
+            type="button"
+            onClick={() => onRemove(p.id)}
+            aria-label={`Remove photo ${i + 1}`}
+            className="absolute top-1 right-1 grid size-5 cursor-pointer place-items-center rounded-full bg-ink/70 text-white hover:bg-ink"
+          >
+            <X size={12} strokeWidth={3} />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 /** The floating launcher + window. Hidden while the Help page shows the chat inline. */
 export function ChatWidget() {
@@ -59,10 +140,11 @@ export function ChatWidget() {
 }
 
 export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void; autoFocus?: boolean }) {
-  const { messages, typing, agent, draft, setDraft, send } = useChat();
+  const { messages, typing, sending, agent, draft, setDraft, send } = useChat();
   const { customer } = useCustomer();
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const pick = usePhotoPicker();
 
   useEffect(() => {
     const el = scroller.current;
@@ -80,8 +162,17 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoFocus, draft.startsWith("I need help with order")]);
 
+  const [uploading, setUploading] = useState(false);
   const submit = () => {
-    if (!typing) send(draft);
+    if (sending || uploading || pick.busy || (!draft.trim() && !pick.photos.length)) return;
+    const photos = pick.photos;
+    setUploading(photos.length > 0);
+    pick.setError("");
+    send(draft, undefined, photos)
+      .then(() => pick.clear())
+      // The upload failed: the photos stay in the tray, so a tap on send tries again.
+      .catch((e: Error) => pick.setError(`Couldn't send the photo${photos.length === 1 ? "" : "s"}: ${e.message}`))
+      .finally(() => setUploading(false));
   };
 
   return (
@@ -137,7 +228,7 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
             <button
               key={q}
               type="button"
-              disabled={typing}
+              disabled={sending}
               onClick={() => send(q)}
               className="flex-none cursor-pointer rounded-full border border-jamun/25 bg-jamun-wash px-3 py-1.5 text-[13px] font-semibold whitespace-nowrap text-jamun transition-colors hover:border-jamun hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -145,6 +236,13 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
             </button>
           ))}
         </div>
+        {(pick.photos.length > 0 || pick.error || pick.busy || uploading) && (
+          <div className="flex flex-col gap-1.5 px-3 pt-2">
+            <PhotoTray photos={pick.photos} onRemove={pick.remove} />
+            {(pick.busy || uploading) && <p className="flex items-center gap-1.5 text-[12px] text-ink-2"><Loader2 size={13} className="animate-spin" aria-hidden />{uploading ? "Sending photos…" : "Preparing photo…"}</p>}
+            {pick.error && <p role="alert" className="text-[12px] font-semibold text-bad">{pick.error}</p>}
+          </div>
+        )}
         <form
           className="flex items-end gap-2 p-3"
           onSubmit={(e) => {
@@ -152,6 +250,17 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
             submit();
           }}
         >
+          {pick.picker}
+          <button
+            type="button"
+            onClick={pick.open}
+            disabled={sending || pick.photos.length >= MAX_PHOTOS}
+            aria-label="Add photos"
+            title="Add photos (camera or gallery)"
+            className="grid size-11 flex-none cursor-pointer place-items-center rounded-full text-jamun transition-colors hover:bg-jamun-wash disabled:cursor-not-allowed disabled:text-ink-3/50"
+          >
+            <Camera size={22} />
+          </button>
           <label htmlFor="chat-input" className="sr-only">Type a message</label>
           <textarea
             id="chat-input"
@@ -165,12 +274,12 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
                 submit();
               }
             }}
-            placeholder="Type a message"
+            placeholder={pick.photos.length ? "Add a caption (optional)" : "Type a message"}
             className="max-h-28 min-h-11 flex-1 resize-none rounded-3xl border border-line bg-wash px-4 py-2.5 leading-snug placeholder:text-ink-3 focus:border-jamun focus:bg-paper focus:outline-none"
           />
           <button
             type="submit"
-            disabled={!draft.trim() || typing}
+            disabled={(!draft.trim() && !pick.photos.length) || sending || pick.busy || uploading}
             aria-label="Send message"
             className="grid size-11 flex-none cursor-pointer place-items-center rounded-full bg-jamun text-white transition-[background-color,transform] hover:bg-jamun-ink active:scale-95 disabled:cursor-not-allowed disabled:bg-ink-3/40"
           >
@@ -183,6 +292,7 @@ export function ChatPanel({ onClose, autoFocus = false }: { onClose?: () => void
 }
 
 function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
+  const { retry } = useChat();
   if (m.from === "system")
     return (
       <p className="mx-auto my-1.5 flex animate-pop-in items-center gap-1.5 rounded-lg bg-[#e1f2fb] px-3 py-1 text-[12px] font-semibold text-[#1b4f6b] shadow-[0_1px_0.5px_rgb(11_20_26/0.13)]">
@@ -193,7 +303,7 @@ function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
   return (
     <div
       className={`flex max-w-[85%] animate-pop-in flex-col rounded-lg px-2.5 pt-1.5 pb-1 shadow-[0_1px_0.5px_rgb(11_20_26/0.13)] ${
-        mine ? "self-end bg-chat-out" : m.failed ? "self-start bg-bad-wash" : "self-start bg-chat-in"
+        mine ? "self-end bg-chat-out" : "self-start bg-chat-in"
       } ${tail ? (mine ? "mt-1.5 rounded-tr-none" : "mt-1.5 rounded-tl-none") : ""}`}
     >
       {m.from === "agent" && tail && (
@@ -201,11 +311,27 @@ function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
           {m.author} <span className="font-semibold text-ink-3">· ShopKart team</span>
         </p>
       )}
+      {m.photos && m.photos.length > 0 && (
+        <div className={`mb-1 grid gap-1 ${m.photos.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
+          {m.photos.map((p) => (
+            <a key={p.src} href={p.src} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md bg-wash">
+              <img src={p.src} alt={p.alt} className="max-h-56 w-full min-w-28 object-cover" loading="lazy" />
+            </a>
+          ))}
+        </div>
+      )}
       <p className="text-[14.5px] leading-snug whitespace-pre-wrap text-[#111b21] [overflow-wrap:anywhere]">{m.text}</p>
-      {m.ask && <QuestionCard m={m} />}
+      {m.ask?.kind === "photos" ? <PhotoCard m={m} /> : m.ask && <QuestionCard m={m} />}
       <span className="mt-0.5 flex items-center justify-end gap-1 self-end text-[11px] text-[#667781]">
-        {clock(m.at.toISOString())}
-        {mine && <CheckCheck size={15} className="text-chat-tick" aria-label="Delivered" />}
+        {mine && m.status === "unsent" ? (
+          <button type="button" onClick={() => retry(m.id)} className="cursor-pointer font-semibold text-jamun underline-offset-2 hover:underline">
+            Not sent · Tap to retry
+          </button>
+        ) : (
+          clock(m.at.toISOString())
+        )}
+        {mine && !m.status && <CheckCheck size={15} className="text-chat-tick" aria-label="Delivered" />}
+        {mine && m.status === "sending" && <Clock3 size={13} aria-label="Sending" />}
       </span>
     </div>
   );
@@ -219,14 +345,14 @@ const OTHER = "other";
  * Once answered (or the customer typed something else instead) it locks and shows what was picked.
  */
 function QuestionCard({ m }: { m: ChatMessage }) {
-  const { send, typing } = useChat();
+  const { send, sending } = useChat();
   const ask = m.ask!;
   const name = useId();
   const [picked, setPicked] = useState<string | null>(null);
   const [other, setOther] = useState("");
   const done = m.answered !== undefined;
   const choice = picked && picked !== OTHER ? ask.choices[Number(picked)] : undefined;
-  const ready = !done && !typing && (choice || (picked === OTHER && other.trim()));
+  const ready = !done && !sending && (choice || (picked === OTHER && other.trim()));
 
   const submit = () => {
     if (!ready) return;
@@ -307,5 +433,68 @@ function QuestionCard({ m }: { m: ChatMessage }) {
         )}
       </fieldset>
     </form>
+  );
+}
+
+/**
+ * Aria asked for photos of the damage: pick 1–3 (camera or gallery), see them, send. Once photos were sent after
+ * it (or the customer wrote something else) it locks and says what happened.
+ */
+function PhotoCard({ m }: { m: ChatMessage }) {
+  const { send, sending } = useChat();
+  const ask = m.ask!;
+  const pick = usePhotoPicker();
+  const [uploading, setUploading] = useState(false);
+  const done = m.answered !== undefined;
+  const ready = !done && !sending && !uploading && !pick.busy && pick.photos.length > 0;
+
+  const submit = () => {
+    if (!ready) return;
+    setUploading(true);
+    pick.setError("");
+    send("", undefined, pick.photos)
+      .then(() => pick.clear())
+      .catch((e: Error) => pick.setError(`Couldn't send the photos: ${e.message}`))
+      .finally(() => setUploading(false));
+  };
+
+  return (
+    <div className="mt-2 mb-1 min-w-[16rem] rounded-xl border border-line bg-paper p-2.5">
+      <p className="flex items-center gap-1.5 text-[13.5px] font-bold text-ink">
+        <ImagePlus size={16} className="text-jamun" aria-hidden />
+        {ask.prompt}
+      </p>
+      {ask.description && <p className="mt-0.5 text-[12.5px] text-ink-2">{ask.description}</p>}
+      {done ? (
+        <p className="mt-2 text-[12px] text-ink-2">{m.answered ? `You sent ${m.answered}.` : "Closed: you wrote something else. Use the camera button below to add photos any time."}</p>
+      ) : (
+        <>
+          {pick.picker}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <PhotoTray photos={pick.photos} onRemove={pick.remove} size="size-14" />
+            {pick.photos.length < MAX_PHOTOS && (
+              <button
+                type="button"
+                onClick={pick.open}
+                disabled={sending || pick.busy}
+                className="flex size-14 flex-none cursor-pointer flex-col items-center justify-center gap-0.5 rounded-xl border border-dashed border-jamun/50 bg-jamun-wash text-[11px] font-semibold text-jamun hover:border-jamun disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pick.busy ? <Loader2 size={18} className="animate-spin" aria-hidden /> : <Camera size={18} aria-hidden />}
+                {pick.photos.length ? "More" : "Add"}
+              </button>
+            )}
+          </div>
+          {pick.error && <p role="alert" className="mt-1.5 text-[12px] font-semibold text-bad">{pick.error}</p>}
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!ready}
+            className="mt-2.5 flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-full bg-jamun text-[13.5px] font-semibold text-white transition-colors hover:bg-jamun-ink disabled:cursor-not-allowed disabled:bg-ink-3/40"
+          >
+            {uploading ? "Sending…" : pick.photos.length ? `Send ${pick.photos.length} photo${pick.photos.length === 1 ? "" : "s"}` : "Pick photos first"} <SendHorizontal size={15} aria-hidden />
+          </button>
+        </>
+      )}
+    </div>
   );
 }

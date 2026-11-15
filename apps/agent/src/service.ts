@@ -47,8 +47,11 @@ import type { LevelAgents } from "./agents/levels.ts";
 import { TriageSchema, type Triage } from "./agents/main.ts";
 import { assessCriticality, MIN_CONFIDENCE, ORDER_INTENTS, type Criticality } from "./criticality.ts";
 import { DemoAPIError, type DemoAPI, type KnownContact } from "./demo-api.ts";
+import { DEFAULT_RULES, rulesFrom } from "./evidence.ts";
 import { analysisNote, analysisThread, personKey } from "./memory.ts";
 import type { Platform } from "./platform.ts";
+import type { PolicyBook } from "./policies.ts";
+import { modeLine, schedule, type Schedule } from "./settings.ts";
 import { memorySessions, type SessionStore } from "./sessions.ts";
 import { runContext, type AnalysisRun, type LeadsRun, type SupportRun } from "./tools/context.ts";
 
@@ -56,10 +59,12 @@ const ChatBody = z.object({
   session_id: z.string().min(1),
   customer_id: z.coerce.number().int().positive(),
   message: z.string().trim().min(1),
-  /** The customer's answer to a question we asked (which order), with the message it was about. */
+  /** The customer's answer to a question we asked (which order, or photos), with the message it was about. */
   answer: z
-    .object({ kind: z.literal("order"), original: z.string().trim().min(1).max(2000), value: z.string().nullable(), text: z.string().trim().min(1).max(200) })
+    .object({ kind: z.enum(["order", "photos"]), original: z.string().trim().min(1).max(2000), value: z.string().nullable(), text: z.string().trim().min(1).max(200) })
     .optional(),
+  /** Photos sent with the message (attachment ids; the demo API keeps only the customer's own) */
+  attachments: z.array(z.coerce.number().int().positive()).max(3).default([]),
 });
 
 const LeadBody = z.object({
@@ -103,9 +108,13 @@ export interface ServiceDeps {
   log?: Pick<Console, "warn" | "error">;
   /** How long /intake waits for a ticket's level agent before answering "I'm on it" instead (ms). Default 8 s. */
   ackAfterMs?: number;
+  /** ShopKart's policy book: POL-DMG's photo threshold for the photo request */
+  book?: PolicyBook;
+  /** "Now", for business hours (tests) */
+  now?: () => Date;
 }
 
-export function createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions = memorySessions(), analysisMemory, log = console, ackAfterMs = 8_000 }: ServiceDeps) {
+export function createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions = memorySessions(), analysisMemory, log = console, ackAfterMs = 8_000, book, now = () => new Date() }: ServiceDeps) {
   /** Level agents that are still working after /intake answered. */
   const inFlight = new Set<Promise<unknown>>();
   const track = (job: Promise<unknown>) => {
@@ -137,6 +146,10 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     earlier: AgentRun[];
     /** This chat's exchanges since its last ticket that never got one, oldest first */
     history: { message: string; reply: string }[];
+    /** Photos sent with this message (attachment ids) */
+    attachments: number[];
+    /** Business hours and the autonomy that applies now */
+    schedule: Schedule;
   }
 
   /** The ticket this chat session already has, if it still exists (a demo reset recycles ticket numbers). */
@@ -168,8 +181,8 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     return pick ? api.ticket(pick.id) : null;
   }
 
-  async function addCustomerMessage(t: Ticket, message: string) {
-    await api.addComment(t.id, { body: message, public: true, author: t.requester.name, author_type: "customer" });
+  async function addCustomerMessage(t: Ticket, message: string, attachments: number[] = []) {
+    await api.addComment(t.id, { body: message, public: true, author: t.requester.name, author_type: "customer", ...(attachments.length && { attachment_ids: attachments }) });
   }
 
   /**
@@ -178,23 +191,26 @@ export function createService({ api, platform, main, writer, levels, sales, anal
    */
   async function ticketFor(known: Ticket | null, c: Chat): Promise<{ ticket: Ticket; isNew: boolean }> {
     if (known) {
-      await addCustomerMessage(known, c.message);
+      await addCustomerMessage(known, c.message, c.attachments);
       const ticket = known.status === "solved" ? await api.updateTicket(known.id, { status: "open" }) : known;
       return { ticket, isNew: false };
     }
     const thread = [...c.history.flatMap((h) => [{ customer: true, body: h.message }, { customer: false, body: h.reply }]), { customer: true, body: c.message }];
     const first = thread[0]!.body;
+    // Photos ride on the comment of the message they came with, so a lone first message goes on as a comment.
+    const photosFirst = thread.length === 1 && c.attachments.length > 0;
     const ticket = await api.createTicket({
       subject: first.length > 60 ? `${first.slice(0, 57)}…` : first,
-      comment: first,
+      ...(!photosFirst && { comment: first }),
       requester_id: c.customerId,
       via: "chat",
       status: "open",
       assignee: BOT,
       tags: ["chat"],
     });
-    for (const m of thread.slice(1)) {
-      if (m.customer) await addCustomerMessage(ticket, m.body);
+    if (photosFirst) await addCustomerMessage(ticket, first, c.attachments);
+    for (const [i, m] of thread.slice(1).entries()) {
+      if (m.customer) await addCustomerMessage(ticket, m.body, i === thread.length - 2 ? c.attachments : []);
       else await api.addComment(ticket.id, { body: m.body, public: true });
     }
     await sessions.set(c.sessionId, { ticketId: ticket.id, ticketCreatedAt: ticket.created_at });
@@ -216,7 +232,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       ...(isNew && { subject: subjectFor(triage, order) }),
       priority: crit.level,
       type: triage.intent === "order_tracking" || triage.intent === "question" ? "question" : "incident",
-      tags: [...new Set([...ticket.tags.filter((t) => !t.startsWith("level:")), triage.intent, `level:${crit.level}`])],
+      tags: [...new Set([...ticket.tags.filter((t) => !t.startsWith("level:") && t !== AWAITING_PHOTOS), triage.intent, `level:${crit.level}`])],
       level: crit.level,
       handled_by: crit.handled_by,
     });
@@ -271,21 +287,30 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     }
     const parsed = ChatBody.safeParse(raw);
     if (!parsed.success) return invalid(parsed.error);
-    const { session_id, customer_id } = parsed.data;
+    const { session_id, customer_id, attachments } = parsed.data;
     let answer: ChatAnswer | undefined = parsed.data.answer;
 
     return guard(async () => {
       // An answer to "which order?" is worked as the original request plus the order it names.
       const run = await platform.createRun({ channel_id: channel.id, session_id, customer_id, message: answer ? answerMessage(answer) : parsed.data.message });
       const step = stepper(run.id);
-      await step("main", { step: "Receive request", tool: channel.name, result: "success", detail: (answer ? answerMessage(answer) : parsed.data.message).slice(0, 160) });
+      const photoNote = attachments.length ? ` (+${attachments.length} photo${attachments.length === 1 ? "" : "s"})` : "";
+      await step("main", { step: "Receive request", tool: channel.name, result: "success", detail: `${(answer ? answerMessage(answer) : parsed.data.message).slice(0, 160)}${photoNote}` });
 
-      const [{ customer, orders }, sessionTicket, earlierRuns] = await Promise.all([
+      const [{ customer, orders }, sessionTicket, earlierRuns, settings] = await Promise.all([
         api.customerOrders(customer_id),
         knownTicket(session_id),
         platform.runsForSession(session_id).catch(() => [] as AgentRun[]),
+        platform.settings(),
       ]);
+      const sc = schedule(settings, now());
       const earlier = earlierRuns.filter((r) => r.id !== run.id).sort((a, b) => a.id - b.id);
+
+      /* 0. The support playbook is off in the Control Room: no agent acts. The owner gets the ticket. */
+      if (!settings.playbooks.support) {
+        const c0: Chat = { runId: run.id, channel: channel.name, sessionId: session_id, customerId: customer_id, customerName: customer.name, message: parsed.data.message, earlier, history: [], attachments, schedule: sc };
+        return playbookOff(c0, sessionTicket && sessionTicket.status !== "solved" ? sessionTicket : null);
+      }
 
       // A typed answer right after "which order?" (instead of tapping a choice) answers it too, if it names one order.
       const prev = earlier.at(-1);
@@ -300,7 +325,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       const history = earlier
         .filter((r) => r.id > lastTicketed && !r.ticket_id && r.reply && !(answer && r.message === answer.original))
         .map((r) => ({ message: r.message, reply: r.reply! }));
-      const c: Chat = { runId: run.id, channel: channel.name, sessionId: session_id, customerId: customer_id, customerName: customer.name, message, earlier, history };
+      const c: Chat = { runId: run.id, channel: channel.name, sessionId: session_id, customerId: customer_id, customerName: customer.name, message, earlier, history, attachments, schedule: sc };
       const cases = await platform.searchCases(message).catch(() => []);
 
       /* 1. The main agent triages. */
@@ -310,7 +335,8 @@ export function createService({ api, platform, main, writer, levels, sales, anal
         sessionTicket ? `Ticket in this chat: #${sessionTicket.id} "${sessionTicket.subject}", status ${sessionTicket.status}, assignee ${sessionTicket.assignee ?? "nobody"}.` : "No ticket in this chat yet.",
         ...earlierLines(c),
         cases.length ? `Similar past cases: ${JSON.stringify(cases.map((x) => ({ problem: x.problem, resolution: x.resolution, level: x.level, outcome: x.outcome })))}` : "No similar past cases.",
-        answer ? `They were asked which order this is about and answered: ${answer.text}.` : null,
+        answer?.kind === "order" ? `They were asked which order this is about and answered: ${answer.text}.` : null,
+        answer?.kind === "photos" ? `They were asked for photos of the damage and sent ${attachments.length}.` : attachments.length ? `They attached ${attachments.length} photo${attachments.length === 1 ? "" : "s"}.` : null,
         `Message: ${message}`,
       ].filter(Boolean).join("\n");
       let triage: Triage | null = null;
@@ -322,7 +348,10 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       }
       if (!triage) return handOver(c, sessionTicket, "the main agent couldn't read the request");
       if (answer) triage.kind = "new_request"; // an answer continues the request; it isn't asking for an update
-      await step("main", { step: "Triage", tool: "Aria LLM", result: "success", detail: `${triage.kind === "status_check" ? "status check" : "new request"}, ${triage.intent}, confidence ${Math.round(triage.confidence * 100)}%: ${triage.summary}` });
+      // Photos for a claim that is waiting on them continue that claim, whatever the caption says.
+      const photosFor = answer?.kind === "photos" || (attachments.length > 0 && !!sessionTicket?.tags.includes(AWAITING_PHOTOS) && sessionTicket.status !== "solved");
+      if (photosFor) Object.assign(triage, { kind: "new_request", intent: "damaged_item" });
+      await step("main", { step: "Triage", tool: "Aria LLM", result: "success", detail: `${triage.kind === "status_check" ? "status check" : "new request"}, ${triage.intent}, confidence ${Math.round(triage.confidence * 100)}%${triage.signals.angry ? ", upset" : ""}: ${triage.summary}` });
 
       // The chat's ticket is reused while it's unsolved, or for a follow-up on the same issue. A new problem after
       // it was solved starts fresh (its own ticket, or none if it's a simple question).
@@ -339,7 +368,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
         const answered = [...earlier].reverse().find((r) => r.kind === "request" && !r.ticket_id && r.reply && r.intent !== "out_of_scope" && r.id > lastTicketed);
         if (answered) {
           const s = triage.signals;
-          if (!(s.angry || s.wants_human || s.legal_or_fraud || triage.confidence < MIN_CONFIDENCE)) return statusFromRun(c, answered, triage);
+          if (!(s.angry || s.wants_human || s.fraud || s.legal || triage.confidence < MIN_CONFIDENCE)) return statusFromRun(c, answered, triage);
           forceTicket = true;
           if ((triage.intent === "question" || triage.intent === "other") && answered.intent) triage.intent = answered.intent as Triage["intent"];
           if (!named.length) named = ordersNamedIn(answered.message, orders); // it's about what they asked before
@@ -352,7 +381,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
 
       /* 4. A person already owns this chat's open ticket: pass the message on, don't let the AI act over them. */
       if (known && known.status !== "solved" && known.assignee && known.assignee !== BOT) {
-        await addCustomerMessage(known, message);
+        await addCustomerMessage(known, message, attachments);
         const reply = `Thanks, I've added this to your ticket #${known.id}. ${known.assignee.split(" – ")[0]} from our team is on it and will reply here.`;
         await api.addComment(known.id, { body: reply, public: true });
         await platform.updateRun(run.id, { ticket_id: known.id, intent: triage.intent, plan: triage.plan, handled_by: "human", status: "escalated", reply });
@@ -379,7 +408,13 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       const confirmed = [...new Set([...named, ...(ticketOrder ? [ticketOrder] : [])])];
       const orderIds = [...new Set([...confirmed.map((o) => o.id), ...(orders.length === 1 ? [orders[0]!.id] : [])])];
       let order: Order | null = confirmed[0] ?? null;
-      if (!order && ASK_INTENTS.includes(triage.intent)) {
+      if (!order && triage.intent === "payment_failed") {
+        // A payment claim is about an order whose payment failed. One such order: that's it. None: nothing to pick
+        // from, so no "which order?" card; it goes straight to the owner with the customer's recent payments.
+        const failed = candidateOrders("payment_failed", orders);
+        if (failed.length === 1) order = failed[0]!;
+        else if (failed.length > 1 && !answer && !forceTicket) return askWhichOrder(c, known && known.status !== "solved" ? known : null, triage, failed);
+      } else if (!order && ASK_INTENTS.includes(triage.intent)) {
         const candidates = candidateOrders(triage.intent, orders);
         const sure = orders.length === 1 ? orders[0]! : !MONEY_INTENTS.includes(triage.intent) && candidates.length === 1 ? candidates[0]! : null;
         if (sure) order = sure;
@@ -394,16 +429,40 @@ export function createService({ api, platform, main, writer, levels, sales, anal
 
       /* 8. Level, then route: a simple question is answered in the chat without a ticket; anything more gets one. */
       const recent = (await api.customerTickets(customer_id).catch(() => [])).filter((t) => t.id !== known?.id && Date.now() - new Date(t.created_at).getTime() < 30 * DAY).length;
-      const refundLimit = await platform.refundLimit();
-      const crit = assessCriticality({ intent: triage.intent, signals: triage.signals, confidence: triage.confidence, order, recentTickets: recent, refundLimit });
-      await step("main", { step: "Set level", tool: "Criticality rules", result: "success", detail: `${LEVEL_LABEL[crit.level]}: ${crit.reasons.join("; ")}` });
+      const refundLimit = settings.refundLimit;
+      const crit = assessCriticality({
+        intent: triage.intent,
+        signals: triage.signals,
+        confidence: triage.confidence,
+        order,
+        recentTickets: recent,
+        refundLimit,
+        verifiedDamageLimit: settings.verifiedDamageLimit,
+        escalation: settings.escalation,
+        autonomy: sc.mode,
+        upsetBefore: !!earlier.at(-1)?.steps?.some((x) => x.step === "Triage" && /%, upset:/.test(x.detail)),
+        lifetimeSpend: lifetimeSpend(orders),
+      });
+      await step("main", { step: "Set level", tool: "Criticality rules", result: "success", detail: `${LEVEL_LABEL[crit.level]}: ${crit.reasons.join("; ")}${sc.inHours ? "" : ` (after hours: ${sc.mode})`}` });
 
       if (!known && crit.handled_by === "low" && !forceTicket) return answerDirect(c, triage, crit, order, orderIds);
 
       const { ticket, isNew } = await ticketFor(known, c);
       if (crit.handled_by === "human") {
         await recordTriage(c, ticket, isNew, triage, crit, order);
-        return escalateCritical(run.id, ticket, customer_id, triage, crit, order);
+        return escalateCritical(c, ticket, triage, crit, order, orders);
+      }
+
+      /* 9. Proof before money: a damage claim that needs a photo and has none asks for one (in code, no agent). */
+      if (triage.intent === "damaged_item" && order) {
+        const photos = (await api.ticketAttachments(ticket.id).catch(() => [])).filter((a) => a.order_id === null || a.order_id === order!.id);
+        const rules = book ? rulesFrom(await book.all().catch(() => [])) : DEFAULT_RULES;
+        const needed = settings.requireDamagePhotos || order.amount > rules.photoAbove;
+        if (needed && !photos.length) {
+          await recordTriage(c, ticket, isNew, triage, crit, order);
+          const why = settings.requireDamagePhotos ? "the Control Room asks for photos on every damage claim" : `POL-DMG asks for a photo above ${rupees(rules.photoAbove)}`;
+          return askForPhotos(c, ticket, triage, order, why);
+        }
       }
 
       // The level agent works in the background and its reply lands on the ticket (the ShopKart chat watches it).
@@ -411,7 +470,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       const out: { done?: Result<ChatResponse> } = {};
       const job = (async () => {
         await recordTriage(c, ticket, isNew, triage!, crit, order);
-        return work(c, ticket, isNew, triage!, crit, refundLimit, orderIds);
+        return work(c, ticket, isNew, triage!, crit, refundLimit, orderIds, order);
       })();
       track(job.then((r) => (out.done = r)).catch((e) => log.error(`[agent] background work on ticket #${ticket.id} failed:`, e)));
       await Promise.race([job.catch(() => null), new Promise((r) => setTimeout(r, ackAfterMs))]);
@@ -503,49 +562,115 @@ export function createService({ api, platform, main, writer, levels, sales, anal
   }
 
   /** Critical: a person takes it. The main agent writes the brief; the customer is told straight away. */
-  async function escalateCritical(runId: number, ticket: Ticket, customerId: number, triage: Triage, crit: Criticality, order: Order | null): Promise<Result<ChatResponse>> {
+  async function escalateCritical(c: Chat, ticket: Ticket, triage: Triage, crit: Criticality, order: Order | null, orders: Order[]): Promise<Result<ChatResponse>> {
+    const runId = c.runId;
     const money = triage.intent === "payment_failed" || order?.payment_status === "failed_debited";
     const assignee = SUPPORT_AGENTS[0];
+    // A payment claim with no failed order: the owner gets the customer's recent orders and payments to check against.
+    const recentPayments =
+      money && !order
+        ? `No order on the account shows a failed payment. Recent orders: ${orders.length ? [...orders].sort((a, b) => b.placed_at.localeCompare(a.placed_at)).slice(0, 5).map((o) => `#${o.id} ${rupees(o.amount)} (${o.status}, payment ${o.payment_status.replace(/_/g, " ")}, placed ${o.placed_at.slice(0, 10)})`).join("; ") : "none"}.`
+        : null;
     await api.addComment(ticket.id, {
       public: false,
       body: [
         `Critical: handed to ${assignee} by ResolveAI.`,
         `What happened: ${triage.summary}`,
         order ? `Order #${order.id}: ${rupees(order.amount)}, ${order.status}, payment ${order.payment_status}.` : null,
+        recentPayments,
         `Why critical: ${crit.reasons.join("; ")}.`,
+        c.schedule.inHours ? null : `After hours: the customer was told the team is back ${c.schedule.back ?? "soon"} IST.`,
         `Suggested next steps:\n${triage.plan.map((p, i) => `${i + 1}. ${p}`).join("\n")}`,
       ].filter(Boolean).join("\n"),
     });
     await api.updateTicket(ticket.id, { assignee, priority: "urgent", status: "open", handled_by: "human" });
+    const when = c.schedule.inHours ? "within 2 hours" : `when we're back ${c.schedule.back ?? "in the morning"} (IST)`;
     const reply = money
-      ? `I'm sorry about this. I've flagged it as urgent (ticket #${ticket.id}) and our payments team will get back to you within 2 hours.`
-      : `I'm sorry about this. I've passed it to a senior teammate as an urgent case (ticket #${ticket.id}); they'll get back to you here shortly.`;
+      ? order
+        ? `I'm sorry about this. I've flagged it as urgent (ticket #${ticket.id}) and our payments team will get back to you ${when}.`
+        : `I'm sorry about this. I can't see a failed payment on your recent orders, so I've passed it to our payments team as urgent (ticket #${ticket.id}). They'll check it with you ${when}.`
+      : `I'm sorry about this. I've passed it to a senior teammate as an urgent case (ticket #${ticket.id}); they'll get back to you here ${c.schedule.inHours ? "shortly" : when}.`;
     await api.addComment(ticket.id, { body: reply, public: true });
     await platform.updateRun(runId, { status: "escalated", reply });
-    await stepper(runId)("main", { step: "Escalate to human", tool: "Zendesk", result: "escalated", detail: `Critical, assigned to ${assignee}` });
-    await remember(runId, { ticketId: ticket.id, customerId, intent: triage.intent, level: crit.level, handledBy: "human", problem: triage.summary, resolution: `Handed to ${assignee} with a brief. Told the customer: ${reply}`, outcome: "escalated" });
+    await stepper(runId)("main", { step: "Escalate to human", tool: "Zendesk", result: "escalated", detail: `Critical, assigned to ${assignee}${recentPayments ? " with the customer's recent payments" : ""}` });
+    await remember(runId, { ticketId: ticket.id, customerId: c.customerId, intent: triage.intent, level: crit.level, handledBy: "human", problem: triage.summary, resolution: `Handed to ${assignee} with a brief. Told the customer: ${reply}`, outcome: "escalated" });
+    return { status: 200, body: { reply, ticket_id: ticket.id } };
+  }
+
+  /**
+   * A damage claim that needs a photo and has none: ask for 1–3 (the chat shows an upload card), remind once, then
+   * stop asking. No refund either way; the ticket waits on the customer until photos arrive.
+   */
+  async function askForPhotos(c: Chat, ticket: Ticket, triage: Triage, order: Order, why: string): Promise<Result<ChatResponse>> {
+    const runs = await platform.runsForTicket(ticket.id).catch(() => [] as AgentRun[]);
+    const asked = runs.filter((r) => r.id !== c.runId && r.steps?.some((x) => x.step === "Ask for photos" && x.detail.includes(`#${order.id}`))).length;
+    const item = order.items.length === 1 ? order.items[0]!.name : `items in order #${order.id}`;
+    const first = c.customerName.split(" ")[0];
+    const reply =
+      asked === 0
+        ? `Sorry about the ${item}, ${first}. Before I can sort out a refund I need to see the damage: please add 1–3 photos of the item and the shipping label with the button below.`
+        : asked === 1
+          ? `I still need a photo before I can refund order #${order.id}. Tap "Add photos" below and send 1–3 pictures of the damage and the shipping label.`
+          : `I can't refund order #${order.id} without a photo of the damage, so ticket #${ticket.id} stays open for you. Add photos here whenever you can and I'll pick it up straight away.`;
+    const ask: ChatQuestion = {
+      kind: "photos",
+      prompt: "Add photos of the damage",
+      description: "1–3 photos: the damaged item and the shipping label. JPEG or PNG, up to 5 MB each.",
+      choices: [],
+      original: triage.intent === "damaged_item" ? c.message.split("\n(")[0]! : c.message,
+      photos: { min: 1, max: 3, order_id: order.id, hint: why },
+    };
+    await api.addComment(ticket.id, { body: reply, public: true });
+    await api.addComment(ticket.id, { public: false, body: `Waiting for photos (${asked === 0 ? "asked" : asked === 1 ? "reminded once" : "no photo after a reminder: no refund until one arrives"}): ${why}.` });
+    const now = await api.ticket(ticket.id);
+    await api.updateTicket(ticket.id, { status: "pending", tags: [...new Set([...now.tags, AWAITING_PHOTOS])] });
+    await platform.updateRun(c.runId, { ticket_id: ticket.id, status: "resolved", reply });
+    await stepper(c.runId)("main", {
+      step: asked >= 2 ? "Wait for photos" : "Ask for photos",
+      tool: c.channel,
+      result: asked >= 2 ? "blocked" : "success",
+      detail: `#${order.id}: ${why}${asked === 1 ? " (reminder)" : asked >= 2 ? "; no refund without one, ticket waits on the customer" : ""}`,
+    });
+    return { status: 200, body: { reply, ticket_id: ticket.id, ask } };
+  }
+
+  /** The support playbook is off: Aria doesn't work the request. The owner gets it on a ticket and the customer is told. */
+  async function playbookOff(c: Chat, known: Ticket | null): Promise<Result<ChatResponse>> {
+    const { ticket } = await ticketFor(known, c);
+    const assignee = SUPPORT_AGENTS[0];
+    await api.addComment(ticket.id, { public: false, body: `The support playbook is off in the ResolveAI Control Room, so Aria didn't work this message. Over to ${assignee}.` });
+    await api.updateTicket(ticket.id, { assignee, status: "open", handled_by: "human", tags: [...new Set([...ticket.tags, "playbook-off"])] });
+    const reply = `Thanks, ${c.customerName.split(" ")[0]}. I've passed this to ${OWNER.first} from our team (ticket #${ticket.id}), who will reply here${c.schedule.inHours ? " shortly" : ` when we're back ${c.schedule.back ?? "in the morning"} (IST)`}.`;
+    await api.addComment(ticket.id, { body: reply, public: true });
+    await platform.updateRun(c.runId, { ticket_id: ticket.id, handled_by: "human", status: "escalated", reply, plan: ["Support playbook is off: hand to the owner"] });
+    await stepper(c.runId)("main", { step: "Hand to team", tool: "Zendesk", result: "escalated", detail: `Support playbook off: #${ticket.id} assigned to ${assignee}, no agent ran` });
     return { status: 200, body: { reply, ticket_id: ticket.id } };
   }
 
   /** Low, medium or high with a ticket: that level's agent works it with its own tools. */
-  async function work(c: Chat, ticket: Ticket, isNew: boolean, triage: Triage, crit: Criticality, refundLimit: number, orderIds: number[]): Promise<Result<ChatResponse>> {
+  async function work(c: Chat, ticket: Ticket, isNew: boolean, triage: Triage, crit: Criticality, refundLimit: number, orderIds: number[], order: Order | null): Promise<Result<ChatResponse>> {
     const level = crit.handled_by as "low" | "medium" | "high";
+    const damage = triage.intent === "damaged_item";
+    const photos = damage ? (await api.ticketAttachments(ticket.id).catch(() => [])).length : 0;
     const prompt = [
       `[Zendesk ticket #${ticket.id}${isNew ? " (new)" : ""} · customer ${c.customerName} (id ${c.customerId}) · today ${today()}]`,
       `Level: ${LEVEL_LABEL[crit.level]} (${crit.reasons.join("; ")})`,
       `Auto-refund limit: ${rupees(refundLimit)}`,
+      modeLine(c.schedule),
+      damage ? `Damage claim${order ? ` on order #${order.id}` : ""}: ${photos} photo${photos === 1 ? "" : "s"} on the ticket. Call check_damage_claim before any refund or approval.` : null,
       `Orders the customer named (the only ones you may refund): ${orderIds.length ? orderIds.map((id) => `#${id}`).join(", ") : "none yet: ask which order before refunding"}`,
       ...earlierLines(c),
       `Main agent's plan:\n${triage.plan.map((p, i) => `${i + 1}. ${p}`).join("\n")}`,
       `Customer message: ${c.message}`,
-    ].join("\n");
+    ].filter(Boolean).join("\n");
 
+    const ctx: SupportRun = { ticketId: ticket.id, customerId: c.customerId, runId: c.runId, agent: level, orderIds, intent: triage.intent, claim: c.message };
     let reply: string;
     try {
       const res = await levels[level].generateText(prompt, {
         userId: `customer-${c.customerId}`,
         conversationId: c.sessionId,
-        context: runContext({ ticketId: ticket.id, customerId: c.customerId, runId: c.runId, agent: level, orderIds }),
+        context: runContext(ctx),
       });
       reply = res.text.trim();
       if (!reply) throw new Error("the model returned an empty reply");
@@ -566,6 +691,13 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     await platform.updateRun(c.runId, { status, reply, ...(escalated && { handled_by: "human" }) });
     if (solved || escalated) {
       await remember(c.runId, { ticketId: ticket.id, customerId: c.customerId, intent: triage.intent, level: crit.level, handledBy: escalated ? "human" : level, problem: triage.summary, resolution: reply, outcome: solved ? "resolved" : "escalated" });
+    }
+    // The checks found no photo where one is needed (e.g. a photo was removed): the chat shows the upload card.
+    if (ctx.damage?.decision === "needs_photos" && order) {
+      const t = await api.ticket(ticket.id);
+      await api.updateTicket(ticket.id, { tags: [...new Set([...t.tags, AWAITING_PHOTOS])] });
+      const ask: ChatQuestion = { kind: "photos", prompt: "Add photos of the damage", description: "1–3 photos: the damaged item and the shipping label. JPEG or PNG, up to 5 MB each.", choices: [], original: c.message, photos: { min: 1, max: 3, order_id: order.id, hint: ctx.damage.reasons[0] ?? "" } };
+      return { status: 200, body: { reply, ticket_id: ticket.id, ask } };
     }
     return { status: 200, body: { reply, ticket_id: ticket.id } };
   }
@@ -652,10 +784,24 @@ export function createService({ api, platform, main, writer, levels, sales, anal
    */
   async function toTeam(c: Chat, known: Ticket | null, triage: Triage, why: string): Promise<Result<ChatResponse>> {
     const { ticket } = await ticketFor(known, c);
+    // Missing details a short phone call can collect: Aria · Support Caller rings the customer, and their answers
+    // come back to /intake (sarvam_voice) in this session. The API records the step. Any refusal → the hand-over below.
+    const ask = detailsToAsk(why);
+    if (ask) {
+      const placed = await api
+        .placeSupportCall({ customer_id: c.customerId, ticket_id: ticket.id, session_id: c.sessionId, run_id: c.runId, reason: ask.reason, questions: ask.questions })
+        .catch((e) => (log.warn(`[agent] support call for run ${c.runId} not placed: ${errorText(e)}`), null));
+      if (placed) {
+        const reply = "I need a couple more details to sort this out, so I'm calling you now on your registered number. It'll take a minute, and I'll continue here right after.";
+        await api.addComment(ticket.id, { body: reply, public: true });
+        await platform.updateRun(c.runId, { ticket_id: ticket.id, intent: triage.intent, handled_by: "low", status: "working", reply, plan: ["Phone the customer for the missing details", "Continue the request with their answers"] });
+        return { status: 200, body: { reply, ticket_id: ticket.id } };
+      }
+    }
     const assignee = SUPPORT_AGENTS[0];
     await api.addComment(ticket.id, { public: false, body: `Handed to ${assignee} by ResolveAI: the customer ${why}.\nWhat they said: ${triage.summary}\nPlease check with the customer and follow up on this ticket.` });
     await api.updateTicket(ticket.id, { assignee, status: "open", priority: "normal", handled_by: "human", tags: [...new Set([...ticket.tags, triage.intent, "needs-data"])] });
-    const reply = `I couldn't find what I need to sort this out myself, so I've passed it to our support team (ticket #${ticket.id}). They're looking into it and will get back to you here shortly.`;
+    const reply = `I couldn't find what I need to sort this out myself, so I've passed it to our support team (ticket #${ticket.id}). ${c.schedule.inHours ? "They're looking into it and will get back to you here shortly." : `They're offline right now and will get back to you here when they're back ${c.schedule.back ?? "in the morning"} (IST).`}`;
     await api.addComment(ticket.id, { body: reply, public: true });
     await platform.updateRun(c.runId, { ticket_id: ticket.id, intent: triage.intent, handled_by: "human", status: "escalated", reply, plan: ["No data to answer from", `Hand to ${assignee}`, "Tell the customer the team is on it"] });
     await stepper(c.runId)("main", { step: "Hand to team", tool: "Zendesk", result: "escalated", detail: `No data: the customer ${why}. Assigned to ${assignee}` });
@@ -746,6 +892,14 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       ].join("\n");
 
       let message = "Thanks! Our team will contact you shortly.";
+      // The sales playbook is off in the Control Room: the CRM records exist, the sales agent doesn't act.
+      if (!(await platform.settings()).playbooks.sales) {
+        await api.addDealNote(deal.id, {
+          type: "note",
+          body: `New lead from the business enquiry form. Budget ${rupees(b.budget)}, wants to start: ${b.start_when || "not given"}. The sales playbook is off in the ResolveAI Control Room, so Aria didn't score it or book a call: needs ${OWNER.first}.`,
+        });
+        return { status: 201, body: { ok: true, message: `Thanks! ${OWNER.first} from our team will contact you shortly.`, deal_id: deal.id } };
+      }
       try {
         // One thread per person: a second enquiry from the same email sees what happened with the first.
         const res = await sales.generateText(prompt, {
@@ -905,8 +1059,27 @@ function candidateOrders(intent: Triage["intent"], orders: Order[]): Order[] {
   return orders.filter((o) => !fit || fit(o)).sort((a, b) => b.placed_at.localeCompare(a.placed_at));
 }
 
-/** The request an answer to "which order?" belongs to, as one message the agents can work. */
-const answerMessage = (a: ChatAnswer) => `${a.original}\n(About order ${a.value && /^\d+$/.test(a.value) ? `#${a.value}` : "?"}: ${a.text})`;
+/** The request an answer belongs to ("which order?", or photos for a claim), as one message the agents can work. */
+const answerMessage = (a: ChatAnswer) =>
+  a.kind === "photos"
+    ? `${a.original}\n(Sent photos of order ${a.value && /^\d+$/.test(a.value) ? `#${a.value}` : "?"}: ${a.text})`
+    : `${a.original}\n(About order ${a.value && /^\d+$/.test(a.value) ? `#${a.value}` : "?"}: ${a.text})`;
+
+/** Tag on a ticket whose damage claim waits for the customer's photos. */
+const AWAITING_PHOTOS = "awaiting-photos";
+
+/** What the customer has really paid ShopKart (₹): paid orders, delivered cash-on-delivery ones, nothing refunded. */
+function lifetimeSpend(orders: Order[]): number {
+  return orders.filter((o) => o.payment_status === "paid" || (o.payment_status === "cod" && (o.status === "delivered" || o.status === "damaged"))).reduce((a, o) => a + o.amount, 0);
+}
+
+/** What to collect by phone when the request can't be worked from the data. null: no call (straight to a person). */
+function detailsToAsk(why: string): { reason: string; questions: string[] } | null {
+  if (/isn't on their account/.test(why)) return { reason: `${why.replace(/^asked/, "the customer asked")}, so support needs the right order before it can help`, questions: ["the correct order number, from the order confirmation or the My Orders page", "what the request is about and what went wrong", "what the customer would like done"] };
+  if (/no orders on this account/.test(why)) return { reason: "the customer asked about an order, but no order shows on their ShopKart account", questions: ["the order number, or the phone number or email used to place the order", "what the request is about"] };
+  if (/no earlier request/.test(why)) return { reason: "the customer asked for an update, but support found no earlier request from them", questions: ["which request or order they mean", "what they asked about earlier"] };
+  return null;
+}
 
 /** The order a ticket is about: the agent writes subjects like "Damaged item, refund requested – order #1023". */
 const ticketOrderId = (t: Ticket) => t.order_id ?? (Number(t.subject.match(/order #(\d+)/i)?.[1]) || null);

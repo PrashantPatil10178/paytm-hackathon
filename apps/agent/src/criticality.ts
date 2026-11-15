@@ -40,11 +40,25 @@ export type Intent = (typeof INTENTS)[number];
 export interface Signals {
   angry: boolean;
   urgent: boolean;
-  /** Mentions fraud, police, consumer court, legal action, chargeback, threats */
-  legal_or_fraud: boolean;
+  /** Mentions fraud, a scam, an unauthorised charge or a chargeback */
+  fraud: boolean;
+  /** Mentions police, consumer court, a lawyer or legal action, or threatens / abuses */
+  legal: boolean;
   /** Asks for a person */
   wants_human: boolean;
 }
+
+/** The Control Room's "Always escalate to a human when…" switches. Failed payments always go to a person. */
+export interface EscalationSwitches {
+  fraud: boolean;
+  legal: boolean;
+  vip: boolean;
+  negative: boolean;
+}
+
+export const ESCALATE_ALL: EscalationSwitches = { fraud: true, legal: true, vip: false, negative: true };
+/** Lifetime spend (paid orders, refunds excluded) from which a customer counts as VIP. */
+export const VIP_SPEND = 15_000;
 
 export interface CriticalityInput {
   intent: Intent;
@@ -55,6 +69,16 @@ export interface CriticalityInput {
   recentTickets: number;
   /** ₹ the medium agent may refund alone (Control Room setting). Default AUTO_REFUND_LIMIT. */
   refundLimit?: number;
+  /** ₹ up to which a damage claim with a verified photo and no risk signal may be refunded alone (Control Room setting) */
+  verifiedDamageLimit?: number;
+  /** The Control Room's escalation switches. Default: fraud, legal and negative on, VIP off. */
+  escalation?: EscalationSwitches;
+  /** The autonomy that applies now (business hours or after hours). suggest: every action waits for a person. */
+  autonomy?: "suggest" | "approval" | "autonomous";
+  /** The previous message in this chat was upset too */
+  upsetBefore?: boolean;
+  /** The customer's lifetime spend in ₹ (paid orders, refunds excluded) */
+  lifetimeSpend?: number;
 }
 
 export interface Criticality {
@@ -70,22 +94,37 @@ const atLeast = (l: AgentLevel, min: AgentLevel): AgentLevel => (ORDER.indexOf(l
 export const HANDLER: Record<AgentLevel, HandledBy> = { low: "low", medium: "medium", high: "high", critical: "human" };
 
 const rupee = (n: number) => `₹${n.toLocaleString("en-IN")}`;
+/** Requests that change something for the customer: in "suggest only" a person approves each one. */
+const ACTIONS: readonly Intent[] = ["refund", "damaged_item", "cancel_order", "address_change"];
+/** Information only: VIP customers still get these answered by Aria. */
+const INFO: readonly Intent[] = ["order_tracking", "question", "out_of_scope"];
 
 export function assessCriticality(i: CriticalityInput): Criticality {
   const reasons: string[] = [];
   const limit = i.refundLimit ?? AUTO_REFUND_LIMIT;
+  const damageLimit = Math.max(limit, i.verifiedDamageLimit ?? limit);
+  const esc = i.escalation ?? ESCALATE_ALL;
   let level: AgentLevel;
 
-  // 1. Hard rules: risk and money.
-  if (i.signals.legal_or_fraud) {
+  // 1. Hard rules: risk and money. A switch that is off only stops a mention from forcing a person; the money
+  //    rules below (limits, approvals, photo and risk checks in the tools) still apply.
+  if (i.signals.legal && esc.legal) {
     level = "critical";
-    reasons.push("mentions fraud or legal action");
+    reasons.push("mentions legal action, police or threats");
+  } else if (i.signals.fraud && esc.fraud) {
+    level = "critical";
+    reasons.push("mentions fraud or a chargeback");
   } else if (i.order?.payment_status === "failed_debited" || i.intent === "payment_failed") {
     level = "critical";
-    reasons.push(i.order ? `money debited (${rupee(i.order.amount)}) but the payment failed` : "says money was debited but the payment failed");
+    reasons.push(i.order ? `money debited (${rupee(i.order.amount)}) but the payment failed` : "says money was debited but the payment failed, and no order shows a failed payment");
   } else if ((i.intent === "refund" || i.intent === "damaged_item") && i.order && i.order.amount > limit) {
-    level = "high";
-    reasons.push(`refund of ${rupee(i.order.amount)} is above the ${rupee(limit)} auto-refund limit`);
+    if (i.intent === "damaged_item" && i.order.amount <= damageLimit) {
+      level = "medium";
+      reasons.push(`refund of ${rupee(i.order.amount)} is above the ${rupee(limit)} auto-refund limit, but within ${rupee(damageLimit)} for damage verified by photo`);
+    } else {
+      level = "high";
+      reasons.push(`refund of ${rupee(i.order.amount)} is above the ${rupee(limit)} auto-refund limit`);
+    }
   } else {
     // 2. The kind of request.
     switch (i.intent) {
@@ -109,12 +148,28 @@ export function assessCriticality(i: CriticalityInput): Criticality {
         reasons.push("needs a judgement call");
     }
   }
-
-  // 3. AI signals push it up.
   if (level !== "critical") {
-    if (i.signals.angry && i.recentTickets >= 2) {
+    if (i.signals.legal) reasons.push("mentions legal action, but the legal-threats switch is off");
+    else if (i.signals.fraud) reasons.push("mentions fraud, but the fraud switch is off: refunds still need the usual checks");
+  }
+
+  // 3. Control Room switches and AI signals push it up.
+  if (level !== "critical") {
+    if (esc.vip && (i.lifetimeSpend ?? 0) >= VIP_SPEND && !INFO.includes(i.intent)) {
+      level = "critical";
+      reasons.push(`VIP customer (${rupee(i.lifetimeSpend!)} spent, VIP from ${rupee(VIP_SPEND)})`);
+    } else if (esc.negative && i.signals.angry && i.upsetBefore) {
+      level = "critical";
+      reasons.push("upset on two messages in a row");
+    } else if (esc.negative && i.signals.angry && i.recentTickets >= 2) {
       level = up(level);
       reasons.push(`upset and contacted us ${i.recentTickets} times recently`);
+    }
+  }
+  if (level !== "critical") {
+    if (i.autonomy === "suggest" && ACTIONS.includes(i.intent) && level === "medium") {
+      level = "high";
+      reasons.push("autonomy is Suggest only: a person approves every action");
     }
     if (i.signals.wants_human) {
       level = atLeast(level, "high");

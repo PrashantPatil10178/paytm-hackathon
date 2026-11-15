@@ -12,7 +12,7 @@ import { ApprovalsCard, LeadCard, MetricsCard, TicketCard, TicketListCard } from
 
 const PAGES = {
   overview: '/', analytics: '/analytics', audit: '/audit', tickets: '/tickets', approvals: '/approvals', board: '/board',
-  leads: '/leads', calls: '/calls', campaigns: '/campaigns', sales_analytics: '/sales/analytics', channels: '/channels', connectors: '/connectors', settings: '/settings', policies: '/policies',
+  leads: '/leads', calls: '/calls', support_calls: '/support/calls', campaigns: '/campaigns', sales_analytics: '/sales/analytics', channels: '/channels', connectors: '/connectors', settings: '/settings', policies: '/policies',
 }
 
 const STATUS = z.enum(['open', 'in_progress', 'waiting', 'solved'])
@@ -79,7 +79,7 @@ export default function AriaTools() {
       status: STATUS.optional().describe('open, in_progress, waiting (for a human) or solved'),
       level: LEVEL.optional(),
       channel: CHANNEL.optional(),
-      solvedBy: z.enum(['ai', 'human']).optional().describe('Only solved tickets, by who solved them'),
+      solvedBy: z.enum(['ai', 'ai_approved', 'human']).optional().describe('Only solved tickets, by who solved them: ai = Aria alone, ai_approved = Aria after a person approved, human = a person'),
       limit: z.number().int().min(1).max(12).optional(),
     }),
     handler: async (f) => {

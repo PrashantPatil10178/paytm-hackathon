@@ -10,6 +10,8 @@ import { PageHeader, Tabs, Select, LevelBadge, StatusBadge, SolvedBy, ChannelTag
 import DataTable, { type Change, type Column } from '../components/DataTable'
 import Trace from '../components/Trace'
 import ToolChain from '../components/ToolChain'
+import { CallForDetails } from '../components/Calls'
+import Photos from '../components/Photos'
 import { CHANNELS, LEVELS, STATUSES, STATUS_ORDER, channelMeta } from '../meta'
 import { ago, clock, cn, rupees, SHOP_URL, ZENDESK_URL, hostOf } from '../lib'
 import type { Level, Status, Ticket } from '../types'
@@ -120,6 +122,7 @@ export default function Tickets() {
   const navigate = useNavigate()
   const [level, setLevel] = useState('all')
   const [channel, setChannel] = useState('all')
+  const [solver, setSolver] = useState('all')
   const [q, setQ] = useState('')
 
   // Change one query param, keep the rest: the status view (?status=, also set from the sidebar)
@@ -136,9 +139,9 @@ export default function Tickets() {
 
   const matches = useCallback((t: Ticket) => {
     const s = q.trim().toLowerCase()
-    return (level === 'all' || t.level === level) && (channel === 'all' || t.channel === channel) &&
+    return (level === 'all' || t.level === level) && (channel === 'all' || t.channel === channel) && (solver === 'all' || (t.status === 'solved' && t.solvedBy === solver)) &&
       (!s || t.id.toLowerCase().includes(s) || t.customer.name.toLowerCase().includes(s) || t.issue.toLowerCase().includes(s))
-  }, [q, level, channel])
+  }, [q, level, channel, solver])
   const filter = useCallback((t: Ticket) => matches(t) && (status === 'all' || t.status === status), [matches, status])
   const base = tickets.filter(matches)
 
@@ -197,6 +200,7 @@ export default function Tickets() {
               </div>
               <Select label="Level" value={level} onChange={setLevel} options={[{ value: 'all', label: 'All levels' }, ...LEVEL_ORDER.map((v) => ({ value: v, label: LEVELS[v].label }))]} />
               <Select label="Channel" value={channel} onChange={setChannel} options={[{ value: 'all', label: 'All channels' }, ...Object.entries(CHANNELS).map(([v, c]) => ({ value: v, label: c.label }))]} />
+              <Select label="Solved by" value={solver} onChange={setSolver} options={[{ value: 'all', label: 'Solved by anyone' }, { value: 'ai', label: 'Solved by AI' }, { value: 'ai_approved', label: 'AI, after approval' }, { value: 'human', label: 'Solved by a person' }]} />
             </div>
           </>
         )}
@@ -234,7 +238,7 @@ function TicketDetail({ t, onAudit }: { t: Ticket; onAudit: () => void }) {
       <div className={cn('flex items-start gap-3 rounded-xl p-4 ring-1', solved ? 'bg-brand-50/70 ring-brand-100' : 'bg-amber-50/70 ring-amber-200')}>
         {solved ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-brand-600" /> : <Clock className="mt-0.5 size-5 shrink-0 text-amber-600" />}
         <div>
-          <p className="text-sm font-semibold text-slate-900">{solved ? `Resolved by ${t.solvedBy === 'ai' ? 'the AI' : 'a human'}` : 'In flight'}</p>
+          <p className="text-sm font-semibold text-slate-900">{solved ? (t.solvedBy === 'ai' ? 'Resolved by the AI' : t.solvedBy === 'ai_approved' ? 'Resolved by the AI, after your approval' : 'Resolved by a human') : 'In flight'}</p>
           {t.result && <p className="mt-0.5 text-sm text-slate-700">{t.result}</p>}
         </div>
       </div>
@@ -247,6 +251,8 @@ function TicketDetail({ t, onAudit }: { t: Ticket; onAudit: () => void }) {
         <Field label="Solved by" value={<SolvedBy by={solved ? t.solvedBy : null} />} />
         <Field label="Helpdesk" value={<>{DESK[t.helpdesk]} · <span className="ref">{t.helpdeskId}</span></>} />
       </dl>
+
+      {t.status !== 'solved' && <CallForDetails ticket={t} />}
 
       <section>
         <SectionTitle>Conversation</SectionTitle>
@@ -261,6 +267,7 @@ function TicketDetail({ t, onAudit }: { t: Ticket; onAudit: () => void }) {
                   {m.from === 'customer' ? (t.customer.name[0] ?? '?') : m.from === 'ai' ? <ResolveAIGlyph className="size-4" /> : <UserRound className="size-3.5" />}
                 </span>
                 <div className={cn('max-w-[78%] rounded-2xl px-3.5 py-2 text-sm', mine ? 'rounded-tr-sm bg-surface shadow-sm ring-1 ring-slate-200' : 'rounded-tl-sm bg-ink/[0.03] ring-1 ring-slate-200/70')}>
+                  {m.attachments && m.attachments.length > 0 && <Photos items={m.attachments} />}
                   <p className="text-slate-800">{m.text}</p>
                   <p className="mt-1 text-[11px] text-slate-400">{m.from === 'ai' ? 'Aria (AI)' : m.from === 'agent' ? 'Support agent' : t.customer.name} · {clock(m.time)}</p>
                 </div>

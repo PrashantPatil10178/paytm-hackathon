@@ -22,8 +22,8 @@ export const indianRupees = (text: string) =>
  */
 const supportInWords = (t: AnalyticsTotals) =>
   `${t.tickets + (t.chats_answered ?? 0)} requests in all: ${t.chats_answered ?? 0} questions answered in the chat without a ticket, ` +
-  `and ${t.tickets} tickets. Of the tickets, ${t.tickets_ai} were handled by the AI alone and ${t.tickets_escalated} were handed to a person ` +
-  `(separate groups: tickets_escalated is not a share of tickets_ai); ${t.tickets_solved} solved, ${t.tickets_open} not solved yet. ` +
+  `and ${t.tickets} tickets. Of the tickets, ${t.tickets_ai} were handled by the AI alone, ${t.tickets_ai_approved ?? 0} by the AI after a person approved its action, and ${t.tickets_escalated} were handed to a person ` +
+  `(separate groups: none is a share of another); ${t.tickets_solved} solved, ${t.tickets_open} not solved yet. ` +
   `AI handled ${t.ai_rate}% of all requests on its own.`;
 
 export function analysisTools(api: DemoAPI) {

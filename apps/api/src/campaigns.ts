@@ -7,6 +7,9 @@
 import {
   BOT,
   CAMPAIGN_CHANNELS,
+  ENQUIRY_NEEDS,
+  type CampaignLanding,
+  type LandingSubmission,
   type CampaignResponse,
   type CampaignResponseStatus,
   type CampaignSummary,
@@ -141,9 +144,86 @@ export async function contactForEmail(email: string) {
   return row ? { ...toContact(row), deals: row.deals } : null;
 }
 
+/* ───── Landing pages (public: ShopKart /c/<slug>) ───── */
+
+async function campaignBySlug(slug: string) {
+  const [row] = await db.select().from(s.campaigns).where(eq(s.campaigns.slug, slug.toLowerCase()));
+  if (!row) throw notFound(`Campaign "${slug}"`);
+  return row;
+}
+
+const landingView = (c: typeof s.campaigns.$inferSelect): CampaignLanding => ({ id: c.id, name: c.name, slug: c.slug, headline: c.headline || c.name, pitch: c.pitch, status: c.status, channel: c.channel });
+
+/**
+ * Spam-safe basics, in memory (the demo API is one process): at most 5 submissions per IP per 10 minutes and
+ * 3 per email per hour. Over that: 429. Duplicates under the limit are allowed: the leads agent decides.
+ */
+const hits = new Map<string, number[]>();
+function limited(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const recent = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
+  if (recent.length >= max) {
+    hits.set(key, recent);
+    return true;
+  }
+  recent.push(now);
+  hits.set(key, recent);
+  if (hits.size > 5000) for (const [k, v] of hits) if (!v.some((t) => now - t < 3_600_000)) hits.delete(k);
+  return false;
+}
+
+/** The submitter's IP: the app proxy forwards it (x-forwarded-for); a direct call has none. */
+const clientIp = (req: Request) => req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "direct";
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/** A landing form submission → a campaign response (status new) for the leads agent. */
+async function submitLanding(slug: string, b: LandingSubmission, ip: string): Promise<{ ok: true; id: number | null }> {
+  const c = await campaignBySlug(slug);
+  if (c.status !== "active") throw new HttpError(409, "This campaign isn't taking replies right now.");
+  // Honeypot: a hidden field people never see. Bots fill it; say thanks and store nothing.
+  if (typeof b.website === "string" && b.website.trim()) return { ok: true, id: null };
+  const text = (v: unknown, field: string, max: number, required = true) => {
+    const t = typeof v === "string" ? v.trim() : "";
+    if (required && !t) throw bad(`${field} is required`);
+    if (t.length > max) throw bad(`${field} is too long (${max} characters at most)`);
+    return t;
+  };
+  const name = text(b.name, "Name", 80);
+  const email = text(b.email, "Email", 120).toLowerCase();
+  if (!EMAIL.test(email)) throw bad("Enter a valid email address");
+  const phone = text(b.phone, "Phone", 20);
+  if (phone.replace(/\D/g, "").length < 10) throw bad("Enter a phone number with at least 10 digits");
+  const company = text(b.company, "Company", 100);
+  const need = oneOf(b.need, ENQUIRY_NEEDS.map((n) => n.id), "need");
+  const budget = b.budget === undefined || b.budget === null || (b.budget as unknown) === "" ? null : Number(b.budget);
+  if (budget !== null && (!Number.isFinite(budget) || budget < 0 || budget > 1e9)) throw bad("Budget must be an amount in ₹");
+  const start_when = text(b.start_when, "Start", 40, false);
+  const message = text(b.message, "Message", 1000, false);
+  if (limited(`ip:${ip}`, 5, 10 * 60_000) || limited(`email:${email}`, 3, 60 * 60_000)) throw new HttpError(429, "Too many replies in a short time. Please try again later.");
+  const [row] = await db
+    .insert(s.campaignResponses)
+    .values({ campaign_id: c.id, name, email, phone, company, need, budget, start_when, message, status: "new", created_at: new Date() })
+    .returning({ id: s.campaignResponses.id });
+  return { ok: true, id: row!.id };
+}
+
 /* ───── Routes ───── */
 
 export const campaignRoutes = {
+  /** The landing page's content. `?visit=1` (once per page load) counts a visit. */
+  "/campaigns/landing/:slug": {
+    GET: handle(async (req) => {
+      const c = await campaignBySlug(String(req.params.slug));
+      if (new URL(req.url).searchParams.get("visit") === "1") {
+        await db.update(s.campaigns).set({ landing_visits: sql`${s.campaigns.landing_visits} + 1` }).where(eq(s.campaigns.id, c.id));
+      }
+      return ok({ campaign: landingView(c) });
+    }),
+  },
+  "/campaigns/landing/:slug/responses": {
+    POST: handle(async (req) => ok(await submitLanding(String(req.params.slug), await body<LandingSubmission>(req), clientIp(req)), 201)),
+  },
   "/campaigns": {
     GET: handle(async () => ok({ campaigns: await listCampaigns() })),
   },

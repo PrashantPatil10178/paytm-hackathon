@@ -57,8 +57,8 @@ const n = (xs: unknown[]) => xs.length;
 const sum = <T>(f: (x: T) => number) => (xs: T[]) => Math.round(xs.reduce((a, x) => a + f(x), 0));
 
 export async function computeMetrics(): Promise<AnalyticsMetrics> {
-  const [tickets, orders, deals, contacts, campaigns, chats] = await Promise.all([
-    db.select({ status: s.tickets.status, priority: s.tickets.priority, assignee: s.tickets.assignee, escalated: s.tickets.escalated_by_ai, created_at: s.tickets.created_at }).from(s.tickets),
+  const [tickets, orders, deals, contacts, campaigns, chats, approvedRows] = await Promise.all([
+    db.select({ id: s.tickets.id, status: s.tickets.status, priority: s.tickets.priority, assignee: s.tickets.assignee, escalated: s.tickets.escalated_by_ai, created_at: s.tickets.created_at }).from(s.tickets),
     db.select({ amount: s.orders.amount, status: s.orders.status, payment: s.orders.payment_status, placed_at: s.orders.placed_at }).from(s.orders),
     db.select({ stage: s.deals.stage, amount: s.deals.amount, score: s.deals.score }).from(s.deals),
     db.select({ source: s.contacts.source }).from(s.contacts),
@@ -68,12 +68,17 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
       .select({ created_at: s.agentRuns.created_at })
       .from(s.agentRuns)
       .where(and(isNull(s.agentRuns.ticket_id), isNotNull(s.agentRuns.reply), isNotNull(s.agentRuns.level), eq(s.agentRuns.kind, "request"))),
+    db.selectDistinct({ ticket_id: s.approvals.ticket_id }).from(s.approvals).where(eq(s.approvals.status, "approved")),
   ]);
+  const approved = new Set(approvedRows.map((a) => a.ticket_id));
 
   type T = (typeof tickets)[number];
   type O = (typeof orders)[number];
   type D = (typeof deals)[number];
-  const byAi = (t: T) => t.assignee === BOT && !t.escalated;
+  /** Still with the AI, never escalated. Split: Aria alone, or Aria after a person approved its action. */
+  const withAi = (t: T) => t.assignee === BOT && !t.escalated;
+  const byAi = (t: T) => withAi(t) && !approved.has(t.id);
+  const byAiApproved = (t: T) => withAi(t) && approved.has(t.id);
   // Money that actually came in: not refunded, not stuck in a failed payment.
   const counted = (o: O) => o.payment !== "refunded" && o.payment !== "refund_initiated" && o.payment !== "failed_debited";
   const open = (d: D) => d.stage !== "closed_won" && d.stage !== "closed_lost";
@@ -87,12 +92,15 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
   const INR = (key: string, label: string): AnalyticsSeries => ({ key, label, unit: "inr" });
 
   const datasets: AnalyticsDataset[] = [
-    dataset("tickets_per_day", [COUNT("ai", "Handled by AI"), COUNT("human", "Handled by people")],
+    dataset("tickets_per_day", [COUNT("ai", "Handled by AI"), COUNT("ai_approved", "AI, after approval"), COUNT("human", "Handled by people")],
       byCategory(
-        [...recentTickets.map((t) => ({ at: t.created_at, ai: byAi(t) })), ...chats.filter((c) => since.has(dayKey(c.created_at))).map((c) => ({ at: c.created_at, ai: true }))],
+        [
+          ...recentTickets.map((t) => ({ at: t.created_at, by: byAi(t) ? "ai" : byAiApproved(t) ? "ai_approved" : "human" })),
+          ...chats.filter((c) => since.has(dayKey(c.created_at))).map((c) => ({ at: c.created_at, by: "ai" })),
+        ],
         days,
         (x) => dayKey(x.at),
-        { ai: (xs) => xs.filter((x) => x.ai).length, human: (xs) => xs.filter((x) => !x.ai).length },
+        { ai: (xs) => xs.filter((x) => x.by === "ai").length, ai_approved: (xs) => xs.filter((x) => x.by === "ai_approved").length, human: (xs) => xs.filter((x) => x.by === "human").length },
       )),
     dataset("tickets_by_status", [COUNT("tickets", "Tickets")],
       byCategory(tickets, ["new", "open", "pending", "solved"].map((k) => ({ key: k, label: cap(k) })), (t) => t.status, { tickets: n })),
@@ -122,6 +130,7 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
       tickets_open: tickets.filter((t) => t.status !== "solved").length,
       tickets_solved: tickets.filter((t) => t.status === "solved").length,
       tickets_ai: ai,
+      tickets_ai_approved: tickets.filter(byAiApproved).length,
       tickets_escalated: tickets.filter((t) => t.escalated).length,
       chats_answered: chats.length,
       // Share of all requests (tickets plus chats answered without one) that the AI handled alone.

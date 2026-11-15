@@ -287,7 +287,7 @@ export interface SupportCallBody {
   customer_id: number;
   /** Why we're calling, one plain clause, e.g. "you wrote that an item arrived damaged, but we couldn't tell which order" */
   reason: string;
-  /** The details to collect, in order (1–5) */
+  /** The details to collect, in order (1–3; calls stay short, extra ones are dropped) */
   questions: string[];
   ticket_id?: number | null;
   session_id?: string | null;

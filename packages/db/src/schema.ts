@@ -53,11 +53,13 @@ import type {
   ZdComment,
 } from "@ph/shared";
 import { relations } from "drizzle-orm";
-import { boolean, doublePrecision, index, integer, jsonb, pgTable, real, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, customType, doublePrecision, index, integer, jsonb, pgTable, real, serial, text, timestamp } from "drizzle-orm/pg-core";
 
 const id = () => integer().primaryKey().generatedByDefaultAsIdentity();
 const at = () => timestamp({ withTimezone: true, mode: "date" });
 const money = () => doublePrecision().notNull();
+/** Raw bytes. Bun's driver round-trips Buffers as real bytea (unlike jsonb, see CLAUDE.md). */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 /* ───── ShopKart ───── */
 
@@ -170,6 +172,37 @@ export const chatMessages = pgTable(
     created_at: at().notNull().defaultNow(),
   },
   (t) => [index().on(t.session_id), index().on(t.ticket_id), index().on(t.created_at)],
+);
+
+/**
+ * Photos customers attach in the ShopKart chat (damage claims): proof before money. The bytes live in Postgres
+ * (bytea) next to the rows that point at them, so a demo reset wipes them with everything else and every app
+ * reads them through the API (GET /attachments/:id). Downscaled in the browser to ≤1600 px JPEG first, so a row
+ * is a few hundred KB. `sha256` finds the same photo reused on another claim. Metadata queries never select `data`.
+ */
+export const attachments = pgTable(
+  "attachments",
+  {
+    id: serial().primaryKey(),
+    customer_id: integer().notNull(),
+    session_id: text(),
+    /** The chat line it was sent with */
+    chat_message_id: integer(),
+    /** Set once the photo reaches a ticket (the comment that carries it) */
+    ticket_id: integer(),
+    comment_id: integer(),
+    /** The order the claim is about, when known */
+    order_id: integer(),
+    mime: text().notNull(),
+    size: integer().notNull(),
+    width: integer().notNull().default(0),
+    height: integer().notNull().default(0),
+    sha256: text().notNull(),
+    name: text().notNull().default(""),
+    data: bytea().notNull(),
+    created_at: at().notNull().defaultNow(),
+  },
+  (t) => [index().on(t.ticket_id), index().on(t.session_id), index().on(t.sha256)],
 );
 
 /* ───── HubSpot CRM ───── */
@@ -405,6 +438,13 @@ export const campaigns = pgTable("campaigns", {
   impressions: integer().notNull(),
   clicks: integer().notNull(),
   started_at: at().notNull(),
+  /** The public landing page in ShopKart: /c/<slug> */
+  slug: text().notNull().default(""),
+  /** The pitch shown on the landing page */
+  headline: text().notNull().default(""),
+  pitch: text().notNull().default(""),
+  /** Landing page views (one per page load) */
+  landing_visits: integer().notNull().default(0),
 });
 
 /** People who answered a campaign. The leads agent converts each into a CRM contact + deal, or skips it. */
@@ -502,7 +542,7 @@ export const agentStepsRelations = relations(agentSteps, ({ one }) => ({ run: on
 export const activitiesRelations = relations(activities, ({ one }) => ({ deal: one(deals, { fields: [activities.deal_id], references: [deals.id] }) }));
 
 /** Every demo table, children first: the order `reset` truncates in. */
-export const DEMO_TABLES = ["rai_calls", "rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_messages", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+export const DEMO_TABLES = ["attachments", "rai_calls", "rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_messages", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
 
 export const policiesRelations = relations(policies, ({ many }) => ({ rules: many(policyRules) }));
 export const policyRulesRelations = relations(policyRules, ({ one }) => ({ policy: one(policies, { fields: [policyRules.policy_code], references: [policies.code] }) }));

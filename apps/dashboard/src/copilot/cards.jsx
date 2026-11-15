@@ -59,7 +59,7 @@ export function TicketListCard({ status, level, channel, solvedBy, limit }) {
     [tickets, status, level, channel, solvedBy, limit],
   )
   if (loading) return <Loading title="Tickets" />
-  const filters = [STATUSES[status]?.label, LEVELS[level]?.label, channel && channelMeta(channel).label, solvedBy && `by ${solvedBy === 'ai' ? 'AI' : 'human'}`].filter(Boolean)
+  const filters = [STATUSES[status]?.label, LEVELS[level]?.label, channel && channelMeta(channel).label, solvedBy && `by ${solvedBy === 'ai' ? 'AI' : solvedBy === 'ai_approved' ? 'AI after approval' : 'human'}`].filter(Boolean)
   return (
     <Frame title={filters.length ? filters.join(' · ') : 'All tickets'} meta={rows.length} action={<OpenLink to="/tickets">Tickets</OpenLink>}>
       {rows.length === 0 ? (

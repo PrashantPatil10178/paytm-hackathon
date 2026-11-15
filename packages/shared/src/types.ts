@@ -51,6 +51,38 @@ export interface ZdComment {
   /** false = internal note (team only) */
   public: boolean;
   created_at: string;
+  /** Photos the customer sent with this message (only present when there are some) */
+  attachments?: Attachment[];
+}
+
+/**
+ * A photo a customer attached in the chat (damage claims). The image itself is GET /attachments/{id} (`url`,
+ * relative to the API, so apps prefix their /api proxy). `sha256` is the image's hash: the same photo sent
+ * again on another claim is found by it.
+ */
+export interface Attachment {
+  id: number;
+  url: string;
+  mime: string;
+  size: number;
+  width: number;
+  height: number;
+  sha256: string;
+  name: string;
+  customer_id: number;
+  ticket_id: number | null;
+  order_id: number | null;
+  created_at: string;
+}
+
+/** An attachment plus the earlier ones with the same image (same sha256) on other claims. GET /zendesk/tickets/{id}/attachments */
+export type AttachmentWithReuse = Attachment & { reused: { id: number; ticket_id: number | null; customer_id: number; order_id: number | null; created_at: string }[] };
+
+/** POST /shop/chat/attachments: 1–3 images as data URLs (JPEG/PNG/WebP, ≤5 MB each). */
+export interface UploadAttachmentsBody {
+  session_id: string;
+  customer_id: number;
+  files: { name?: string; data_url: string; width?: number; height?: number }[];
 }
 
 export interface Ticket {
@@ -114,6 +146,8 @@ export interface CreateCommentBody {
   public: boolean;
   author?: string;
   author_type?: ZdComment["author_type"];
+  /** Photos (attachment ids) this message carries: they are linked to the ticket and shown on the comment */
+  attachment_ids?: number[];
 }
 
 /* ───────────────────────── HubSpot CRM ───────────────────────── */
@@ -324,6 +358,8 @@ export interface ChatRequest {
   message: string;
   /** Set when the customer is answering a question Aria asked (ChatResponse.ask). */
   answer?: ChatAnswer;
+  /** Photos uploaded first with POST /shop/chat/attachments, sent with this message */
+  attachments?: number[];
 }
 
 export interface ChatResponse {
@@ -348,8 +384,8 @@ export interface ChatChoice {
  * ("Item damaged" from someone with several orders). Code decides when to ask, never the model.
  */
 export interface ChatQuestion {
-  /** What the answer fills in. */
-  kind: "order";
+  /** What the answer fills in: which order, or photos of the damage (then `choices` is empty and the chat shows an upload card). */
+  kind: "order" | "photos";
   prompt: string;
   description?: string;
   choices: ChatChoice[];
@@ -357,6 +393,8 @@ export interface ChatQuestion {
   other?: { label: string; placeholder: string };
   /** The customer's original message, sent back with the answer so the request can be worked as a whole. */
   original: string;
+  /** kind "photos": how many to send and which order they are for */
+  photos?: { min: number; max: number; order_id: number | null; hint: string };
 }
 
 export interface ChatAnswer {
@@ -389,6 +427,8 @@ export interface ChatMessage {
   ask: ChatQuestion | null;
   /** The customer's message answered that question */
   answer: ChatAnswer | null;
+  /** Photos sent with this message */
+  attachments?: Attachment[];
   created_at: string;
 }
 
@@ -454,6 +494,28 @@ export interface Campaign {
   impressions: number;
   clicks: number;
   started_at: string;
+  /** Public landing page in ShopKart: /c/{slug} */
+  slug: string;
+  headline: string;
+  pitch: string;
+  /** Landing page views, counted on each page load */
+  landing_visits: number;
+}
+
+/** What the public landing page shows (GET /campaigns/landing/{slug}). */
+export type CampaignLanding = Pick<Campaign, "id" | "name" | "slug" | "headline" | "pitch" | "status" | "channel">;
+
+/** POST /campaigns/landing/{slug}/responses: the landing form. `website` is a honeypot and must stay empty. */
+export interface LandingSubmission {
+  name: string;
+  email: string;
+  phone: string;
+  company: string;
+  need: EnquiryNeed;
+  budget?: number | null;
+  start_when?: string;
+  message?: string;
+  website?: string;
 }
 
 /** A campaign with counts of its responses by status. */
@@ -584,8 +646,10 @@ export interface AnalyticsTotals {
   tickets: number;
   tickets_open: number;
   tickets_solved: number;
-  /** Tickets still with the AI (assigned to the bot, never escalated) */
+  /** Tickets still with the AI (assigned to the bot, never escalated), no approval needed */
   tickets_ai: number;
+  /** Tickets the AI worked to the end after a person approved its action (Approvals); not in tickets_ai */
+  tickets_ai_approved: number;
   /** Tickets the AI handed to a person. A different set from tickets_ai, not a part of it. */
   tickets_escalated: number;
   /** Questions Aria answered in the chat without opening a ticket (all AI-handled) */

@@ -1,8 +1,8 @@
 import { useEffect, type ComponentProps, type ReactNode } from 'react'
-import { X, CheckCircle2, Info, UserRound } from 'lucide-react'
+import { X, Check, CheckCircle2, Info, UserRound } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { cn } from '../lib'
-import { LEVELS, STATUSES, RESULTS, CHANNELS, toolMeta, type Icon as IconType } from '../meta'
+import { LEVELS, STATUSES, RESULTS, channelMeta, toolMeta, type Icon as IconType } from '../meta'
 import type { ChannelId, Level, Solver, Status, StepResult, Toast } from '../types'
 
 export function Card({ className, children, ...rest }: ComponentProps<'div'>) {
@@ -113,8 +113,19 @@ export function ResultBadge({ result }: { result: StepResult }) {
   )
 }
 
+/** Who solved a ticket. ai = mint (the AI); ai_approved = mint with a person's check (the AI did it after a person approved); human = periwinkle. */
 export function SolvedBy({ by }: { by?: Solver | null }) {
   if (!by) return <span className="text-xs text-slate-400">—</span>
+  if (by === 'ai_approved')
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-700" title="Aria did the work after a person approved it">
+        <span className="relative grid size-5 place-items-center rounded-full bg-brand-50">
+          <ResolveAIGlyph className="size-3.5" />
+          <span className="absolute -right-1 -bottom-1 grid size-3 place-items-center rounded-full bg-surface text-human ring-1 ring-ink/10"><Check className="size-2" strokeWidth={3} /></span>
+        </span>
+        AI, approved
+      </span>
+    )
   return by === 'ai' ? (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-700">
       <span className="grid size-5 place-items-center rounded-full bg-brand-50"><ResolveAIGlyph className="size-3.5" /></span>AI
@@ -126,8 +137,8 @@ export function SolvedBy({ by }: { by?: Solver | null }) {
   )
 }
 
-export function ChannelTag({ channel, compact }: { channel: ChannelId; compact?: boolean }) {
-  const c = CHANNELS[channel]
+export function ChannelTag({ channel, compact }: { channel: ChannelId | string; compact?: boolean }) {
+  const c = channelMeta(channel)
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-slate-600" title={c.label}>
       <span className={cn('grid size-6 place-items-center rounded-md', c.tile)}><c.icon className="size-3.5" /></span>

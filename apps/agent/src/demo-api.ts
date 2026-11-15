@@ -4,6 +4,9 @@
  * connector's token. A connector that is turned off refuses every call.
  */
 import type {
+  AttachmentWithReuse,
+  ChatTranscript,
+  Product,
   AnalysisReport,
   AnalysisScope,
   AnalyticsMetrics,
@@ -47,8 +50,10 @@ export class DemoAPIError extends Error {
 
 export type DemoAPI = ReturnType<typeof createDemoAPI>;
 
-const PREFIX: Record<ConnectorId, string> = { zendesk: "/zendesk", shop: "/shop", hubspot: "/crm" };
-const NAMES: Record<ConnectorId, string> = { zendesk: "Zendesk", shop: "ShopKart + Paytm", hubspot: "HubSpot CRM" };
+/** The connectors this client calls. Sarvam (voice) is a connector too, but the demo API places calls, not this client. */
+type ToolConnector = Exclude<ConnectorId, "sarvam">;
+const PREFIX: Record<ToolConnector, string> = { zendesk: "/zendesk", shop: "/shop", hubspot: "/crm" };
+const NAMES: Record<ToolConnector, string> = { zendesk: "Zendesk", shop: "ShopKart + Paytm", hubspot: "HubSpot CRM" };
 const CACHE_MS = 10_000;
 
 /**
@@ -62,7 +67,7 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
   let cache: { at: number; list: ConnectorAccess[] } | null = null;
 
   // Campaigns and analytics are ResolveAI's own records in the demo API, not a connector.
-  async function access(id: ConnectorId | undefined): Promise<ConnectorAccess> {
+  async function access(id: ToolConnector | undefined): Promise<ConnectorAccess> {
     if (!id) return { id: "zendesk", base_url: baseUrl, token: null, enabled: true };
     if (!connectors) return { id, base_url: `${baseUrl}${PREFIX[id]}`, token: null, enabled: true };
     if (!cache || Date.now() - cache.at > CACHE_MS) cache = { at: Date.now(), list: await connectors() };
@@ -72,7 +77,7 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
   }
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const id = (Object.keys(PREFIX) as ConnectorId[]).find((k) => path.startsWith(`${PREFIX[k]}/`));
+    const id = (Object.keys(PREFIX) as ToolConnector[]).find((k) => path.startsWith(`${PREFIX[k]}/`));
     const c = await access(id);
     const name = id ? NAMES[id] : "the demo API";
     if (!c.enabled) throw new DemoAPIError(503, `The ${name} connector is turned off in the Control Room`);
@@ -96,11 +101,29 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
     return data as T;
   }
 
+  /** A binary GET through the path's connector (attachments): the bytes and their type. */
+  async function raw(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
+    const id = (Object.keys(PREFIX) as ToolConnector[]).find((k) => path.startsWith(`${PREFIX[k]}/`));
+    const c = await access(id);
+    if (!c.enabled) throw new DemoAPIError(503, `The ${id ? NAMES[id] : "demo API"} connector is turned off in the Control Room`);
+    const url = `${c.base_url.replace(/\/$/, "")}${id ? path.slice(PREFIX[id].length) : path}`;
+    let res: Response;
+    try {
+      res = await fetchImpl(url, { headers: { ...(c.token && { authorization: `Bearer ${c.token}` }) }, signal: AbortSignal.timeout(30_000) });
+    } catch (e) {
+      throw new DemoAPIError(0, `Can't reach ${url}: ${(e as Error).message}`);
+    }
+    if (!res.ok) throw new DemoAPIError(res.status, res.statusText);
+    return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get("content-type") ?? "image/jpeg" };
+  }
+
   return {
     // Shop
     customerOrders: (customerId: number) => call<{ customer: Customer; orders: Order[] }>("GET", `/shop/customers/${customerId}/orders`),
     order: (orderId: number) => call<Order>("GET", `/shop/orders/${orderId}`),
     refundOrder: (orderId: number) => call<Order>("POST", `/shop/orders/${orderId}/refund`),
+    /** The catalogue (for product categories: POL-DMG has rules per category) */
+    products: () => call<{ products: Product[] }>("GET", "/shop/products").then((r) => r.products),
 
     // Zendesk
     ticket: (ticketId: number) => call<Ticket>("GET", `/zendesk/tickets/${ticketId}`),
@@ -108,6 +131,15 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
     updateTicket: (ticketId: number, changes: UpdateTicketBody) => call<Ticket>("PATCH", `/zendesk/tickets/${ticketId}`, changes),
     addComment: (ticketId: number, body: CreateCommentBody) => call<ZdComment>("POST", `/zendesk/tickets/${ticketId}/comments`, body),
     customerTickets: (customerId: number) => call<{ tickets: TicketSummary[] }>("GET", `/zendesk/users/${customerId}/tickets`).then((r) => r.tickets),
+    /** Photos on a ticket, each with earlier uses of the same image elsewhere (sha256) */
+    ticketAttachments: (ticketId: number) => call<{ attachments: AttachmentWithReuse[] }>("GET", `/zendesk/tickets/${ticketId}/attachments`).then((r) => r.attachments),
+    /** One photo's bytes, for the vision check */
+    attachmentData: (id: number) => raw(`/zendesk/attachments/${id}`),
+    /** Phone the customer for the details a request is missing (Aria · Support Caller). The API records the step. */
+    placeSupportCall: (b: { customer_id: number; ticket_id: number | null; session_id: string; run_id: number; reason: string; questions: string[]; order_id?: number | null }) =>
+      call<{ id: number; status: string }>("POST", "/resolveai/calls", { purpose: "support", ...b }),
+    /** The stored chat (ResolveAI's own record in the demo API): its newest ticket, e.g. one a person opened from the Control Room. */
+    chatSession: (sessionId: string) => call<ChatTranscript>("GET", `/chat/sessions/${encodeURIComponent(sessionId)}`),
 
     // CRM
     createContact: (body: CreateContactBody) => call<Contact>("POST", "/crm/contacts", body),

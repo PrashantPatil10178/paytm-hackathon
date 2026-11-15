@@ -7,6 +7,7 @@ import { Orders } from "./pages/Orders.tsx";
 import { Help } from "./pages/Help.tsx";
 import { Business } from "./pages/Business.tsx";
 import { NotFound } from "./pages/NotFound.tsx";
+import { Landing } from "./pages/Landing.tsx";
 import { ShopProvider } from "./store.tsx";
 
 const PAGES: Record<string, () => React.ReactNode> = {
@@ -18,7 +19,9 @@ const PAGES: Record<string, () => React.ReactNode> = {
 
 export function App() {
   const { path } = useLocation();
-  const Page = PAGES[path] ?? NotFound;
+  // Campaign landing pages: /c/<slug>
+  const landing = path.match(/^\/c\/([a-z0-9-]+)\/?$/)?.[1];
+  const Page = landing ? () => <Landing slug={landing} /> : (PAGES[path] ?? NotFound);
   return (
     <ShopProvider>
       <div className="flex min-h-dvh flex-col">

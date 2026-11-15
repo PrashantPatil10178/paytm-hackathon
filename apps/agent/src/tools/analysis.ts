@@ -3,7 +3,7 @@
  * findings about them. It never supplies chart numbers: the dashboard draws every chart from the same
  * metrics, and a finding can only point at one of the known datasets.
  */
-import { ANALYTICS_DATASETS, SALES_DATASETS, type AnalysisScope, type AnalyticsDatasetId } from "@ph/shared";
+import { ANALYTICS_DATASETS, SALES_DATASETS, type AnalysisScope, type AnalyticsDatasetId, type AnalyticsTotals } from "@ph/shared";
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import type { DemoAPI } from "../demo-api.ts";
@@ -16,6 +16,16 @@ const allowed = (scope: AnalysisScope): AnalyticsDatasetId[] => (scope === "sale
 export const indianRupees = (text: string) =>
   text.replace(/₹\s?(\d[\d,]*)(\.\d+)?/g, (_m, int: string, frac = "") => `₹${Number(int.replace(/,/g, "")).toLocaleString("en-IN")}${frac}`);
 
+/**
+ * The ticket totals in words, from the numbers. Without it the model read "4 AI, 4 escalated" as "the AI escalated
+ * all 4 of its tickets", and the working-memory note then carried that into the next report.
+ */
+const supportInWords = (t: AnalyticsTotals) =>
+  `${t.tickets + (t.chats_answered ?? 0)} requests in all: ${t.chats_answered ?? 0} questions answered in the chat without a ticket, ` +
+  `and ${t.tickets} tickets. Of the tickets, ${t.tickets_ai} were handled by the AI alone, ${t.tickets_ai_approved ?? 0} by the AI after a person approved its action, and ${t.tickets_escalated} were handed to a person ` +
+  `(separate groups: none is a share of another); ${t.tickets_solved} solved, ${t.tickets_open} not solved yet. ` +
+  `AI handled ${t.ai_rate}% of all requests on its own.`;
+
 export function analysisTools(api: DemoAPI) {
   const getMetrics = createTool({
     name: "get_metrics",
@@ -24,11 +34,13 @@ export function analysisTools(api: DemoAPI) {
       "campaigns (a sales analysis gets only the sales charts). Money is in ₹. Call this before writing anything.",
     parameters: z.object({}),
     execute: async (_args, opts) => {
-      const ids = allowed(runOf<AnalysisRun>(opts).scope);
+      const { scope } = runOf<AnalysisRun>(opts);
+      const ids = allowed(scope);
       const m = await api.metrics();
       return {
         generated_at: m.generated_at,
         totals: m.totals,
+        ...(scope === "all" && { support_in_words: supportInWords(m.totals) }),
         datasets: m.datasets.filter((d) => ids.includes(d.id)).map(({ id, description, series, rows }) => ({ id, description, series, rows })),
       };
     },

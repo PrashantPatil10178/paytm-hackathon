@@ -30,3 +30,14 @@ export const secondsLabel = (s: number) => `${Math.floor(s / 60)}m ${String(Math
 
 export const initials = (name: string) =>
   name.split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
+
+/** A demo app on the same host the Control Room was opened from (so links work over the network too). */
+const appUrl = (env: string | undefined, port: number) =>
+  env || (typeof window === 'undefined' ? `http://localhost:${port}` : `${window.location.protocol}//${window.location.hostname}:${port}`)
+export const ZENDESK_URL = appUrl(import.meta.env.VITE_ZENDESK_URL, 3001)
+export const HUBSPOT_URL = appUrl(import.meta.env.VITE_HUBSPOT_URL, 3002)
+export const SHOP_URL = appUrl(import.meta.env.VITE_SHOP_URL, 3003)
+/** The agent service (apps/agent), where channels send requests. */
+export const AGENT_URL = appUrl(import.meta.env.VITE_AGENT_URL, 8000)
+/** "localhost:3003" or "192.168.1.5:3003", for link text. */
+export const hostOf = (url: string) => url.replace(/^https?:\/\//, '').replace(/\/$/, '')

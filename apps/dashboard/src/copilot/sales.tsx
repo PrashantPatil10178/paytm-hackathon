@@ -14,11 +14,10 @@ import {
 import { api, live } from '../api'
 import { useTheme } from '../theme'
 import { CHART } from '../meta'
-import { ago, cn, num, rupees } from '../lib'
+import { ago, cn, num, rupees, HUBSPOT_URL } from '../lib'
 import { DatasetMiniChart, ToneChip } from '../pages/Analytics'
 import { Frame, Loading, NotFound, OpenLink } from './frame'
 
-const HUBSPOT_URL: string = import.meta.env.VITE_HUBSPOT_URL || 'http://localhost:3002'
 const STAGE_IDS = DEAL_STAGES.map((s) => s.id) as [DealStage, ...DealStage[]]
 const stageLabel = (id: string) => DEAL_STAGES.find((s) => s.id === id)?.label ?? id
 const channelLabel = (id: string) => CAMPAIGN_CHANNELS.find((c) => c.id === id)?.label ?? id

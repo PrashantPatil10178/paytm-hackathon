@@ -11,8 +11,11 @@ import {
   type UpdateTicketBody,
   type ZdComment,
   type ZdUser,
+  SUPPORT_AGENTS,
 } from "@ph/shared";
 import { eq, schema as s, sql, toComment, toTicket, toTicketSummary, toZdUser, type Tx } from "@ph/db";
+import { attachmentsByComment, linkToComment } from "./attachments.ts";
+import { mirrorComment } from "./chats.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, intParam, notFound, ok, oneOf } from "./http.ts";
 
@@ -29,9 +32,14 @@ export function toPriority(v: unknown): TicketPriority {
 }
 
 export async function findTicket(id: number, tx: Tx = db): Promise<Ticket> {
-  const row = await tx.query.tickets.findFirst({ where: eq(s.tickets.id, id), with: { requester: true, comments: true } });
+  const [row, photos] = await Promise.all([
+    tx.query.tickets.findFirst({ where: eq(s.tickets.id, id), with: { requester: true, comments: true } }),
+    attachmentsByComment([id], tx),
+  ]);
   if (!row) throw notFound(`Ticket #${id}`);
-  return toTicket(row);
+  const t = toTicket(row);
+  // Photos the customer sent show on the comment that carried them.
+  return photos.size ? { ...t, comments: t.comments.map((c) => (photos.has(c.id) ? { ...c, attachments: photos.get(c.id) } : c)) } : t;
 }
 
 export async function ticketExists(id: number): Promise<boolean> {
@@ -145,12 +153,13 @@ export async function updateTicket(id: number, b: UpdateTicketBody): Promise<Tic
   });
 }
 
+/** Adds a reply or an internal note. A public reply on a chat's ticket also shows in that chat (chats.ts). */
 export async function addComment(id: number, b: CreateCommentBody): Promise<ZdComment> {
   if (!b.body?.trim()) throw bad("body is required");
   if (typeof b.public !== "boolean") throw bad("public must be true (reply) or false (internal note)");
-  return db.transaction(async (tx) => {
+  const comment = await db.transaction(async (tx) => {
     const [t] = await tx
-      .select({ id: s.tickets.id, requester: s.zdUsers.name })
+      .select({ id: s.tickets.id, requester: s.zdUsers.name, requester_id: s.tickets.requester_id, order_id: s.tickets.order_id, subject: s.tickets.subject })
       .from(s.tickets)
       .innerJoin(s.zdUsers, eq(s.tickets.requester_id, s.zdUsers.id))
       .where(eq(s.tickets.id, id));
@@ -169,8 +178,14 @@ export async function addComment(id: number, b: CreateCommentBody): Promise<ZdCo
       })
       .returning();
     await tx.update(s.tickets).set({ updated_at: at }).where(eq(s.tickets.id, id));
-    return toComment(row!);
+    const photos = b.attachment_ids?.length ? await linkToComment(tx, b.attachment_ids, t, row!.id) : 0;
+    const c = toComment(row!);
+    if (!photos) return c;
+    const mine = (await attachmentsByComment([id], tx)).get(row!.id);
+    return mine ? { ...c, attachments: mine } : c;
   });
+  if (comment.public) await mirrorComment(id, comment).catch((e) => console.warn(`[chats] couldn't copy the reply on #${id} into its chat:`, (e as Error).message));
+  return comment;
 }
 
 /* ───── Routes ───── */
@@ -208,6 +223,6 @@ export const zendeskRoutes = {
     }),
   },
   "/zendesk/agents": {
-    GET: handle(() => ok({ agents: [BOT, "Priya – Support", "Karan – Support"] })),
+    GET: handle(() => ok({ agents: [BOT, ...SUPPORT_AGENTS] })),
   },
 };

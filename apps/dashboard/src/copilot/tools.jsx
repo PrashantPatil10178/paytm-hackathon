@@ -5,18 +5,19 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { z } from 'zod'
 import { useAgentContext, useConfigureSuggestions, useFrontendTool } from '@copilotkit/react-core/v2'
+import { OWNER } from '@ph/shared'
 import { useApp } from '../store'
-import { api } from '../api'
+import { CHANNELS } from '../meta'
 import { ApprovalsCard, LeadCard, MetricsCard, TicketCard, TicketListCard } from './cards'
 
 const PAGES = {
   overview: '/', analytics: '/analytics', audit: '/audit', tickets: '/tickets', approvals: '/approvals', board: '/board',
-  leads: '/leads', campaigns: '/campaigns', sales_analytics: '/sales/analytics', channels: '/channels', connectors: '/connectors', settings: '/settings',
+  leads: '/leads', calls: '/calls', support_calls: '/support/calls', campaigns: '/campaigns', sales_analytics: '/sales/analytics', channels: '/channels', connectors: '/connectors', settings: '/settings', policies: '/policies',
 }
 
 const STATUS = z.enum(['open', 'in_progress', 'waiting', 'solved'])
 const LEVEL = z.enum(['low', 'medium', 'high', 'critical'])
-const CHANNEL = z.enum(['whatsapp', 'email', 'webchat', 'appchat'])
+const CHANNEL = z.enum(Object.keys(CHANNELS))
 
 // A card's render gets the (partial, while streaming) arguments; the cards take them as props.
 const card = (Component) => function Render({ args }) { return <Component {...args} /> }
@@ -33,8 +34,6 @@ export default function AriaTools() {
 
   /* ── What Aria can see ── */
 
-  const stats = useRef(null)
-  useEffect(() => { api.getStats().then((s) => { stats.current = s }) }, [])
 
   const snapshot = useMemo(() => ({
     tickets: app.tickets.map((t) => ({
@@ -57,14 +56,15 @@ export default function AriaTools() {
 
   useAgentContext({ description: 'Live ShopKart workspace data from the ResolveAI Control Room (tickets, leads, approvals)', value: snapshot })
   const page = useMemo(() => ({ path: pathname, now: new Date().toISOString() }), [pathname])
-  useAgentContext({ description: 'The Control Room page the support lead is looking at, and the current time', value: page })
+  useAgentContext({ description: `The Control Room page ${OWNER.first} is looking at, and the current time`, value: page })
+  useAgentContext({ description: 'Who is asking: the signed-in user, the owner and only person running the business. Address them by first name.', value: OWNER })
 
   /* ── Generative UI ── */
 
   useFrontendTool({
     name: 'show_ticket',
     description: 'Show one support ticket as a live card: status, level, channel, customer, amount, the tools Aria used and the outcome.',
-    parameters: z.object({ ticketId: z.string().describe('Ticket id, e.g. RA-1047') }),
+    parameters: z.object({ ticketId: z.string().describe('Ticket id (the Zendesk number), e.g. 2041') }),
     handler: async ({ ticketId }) => {
       const t = live.current.tickets.find((x) => x.id.toLowerCase() === ticketId.toLowerCase())
       return t ? `Card shown for ${t.id} (${t.status}). ${t.result ?? ''}` : `No ticket ${ticketId}. Tell the user it does not exist.`
@@ -79,7 +79,7 @@ export default function AriaTools() {
       status: STATUS.optional().describe('open, in_progress, waiting (for a human) or solved'),
       level: LEVEL.optional(),
       channel: CHANNEL.optional(),
-      solvedBy: z.enum(['ai', 'human']).optional().describe('Only solved tickets, by who solved them'),
+      solvedBy: z.enum(['ai', 'ai_approved', 'human']).optional().describe('Only solved tickets, by who solved them: ai = Aria alone, ai_approved = Aria after a person approved, human = a person'),
       limit: z.number().int().min(1).max(12).optional(),
     }),
     handler: async (f) => {
@@ -94,7 +94,7 @@ export default function AriaTools() {
   useFrontendTool({
     name: 'show_approvals',
     description: 'Show actions waiting for a human decision, with Approve and Reject buttons the user can press. Pass an approval id (AP-…) or ticket id to show just one.',
-    parameters: z.object({ approvalId: z.string().optional().describe('Approval id (AP-2041) or ticket id (RA-1047)') }),
+    parameters: z.object({ approvalId: z.string().optional().describe('Approval id (AP-…) or ticket id (the Zendesk number)') }),
     handler: async () => `Card shown with ${live.current.approvals.pending.length} pending approvals. The user decides in the card; do not claim anything was approved.`,
     render: card(ApprovalsCard),
   })
@@ -104,10 +104,11 @@ export default function AriaTools() {
     description: 'Show the 14-day KPIs (queries, share solved by AI, escalations, average solve time) and the daily AI vs human volume chart.',
     parameters: z.object({}),
     handler: async () => {
-      const s = stats.current
-      if (!s) return 'Card shown.'
+      const s = live.current.stats
+      if (!s) return 'Card shown, but the stats have not loaded yet.'
       const ai = s.daily.ai.reduce((a, b) => a + b, 0)
       const human = s.daily.human.reduce((a, b) => a + b, 0)
+      if (ai + human === 0) return 'Card shown. There are no queries in the last 14 days yet.'
       return `Card shown. 14 days: ${ai + human} queries, ${ai} solved by AI (${((ai / (ai + human)) * 100).toFixed(1)}%), ${s.escalated.value} escalated, avg solve ${s.solveTime.seconds}s, ${s.hotLeads.value} hot leads. Changes vs previous 14 days (%): ${JSON.stringify(s.deltas)}.`
     },
     render: card(MetricsCard),
@@ -116,7 +117,7 @@ export default function AriaTools() {
   useFrontendTool({
     name: 'show_lead',
     description: 'Show one sales lead as a live card: company, need, deal value, stage, score and what Aria did.',
-    parameters: z.object({ leadId: z.string().describe('Lead id, e.g. L-311') }),
+    parameters: z.object({ leadId: z.string().describe('Lead id (the CRM deal id), e.g. 12') }),
     handler: async ({ leadId }) => {
       const l = live.current.leads.find((x) => x.id.toLowerCase() === leadId.toLowerCase())
       return l ? `Card shown for ${l.id}.` : `No lead ${leadId}. Tell the user it does not exist.`
@@ -144,10 +145,11 @@ export default function AriaTools() {
     suggestions: [
       { title: 'What needs me?', message: 'What is waiting for my approval right now?' },
       { title: 'How is Aria doing?', message: 'How has Aria performed over the last 14 days?' },
-      { title: 'Explain RA-1041', message: 'Why is RA-1041 blocked, and what did Aria check?' },
+      { title: 'Latest ticket', message: 'What happened on the newest ticket, and what did Aria check?' },
       { title: 'Hottest lead', message: 'Which lead should sales call first, and why?' },
       { title: 'Sales pipeline', message: 'Show me the open pipeline and which deals are hot.' },
       { title: 'New campaign leads', message: 'Fetch new leads from our campaigns.' },
+      { title: 'Refund rules', message: 'When does a refund need my approval?' },
     ],
   })
 

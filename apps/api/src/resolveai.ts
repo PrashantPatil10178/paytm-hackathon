@@ -6,17 +6,20 @@
  * credentials the agent must send, so they are stored as is but only ever returned by
  * /resolveai/connectors/access (the agent's route), never by the list the browser reads.
  */
-import type {
-  ConnectorId,
-  CreateApprovalBody,
-  CreateCaseBody,
-  CreateRunBody,
-  CreateStepBody,
-  DecideApprovalBody,
-  UpdateConnectorBody,
-  UpdateRunBody,
+import {
+  BOT,
+  OWNER,
+  type ConnectorId,
+  type CreateApprovalBody,
+  type CreateCaseBody,
+  type CreateRunBody,
+  type CreateStepBody,
+  type DecideApprovalBody,
+  type UpdateConnectorBody,
+  type UpdateRunBody,
 } from "@ph/shared";
-import { and, desc, eq, schema as s, sql, toApproval, toCase, toChannel, toConnector, toRun, toStep } from "@ph/db";
+import { and, desc, eq, inArray, lt, schema as s, sql, toApproval, toCase, toChannel, toConnector, toRun, toStep } from "@ph/db";
+import { mirrorRunReply } from "./chats.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, HttpError, intParam, notFound, ok, oneOf } from "./http.ts";
 
@@ -34,9 +37,9 @@ const OUTCOMES = ["resolved", "escalated", "rejected"] as const;
 /* ───── Tokens ───── */
 
 const sha256 = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
-const newToken = () => `rai_${Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url")}`;
+export const newToken = () => `rai_${Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url")}`;
 
-async function setChannelToken(id: string, token: string) {
+export async function setChannelToken(id: string, token: string) {
   const [row] = await db
     .update(s.channels)
     .set({ token_hash: sha256(token), token_hint: token.slice(-4) })
@@ -65,14 +68,33 @@ export async function prepareShopkartToken(): Promise<"env" | "issued"> {
   return "issued";
 }
 
+/**
+ * The token the API sends when a support call's answers go back to the agent (it plays the Sarvam voice
+ * channel). Issued on first use, so the voice channel shows a token in Control Room → Channels.
+ */
+let voiceToken = "";
+export async function voiceChannelToken(): Promise<string> {
+  if (!voiceToken) {
+    const token = newToken();
+    await setChannelToken("sarvam_voice", token);
+    voiceToken = token;
+  }
+  return voiceToken;
+}
+
 function requireAgent(req: Request) {
   if (INTERNAL_KEY && req.headers.get("x-resolveai-key") !== INTERNAL_KEY) throw new HttpError(401, "This route is for the ResolveAI agent");
 }
 
 /* ───── Connector health ───── */
 
-/** A cheap read per connector that proves its base URL answers. */
-const PROBE: Record<string, string> = { zendesk: "/agents", shop: "/products", hubspot: "/slots" };
+/**
+ * A cheap read per connector that proves its base URL answers. Sarvam: the base URL itself (any HTTP
+ * answer counts as reachable); its API key is required, see checkConnector.
+ */
+const PROBE: Record<string, string> = { zendesk: "/agents", shop: "/products", hubspot: "/slots", sarvam: "" };
+/** Connectors that can't work without a token. */
+const NEEDS_TOKEN: Partial<Record<ConnectorId, string>> = { sarvam: "Add the Sarvam API key" };
 const CHECK_EVERY_MS = 15_000;
 
 async function checkConnector(id: string) {
@@ -80,14 +102,19 @@ async function checkConnector(id: string) {
   if (!c) throw notFound(`Connector ${id}`);
   let status: "connected" | "error" | "disabled" = "disabled";
   let error: string | null = null;
-  if (c.enabled) {
+  if (c.enabled && !c.token && NEEDS_TOKEN[c.id]) {
+    status = "error";
+    error = NEEDS_TOKEN[c.id]!;
+  } else if (c.enabled) {
     try {
       const res = await fetch(`${c.base_url.replace(/\/$/, "")}${PROBE[c.id] ?? ""}`, {
         headers: c.token ? { authorization: `Bearer ${c.token}` } : undefined,
         signal: AbortSignal.timeout(3000),
       });
-      status = res.ok ? "connected" : "error";
-      if (!res.ok) error = `HTTP ${res.status} from ${c.base_url}`;
+      // Sarvam: reaching the base URL is enough (no API path is probed yet).
+      const reachable = res.ok || c.id === "sarvam";
+      status = reachable ? "connected" : "error";
+      if (!reachable) error = `HTTP ${res.status} from ${c.base_url}`;
     } catch (e) {
       status = "error";
       error = `Can't reach ${c.base_url}: ${(e as Error).message}`;
@@ -101,7 +128,7 @@ async function checkConnector(id: string) {
   return toConnector(row!);
 }
 
-async function listConnectors() {
+export async function listConnectors() {
   const rows = await db.select().from(s.connectors).orderBy(s.connectors.id);
   const stale = rows.filter((c) => !c.last_checked_at || Date.now() - c.last_checked_at.getTime() > CHECK_EVERY_MS);
   if (stale.length) await Promise.all(stale.map((c) => checkConnector(c.id)));
@@ -130,6 +157,41 @@ function runChanges(b: UpdateRunBody) {
   return next;
 }
 
+/* ───── Stuck runs ───── */
+
+/** A run with no progress (no update, no new step) for this long while triaging or working was cut off. */
+export const STUCK_AFTER_MS = 5 * 60_000;
+
+/**
+ * Marks runs that have been triaging or working for over 5 minutes without progress as failed, with a step saying
+ * so and an internal note on their ticket. That happens when a request dies mid-way (a restart, a dropped
+ * connection); left alone the run would make its ticket or chat look busy forever. A run waiting on a live support
+ * call (ringing, on the line) is left alone. The API runs it at startup and every minute.
+ */
+export async function sweepStuckRuns(): Promise<number> {
+  const cutoff = new Date(Date.now() - STUCK_AFTER_MS);
+  const stuck = await db
+    .update(s.agentRuns)
+    .set({ status: "failed", updated_at: new Date() })
+    .where(
+      and(
+        inArray(s.agentRuns.status, ["triaging", "working"]),
+        lt(s.agentRuns.updated_at, cutoff),
+        sql`not exists (select 1 from ${s.calls} c where c.run_id = ${s.agentRuns.id} and c.status in ('queued', 'ringing', 'in_progress'))`,
+      ),
+    )
+    .returning({ id: s.agentRuns.id, ticket_id: s.agentRuns.ticket_id, status: s.agentRuns.status });
+  if (!stuck.length) return 0;
+  const note = "No progress for 5 minutes: the request was cut off (a restart or a dropped connection), so the run is marked failed. Check the ticket or chat and reply if the customer is still waiting.";
+  await db.insert(s.agentSteps).values(stuck.map((r) => ({ run_id: r.id, agent: "main" as const, step: "Stopped", tool: "ResolveAI", result: "blocked" as const, detail: note })));
+  const tickets = [...new Set(stuck.flatMap((r) => (r.ticket_id ? [r.ticket_id] : [])))];
+  if (tickets.length) {
+    const at = new Date();
+    await db.insert(s.ticketComments).values(tickets.map((id) => ({ ticket_id: id, author: BOT, author_type: "bot" as const, body: `ResolveAI: a run on this ticket stopped mid-way. ${note}`, public: false, created_at: at })));
+  }
+  return stuck.length;
+}
+
 /* ───── Approvals ───── */
 
 async function notifyAgent(approvalId: number) {
@@ -145,6 +207,22 @@ async function notifyAgent(approvalId: number) {
   } catch (e) {
     return `agent unreachable: ${(e as Error).message}`;
   }
+}
+
+/**
+ * A person decides a pending approval (Control Room, or POST /resolveai/approvals/:id/decide). The agent
+ * is then told and carries out (or drops) the action; `warning` says why it couldn't be told.
+ */
+export async function decideApproval(id: number, b: DecideApprovalBody) {
+  const decision = oneOf(b.decision, ["approved", "rejected"] as const, "decision");
+  const [row] = await db
+    .update(s.approvals)
+    .set({ status: decision, decided_by: b.decided_by?.trim() || OWNER.name, note: b.note?.trim() || null, decided_at: new Date() })
+    .where(and(eq(s.approvals.id, id), eq(s.approvals.status, "pending")))
+    .returning();
+  if (!row) throw bad(`Approval ${id} doesn't exist or was already decided`);
+  const warning = await notifyAgent(id);
+  return { approval: toApproval(row), ...(warning && { warning }) };
 }
 
 /* ───── Routes ───── */
@@ -171,6 +249,7 @@ export const resolveaiRoutes = {
       const token = newToken();
       const channel = await setChannelToken(String(req.params.id), token);
       if (channel.id === "shopkart") shopkartToken = token;
+      if (channel.id === "sarvam_voice") voiceToken = token;
       return ok({ channel, token }, 201);
     }),
   },
@@ -247,8 +326,10 @@ export const resolveaiRoutes = {
     GET: handle(async (req) => ok(await findRun(intParam(req.params.id, "Run id")))),
     PATCH: handle(async (req) => {
       const id = intParam(req.params.id, "Run id");
-      const [row] = await db.update(s.agentRuns).set(runChanges(await body<UpdateRunBody>(req))).where(eq(s.agentRuns.id, id)).returning();
+      const b = await body<UpdateRunBody>(req);
+      const [row] = await db.update(s.agentRuns).set(runChanges(b)).where(eq(s.agentRuns.id, id)).returning();
       if (!row) throw notFound(`Run ${id}`);
+      if (b.reply) await mirrorRunReply(row).catch((e) => console.warn(`[chats] couldn't copy run ${id}'s reply into its chat:`, (e as Error).message));
       return ok(await findRun(id));
     }),
   },
@@ -293,19 +374,7 @@ export const resolveaiRoutes = {
   },
   "/resolveai/approvals/:id/decide": {
     /** A person decides. The agent is then told, and carries out (or drops) the action. */
-    POST: handle(async (req) => {
-      const id = intParam(req.params.id, "Approval id");
-      const b = await body<DecideApprovalBody>(req);
-      const decision = oneOf(b.decision, ["approved", "rejected"] as const, "decision");
-      const [row] = await db
-        .update(s.approvals)
-        .set({ status: decision, decided_by: b.decided_by?.trim() || "Support lead", note: b.note?.trim() || null, decided_at: new Date() })
-        .where(and(eq(s.approvals.id, id), eq(s.approvals.status, "pending")))
-        .returning();
-      if (!row) throw bad(`Approval ${id} doesn't exist or was already decided`);
-      const warning = await notifyAgent(id);
-      return ok({ approval: toApproval(row), ...(warning && { warning }) });
-    }),
+    POST: handle(async (req) => ok(await decideApproval(intParam(req.params.id, "Approval id"), await body<DecideApprovalBody>(req)))),
   },
 
   /* Resolved cases (the main agent's memory) */

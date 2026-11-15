@@ -6,6 +6,7 @@
     ".": "./src/index.ts",
     "./react": "./src/react.ts",
     "./server": "./src/server.ts",
+    "./controlroom": "./src/controlroom.ts",
     "./brand": "./src/brand.tsx",
     "./brand/*": "./brand/*"
   },

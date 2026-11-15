@@ -1,4 +1,4 @@
-// "Ask Aria": the support lead's chat with the agent, docked on the right of the Control Room.
+// "Ask Aria": the owner's chat with the agent, docked on the right of the Control Room.
 // CopilotChat handles messages and streaming; the cards it draws are registered in ./tools.jsx.
 import { useState } from 'react'
 import { CopilotChat } from '@copilotkit/react-core/v2'

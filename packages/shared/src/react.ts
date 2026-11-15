@@ -226,3 +226,25 @@ export function linkProps(to: string) {
     },
   };
 }
+
+/**
+ * Copy to the clipboard. navigator.clipboard only exists on secure pages (https or localhost); when an app
+ * is opened over the network by IP, fall back to a hidden textarea and execCommand. Resolves to whether it copied.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  const area = Object.assign(document.createElement("textarea"), { value: text, readOnly: true });
+  area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(area);
+  area.select();
+  const ok = document.execCommand("copy");
+  area.remove();
+  return ok;
+}

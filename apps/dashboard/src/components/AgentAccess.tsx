@@ -2,18 +2,21 @@
  * Live ResolveAI config, read from the demo API (/resolveai/*, proxied as /api/resolveai):
  * - ChannelAccess: where each channel sends requests (the agent's intake URL) and its token.
  * - ConnectorAccess: the base URL and token the agents use for each tool, with a live health dot.
- * Everything else on the Channels and Connectors pages is still mock data.
+ * The Channels and Connectors pages show the same records with their activity (/control-room/*); these
+ * panels hold the access details. Pass `refreshKey` to make a panel re-fetch after the page changed a
+ * record, and `onChange` to hear about changes made here.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Cable, Check, Copy, KeyRound, Loader2, RefreshCw, Radio } from 'lucide-react'
 import type { Channel, ChannelToken, Connector } from '@ph/shared'
 import { Badge, Button, Panel, Toggle } from './ui'
-import { ago, cn } from '../lib'
+import { AGENT_URL, ago, cn } from '../lib'
 import { useApp } from '../store'
+import { copyText } from '@ph/shared/react'
 
 const BASE = '/api/resolveai'
 /** Where channels send requests. The agent service (apps/agent) on :8000 unless VITE_AGENT_URL says otherwise. */
-const INTAKE_URL = `${(import.meta.env.VITE_AGENT_URL as string | undefined) ?? 'http://localhost:8000'}/intake`
+export const INTAKE_URL = `${AGENT_URL}/intake`
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -26,7 +29,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return data as T
 }
 
-function useLive<T>(path: string, pick: (d: any) => T, every = 5000) {
+function useLive<T>(path: string, pick: (d: any) => T, every = 5000, refreshKey?: number) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<string | null>(null)
   const load = useCallback(() => {
@@ -37,7 +40,7 @@ function useLive<T>(path: string, pick: (d: any) => T, every = 5000) {
     load()
     const t = setInterval(load, every)
     return () => clearInterval(t)
-  }, [load, every])
+  }, [load, every, refreshKey])
   return { data, error, reload: load, setData }
 }
 
@@ -53,10 +56,10 @@ function Dot({ tone, label }: { tone: 'ok' | 'warn' | 'off' | 'bad'; label: stri
   return <Badge className={cls} dot={dot}>{label}</Badge>
 }
 
-function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
+export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
   const [done, setDone] = useState(false)
   return (
-    <Button size="sm" variant="ghost" icon={done ? Check : Copy} onClick={() => { navigator.clipboard?.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500) }}>
+    <Button size="sm" variant="ghost" icon={done ? Check : Copy} onClick={async () => { setDone(await copyText(text)); setTimeout(() => setDone(false), 1500) }}>
       {done ? 'Copied' : label}
     </Button>
   )
@@ -67,9 +70,9 @@ const unreachable = (error: string | null) =>
 
 /* ───── Channels ───── */
 
-export function ChannelAccess() {
+export function ChannelAccess({ refreshKey, onChange, toggles = true }: { refreshKey?: number; onChange?: () => void; toggles?: boolean } = {}) {
   const { toast } = useApp()
-  const { data: channels, error, reload } = useLive<Channel[]>('/channels', (d) => d.channels)
+  const { data: channels, error, reload } = useLive<Channel[]>('/channels', (d) => d.channels, 5000, refreshKey)
   const [fresh, setFresh] = useState<ChannelToken | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -78,6 +81,7 @@ export function ChannelAccess() {
     try {
       setFresh(await call<ChannelToken>('POST', `/channels/${c.id}/token`))
       reload()
+      onChange?.()
     } catch (e) {
       toast({ tone: 'neutral', title: 'Couldn’t create a token', desc: (e as Error).message })
     } finally {
@@ -87,6 +91,7 @@ export function ChannelAccess() {
   const toggle = async (c: Channel, enabled: boolean) => {
     await call('PATCH', `/channels/${c.id}`, { enabled }).catch(() => {})
     reload()
+    onChange?.()
   }
 
   return (
@@ -94,7 +99,9 @@ export function ChannelAccess() {
       {unreachable(error)}
       <ul className="divide-y divide-ink/[0.06]">
         {channels?.map((c) => {
-          const tone = !c.enabled ? 'off' : c.token_hint ? 'ok' : 'warn'
+          // Voice calls and the enquiry form reach Aria through the demo API, not the intake, so they need no token.
+          const tokenless = (c.kind as string) === 'voice' || (c.kind as string) === 'form'
+          const tone = !c.enabled ? 'off' : c.token_hint || tokenless ? 'ok' : 'warn'
           return (
             <li key={c.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
               <div className="min-w-40 flex-1">
@@ -102,11 +109,11 @@ export function ChannelAccess() {
                 <p className="text-xs text-slate-500">{c.last_used_at ? `Last request ${ago(c.last_used_at)}` : 'No requests yet'}</p>
               </div>
               <Dot tone={tone} label={tone === 'ok' ? 'Connected' : tone === 'warn' ? 'Needs a token' : 'Off'} />
-              <span className="ref text-xs text-slate-500">{c.token_hint ? `rai_…${c.token_hint}` : 'no token'}</span>
+              <span className="ref text-xs text-slate-500">{c.token_hint ? `rai_…${c.token_hint}` : tokenless ? 'no token needed' : 'no token'}</span>
               <Button size="sm" icon={busy === c.id ? Loader2 : KeyRound} className={busy === c.id ? '[&>svg]:animate-spin' : ''} onClick={() => rotate(c)} disabled={busy === c.id}>
                 {c.token_hint ? 'New token' : 'Create token'}
               </Button>
-              <Toggle checked={c.enabled} onChange={(v) => toggle(c, v)} label={`Turn ${c.name} on or off`} />
+              {toggles && <Toggle checked={c.enabled} onChange={(v) => toggle(c, v)} label={`Turn ${c.name} on or off`} />}
             </li>
           )
         })}
@@ -131,7 +138,7 @@ export function ChannelAccess() {
 
 /* ───── Connectors ───── */
 
-function ConnectorRow({ c, onSaved }: { c: Connector; onSaved: (c: Connector) => void }) {
+function ConnectorRow({ c, onSaved, toggles }: { c: Connector; onSaved: (c: Connector) => void; toggles: boolean }) {
   const { toast } = useApp()
   const [url, setUrl] = useState(c.base_url)
   const [token, setToken] = useState('')
@@ -174,7 +181,7 @@ function ConnectorRow({ c, onSaved }: { c: Connector; onSaved: (c: Connector) =>
         <span className="text-xs text-slate-400">{c.last_checked_at ? `checked ${ago(c.last_checked_at)}` : ''}</span>
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" variant="ghost" icon={busy === 'test' ? Loader2 : RefreshCw} className={busy === 'test' ? '[&>svg]:animate-spin' : ''} onClick={test} disabled={!!busy}>Test</Button>
-          <Toggle checked={c.enabled} onChange={(v) => save({ enabled: v })} label={`Let the agents use ${c.name}`} />
+          {toggles && <Toggle checked={c.enabled} onChange={(v) => save({ enabled: v })} label={`Let the agents use ${c.name}`} />}
         </div>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -204,14 +211,17 @@ function ConnectorRow({ c, onSaved }: { c: Connector; onSaved: (c: Connector) =>
   )
 }
 
-export function ConnectorAccess() {
-  const { data: connectors, error, setData } = useLive<Connector[]>('/connectors', (d) => d.connectors, 15000)
-  const saved = (next: Connector) => setData((list) => list?.map((x) => (x.id === next.id ? next : x)) ?? null)
+export function ConnectorAccess({ refreshKey, onChange, toggles = true }: { refreshKey?: number; onChange?: () => void; toggles?: boolean } = {}) {
+  const { data: connectors, error, setData } = useLive<Connector[]>('/connectors', (d) => d.connectors, 15000, refreshKey)
+  const saved = (next: Connector) => {
+    setData((list) => list?.map((x) => (x.id === next.id ? next : x)) ?? null)
+    onChange?.()
+  }
   return (
     <Panel icon={Cable} title="Agent access" meta="Where the agents send each tool's API calls" className="mb-6">
       {unreachable(error)}
       <ul className="divide-y divide-ink/[0.06]">
-        {connectors?.map((c) => <ConnectorRow key={c.id} c={c} onSaved={saved} />)}
+        {connectors?.map((c) => <ConnectorRow key={c.id} c={c} onSaved={saved} toggles={toggles} />)}
       </ul>
     </Panel>
   )

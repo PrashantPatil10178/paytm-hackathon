@@ -32,10 +32,12 @@ import { createMainAgent, createWriterAgent } from "./agents/main.ts";
 import { createAnalysisAgent } from "./agents/analysis.ts";
 import { createLeadsAgent } from "./agents/leads.ts";
 import { createSalesAgent } from "./agents/sales.ts";
+import { createPolicyBook } from "./policies.ts";
 import { createDemoAPI } from "./demo-api.ts";
 import { createPlatform } from "./platform.ts";
 import { createAgentMemory } from "./memory.ts";
 import { hasKey, keyVar, MODELS } from "./models.ts";
+import { createVisionAgent } from "./evidence.ts";
 import { createService } from "./service.ts";
 import { memorySessions, postgresSessions } from "./sessions.ts";
 
@@ -54,18 +56,24 @@ const platform = createPlatform(API_URL, fetch, INTERNAL_KEY);
 const api = createDemoAPI(API_URL, fetch, () => platform.connectors());
 // Heavy: triage and money/policy decisions with customers, and reasoning across every dataset.
 // Lite: short status messages and rule-based triage of sales enquiries and campaign responses.
-const main = createMainAgent(MODELS.heavy, memory);
-const writer = createWriterAgent(MODELS.lite);
-const levels = createLevelAgents(api, MODELS.heavy, platform, memory);
-const analysis = createAnalysisAgent(api, MODELS.heavy, analysisMemory);
-const sales = createSalesAgent(api, MODELS.lite, memory);
-const leads = createLeadsAgent(api, MODELS.lite, memory);
-const service = createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions, analysisMemory });
+// ShopKart's policy book (GET /policies): every agent gets the digest, the acting ones lookup_policies too.
+const book = createPolicyBook(API_URL);
+// Name, tone and languages from the Control Room settings go into every agent's instructions.
+const persona = () => platform.settings();
+// Damage-claim photos are checked by the heavy (vision) model.
+const vision = createVisionAgent(MODELS.heavy);
+const main = createMainAgent(MODELS.heavy, memory, book, persona);
+const writer = createWriterAgent(MODELS.heavy, book, persona); // every customer-facing reply gets the strong model
+const levels = createLevelAgents(api, MODELS.heavy, platform, memory, book, { vision, persona });
+const analysis = createAnalysisAgent(api, MODELS.heavy, analysisMemory, book, persona);
+const sales = createSalesAgent(api, MODELS.lite, memory, book, persona);
+const leads = createLeadsAgent(api, MODELS.lite, memory, book, persona);
+const service = createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions, analysisMemory, book });
 
 const bearer = (header: string | undefined) => header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
 
 new VoltAgent({
-  agents: { main, writer, low: levels.low, medium: levels.medium, high: levels.high, sales, analysis, leads },
+  agents: { main, writer, direct: levels.direct, low: levels.low, medium: levels.medium, high: levels.high, vision, sales, analysis, leads },
   logger: createPinoLogger({ name: "resolveai-agent", level: "info" }),
   checkDependencies: false,
   server: honoServer({
@@ -74,7 +82,7 @@ new VoltAgent({
       app.get("/health", (c) =>
         c.json({
           status: "ok",
-          models: { heavy: { model: MODELS.heavy, key: hasKey(MODELS.heavy), agents: ["main", "low", "medium", "high", "analysis"] }, lite: { model: MODELS.lite, key: hasKey(MODELS.lite), agents: ["writer", "sales", "leads"] } },
+          models: { heavy: { model: MODELS.heavy, key: hasKey(MODELS.heavy), agents: ["main", "writer", "low-direct", "low", "medium", "high", "vision", "analysis"] }, lite: { model: MODELS.lite, key: hasKey(MODELS.lite), agents: ["sales", "leads"] } },
           api: API_URL,
           storage: DATABASE_URL ? "postgres" : "memory",
           memory_retention_days: DATABASE_URL && RETENTION_DAYS > 0 ? RETENTION_DAYS : null,
@@ -107,7 +115,7 @@ new VoltAgent({
   }),
 });
 
-console.log(`ResolveAI agent: heavy ${MODELS.heavy} (main, level agents, analysis), lite ${MODELS.lite} (writer, sales, leads), demo API ${API_URL}, memory ${DATABASE_URL ? `Postgres at ${new URL(DATABASE_URL).host}` : "in process"}`);
+console.log(`ResolveAI agent: heavy ${MODELS.heavy} (main, writer, level agents, analysis), lite ${MODELS.lite} (sales, leads), demo API ${API_URL}, memory ${DATABASE_URL ? `Postgres at ${new URL(DATABASE_URL).host}` : "in process"}`);
 console.log("  Channels send requests to POST /intake with their token (Control Room → Channels).");
 if (!DATABASE_URL) console.warn("  DATABASE_URL is not set: chat memory and sessions are lost when the agent restarts.");
 

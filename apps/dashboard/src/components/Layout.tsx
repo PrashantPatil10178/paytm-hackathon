@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
-import { Search, Menu, X, Bell, Sun, Moon, PanelLeftOpen } from 'lucide-react'
+import { Search, Menu, X, Bell, Sun, Moon, PanelLeftOpen, CircleAlert } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { useApp } from '../store'
+import { OWNER } from '@ph/shared'
 import { useTheme } from '../theme'
 import { PAGES, areaOf } from '../nav'
-import { cn } from '../lib'
+import { cn, initials } from '../lib'
 import { Toaster } from './ui'
 import CommandPalette from './CommandPalette'
 import { AreaPanel, Rail } from './Sidebar'
@@ -36,7 +37,7 @@ function ThemeToggle() {
 }
 
 export default function Layout() {
-  const { toasts, dismissToast, approvals } = useApp()
+  const { toasts, dismissToast, approvals, error } = useApp()
   const [mobileNav, setMobileNav] = useState(false)
   const [palette, setPalette] = useState(false)
   const panel = usePanelWidth()
@@ -113,7 +114,7 @@ export default function Layout() {
             </button>
           )}
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2 text-[13px]">
-            <span className="hidden text-slate-500 sm:inline">ShopKart</span>
+            <span className="hidden text-slate-500 sm:inline">{OWNER.business}</span>
             <span className="hidden text-slate-300 sm:inline" aria-hidden>/</span>
             {area.label !== page && (
               <>
@@ -154,10 +155,24 @@ export default function Layout() {
               <Bell className="size-4" />
               {pending > 0 && <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-warn ring-2 ring-canvas" />}
             </Link>
+            <Link to="/settings" className="flex items-center gap-2 rounded-lg py-1 pr-1 pl-1 transition-colors hover:bg-ink/[0.05] sm:pr-2" title={`Signed in as ${OWNER.name} (${OWNER.email})`}>
+              <span className="grid size-7 place-items-center rounded-full bg-human/15 text-[11px] font-semibold text-human" aria-hidden>{initials(OWNER.name)}</span>
+              <span className="hidden min-w-0 text-left leading-tight xl:block">
+                <span className="block truncate text-[13px] font-medium text-slate-950">{OWNER.name}</span>
+                <span className="block truncate text-[11px] text-slate-500">{OWNER.role} · {OWNER.business}</span>
+              </span>
+              <span className="sr-only xl:hidden">{OWNER.name}, {OWNER.role}</span>
+            </Link>
           </div>
         </header>
 
         <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+          {error && (
+            <p role="alert" className="mb-5 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
+              <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>Can't load the Control Room data from the demo API: {error}. Pages show what has loaded so far.</span>
+            </p>
+          )}
           <Outlet />
         </main>
       </div>

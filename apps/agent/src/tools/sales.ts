@@ -1,4 +1,8 @@
-/** Tools for the sales agent. Each one acts on the enquiry's own deal only. */
+/**
+ * Tools for the sales agent. Each one acts on the enquiry's own deal only.
+ * The pipeline rules live here, not in the prompt: a warm lead is Qualified, a booked call puts the deal in
+ * Meeting booked, and nothing the agent does afterwards moves it back.
+ */
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import type { DemoAPI } from "../demo-api.ts";
@@ -13,8 +17,12 @@ export function salesTools(api: DemoAPI) {
       stage: z.enum(["new_lead", "qualified", "meeting_booked"]).optional().describe("Later stages are for the sales team"),
       next_step: z.string().max(80).optional().describe("Short, e.g. 'Intro call Tue 11:00'"),
     }),
-    execute: async (changes, opts) => {
-      const d = await api.updateDeal(runOf<SalesRun>(opts).dealId, changes);
+    execute: async ({ score, stage, next_step }, opts) => {
+      const run = runOf<SalesRun>(opts);
+      if (run.meetingBooked) stage = "meeting_booked"; // a booked call stays booked
+      else if (stage === "meeting_booked") stage = undefined; // no call booked yet: book_meeting moves it
+      else if (score === "warm") stage = "qualified";
+      const d = await api.updateDeal(run.dealId, { score, stage, next_step });
       return { deal_id: d.id, stage: d.stage, score: d.score, next_step: d.next_step };
     },
   });
@@ -41,7 +49,10 @@ export function salesTools(api: DemoAPI) {
     description: "Book an intro call for this deal in one of the free slots. Use the slot's start exactly as returned.",
     parameters: z.object({ start: z.string().describe("ISO start time from get_free_slots") }),
     execute: async ({ start }, opts) => {
-      const m = await api.bookMeeting({ deal_id: runOf<SalesRun>(opts).dealId, start, duration_min: 30 });
+      const run = runOf<SalesRun>(opts);
+      const m = await api.bookMeeting({ deal_id: run.dealId, start, duration_min: 30 });
+      run.meetingBooked = true;
+      await api.updateDeal(run.dealId, { stage: "meeting_booked" });
       return { ok: true, title: m.title, start: m.start, attendees: m.attendees };
     },
   });

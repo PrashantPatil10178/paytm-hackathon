@@ -3,8 +3,19 @@
  * almost one to one (see ./map.ts). Enum-like columns are text typed with the shared unions; the API
  * validates values before writing.
  */
+import type { Settings as ControlRoomSettings } from "@ph/shared/controlroom";
 import type {
+  PolicyArea,
+  PolicyConditions,
+  PolicyEffect,
+  PolicyParams,
+  PolicyStatus,
   ActivityType,
+  CallExtraction,
+  CallOutcome,
+  CallPurpose,
+  CallStatus,
+  TranscriptLine,
   AgentLevel,
   ApprovalStatus,
   CaseOutcome,
@@ -22,6 +33,9 @@ import type {
   CampaignChannel,
   CampaignResponseStatus,
   CampaignStatus,
+  ChatAnswer,
+  ChatQuestion,
+  ChatSender,
   Contact,
   DealStage,
   EnquiryNeed,
@@ -39,11 +53,13 @@ import type {
   ZdComment,
 } from "@ph/shared";
 import { relations } from "drizzle-orm";
-import { boolean, doublePrecision, index, integer, jsonb, pgTable, real, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, customType, doublePrecision, index, integer, jsonb, pgTable, real, serial, text, timestamp } from "drizzle-orm/pg-core";
 
 const id = () => integer().primaryKey().generatedByDefaultAsIdentity();
 const at = () => timestamp({ withTimezone: true, mode: "date" });
 const money = () => doublePrecision().notNull();
+/** Raw bytes. Bun's driver round-trips Buffers as real bytea (unlike jsonb, see CLAUDE.md). */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 /* ───── ShopKart ───── */
 
@@ -134,6 +150,60 @@ export const chatSessions = pgTable("chat_sessions", {
   session_id: text().primaryKey(),
   ticket_id: integer().notNull().references(() => tickets.id, { onDelete: "cascade" }),
 });
+
+/**
+ * Every line of every support chat (customer, Aria, a person, notices), in order. The API writes it: /chat
+ * records the message and the answer, public ticket replies on a chat's ticket are copied in, and the Control
+ * Room's Chats inbox writes a person's messages. ShopKart and the Control Room read the same rows.
+ */
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: serial().primaryKey(),
+    session_id: text().notNull(),
+    customer_id: integer().notNull(),
+    channel_id: text().notNull().default("shopkart"),
+    sender: text().$type<ChatSender>().notNull(),
+    author: text().notNull().default(""),
+    body: text().notNull(),
+    ticket_id: integer(),
+    ask: jsonb().$type<ChatQuestion>(),
+    answer: jsonb().$type<ChatAnswer>(),
+    created_at: at().notNull().defaultNow(),
+  },
+  (t) => [index().on(t.session_id), index().on(t.ticket_id), index().on(t.created_at)],
+);
+
+/**
+ * Photos customers attach in the ShopKart chat (damage claims): proof before money. The bytes live in Postgres
+ * (bytea) next to the rows that point at them, so a demo reset wipes them with everything else and every app
+ * reads them through the API (GET /attachments/:id). Downscaled in the browser to ≤1600 px JPEG first, so a row
+ * is a few hundred KB. `sha256` finds the same photo reused on another claim. Metadata queries never select `data`.
+ */
+export const attachments = pgTable(
+  "attachments",
+  {
+    id: serial().primaryKey(),
+    customer_id: integer().notNull(),
+    session_id: text(),
+    /** The chat line it was sent with */
+    chat_message_id: integer(),
+    /** Set once the photo reaches a ticket (the comment that carries it) */
+    ticket_id: integer(),
+    comment_id: integer(),
+    /** The order the claim is about, when known */
+    order_id: integer(),
+    mime: text().notNull(),
+    size: integer().notNull(),
+    width: integer().notNull().default(0),
+    height: integer().notNull().default(0),
+    sha256: text().notNull(),
+    name: text().notNull().default(""),
+    data: bytea().notNull(),
+    created_at: at().notNull().defaultNow(),
+  },
+  (t) => [index().on(t.ticket_id), index().on(t.session_id), index().on(t.sha256)],
+);
 
 /* ───── HubSpot CRM ───── */
 
@@ -300,6 +370,62 @@ export const resolvedCases = pgTable(
   (t) => [index().on(t.intent)],
 );
 
+/** Outbound voice calls placed through Sarvam (the Aria sales caller), with what the call collected. */
+export const calls = pgTable(
+  "rai_calls",
+  {
+    id: serial().primaryKey(),
+    provider: text().$type<"sarvam">().notNull().default("sarvam"),
+    direction: text().$type<"outbound">().notNull().default("outbound"),
+    status: text().$type<CallStatus>().notNull().default("queued"),
+    phone: text().notNull(),
+    name: text().notNull(),
+    business_name: text().notNull().default(""),
+    contact_id: integer(),
+    deal_id: integer(),
+    external_id: text(),
+    outcome: text().$type<CallOutcome>(),
+    lead_score: text().$type<LeadScore>(),
+    extracted: jsonb().$type<CallExtraction>().notNull().default({}),
+    transcript: jsonb().$type<TranscriptLine[]>().notNull().default([]),
+    summary: text(),
+    duration_s: integer(),
+    error: text(),
+    /** sales (Sales Caller) or support (Support Caller: details a support request is missing) */
+    purpose: text().$type<CallPurpose>().notNull().default("sales"),
+    customer_id: integer(),
+    ticket_id: integer(),
+    session_id: text(),
+    run_id: integer(),
+    language: text(),
+    reason: text(),
+    /** When a finished support call's answers were handed back to the agent (once only) */
+    continued_at: at(),
+    created_at: at().notNull().defaultNow(),
+    updated_at: at().notNull().defaultNow(),
+    ended_at: at(),
+  },
+  (t) => [index().on(t.external_id), index().on(t.deal_id), index().on(t.ticket_id)],
+);
+
+/** Control Room settings (one row, id "default"). Kept across demo resets. */
+export const settings = pgTable("rai_settings", {
+  id: text().primaryKey(),
+  value: jsonb().$type<ControlRoomSettings>().notNull(),
+  updated_at: at().notNull().defaultNow(),
+});
+
+/** The team's task board in the Control Room. Kept across demo resets. */
+export const boardTasks = pgTable("board_tasks", {
+  id: serial().primaryKey(),
+  title: text().notNull(),
+  owner: text().notNull().default(""),
+  tag: text().notNull().default(""),
+  column: text().$type<"todo" | "doing" | "done">().notNull().default("todo"),
+  position: integer().notNull().default(0),
+  created_at: at().notNull().defaultNow(),
+});
+
 /* ───── Campaigns (lead sources for the leads agent) ───── */
 
 export const campaigns = pgTable("campaigns", {
@@ -312,6 +438,13 @@ export const campaigns = pgTable("campaigns", {
   impressions: integer().notNull(),
   clicks: integer().notNull(),
   started_at: at().notNull(),
+  /** The public landing page in ShopKart: /c/<slug> */
+  slug: text().notNull().default(""),
+  /** The pitch shown on the landing page */
+  headline: text().notNull().default(""),
+  pitch: text().notNull().default(""),
+  /** Landing page views (one per page load) */
+  landing_visits: integer().notNull().default(0),
 });
 
 /** People who answered a campaign. The leads agent converts each into a CRM contact + deal, or skips it. */
@@ -351,6 +484,39 @@ export const analysisReports = pgTable("analysis_reports", {
   created_at: at().notNull(),
 });
 
+/* ───── Policies: ShopKart's business rules (configuration, not demo data: reset keeps them) ───── */
+
+export const policies = pgTable("policies", {
+  code: text().primaryKey(),
+  area: text().$type<PolicyArea>().notNull(),
+  title: text().notNull(),
+  summary: text().notNull(),
+  customer_text: text().notNull(),
+  owner: text().notNull(),
+  version: integer().notNull().default(1),
+  status: text().$type<PolicyStatus>().notNull().default("active"),
+  effective_from: timestamp({ withTimezone: true, mode: "date" }).notNull(),
+  updated_at: timestamp({ withTimezone: true, mode: "date" }).notNull().defaultNow(),
+});
+
+/** One fine-grained rule of a policy: when it applies (conditions), what it means (effect) and its numbers (params). */
+export const policyRules = pgTable(
+  "policy_rules",
+  {
+    code: text().primaryKey(),
+    policy_code: text().notNull().references(() => policies.code, { onDelete: "cascade" }),
+    title: text().notNull(),
+    description: text().notNull(),
+    conditions: jsonb().$type<PolicyConditions>().notNull().default({}),
+    effect: text().$type<PolicyEffect>().notNull(),
+    params: jsonb().$type<PolicyParams>().notNull().default({}),
+    approver: text(),
+    priority: integer().notNull().default(100),
+    active: boolean().notNull().default(true),
+  },
+  (t) => [index().on(t.policy_code), index().on(t.effect)],
+);
+
 /* ───── Relations (for db.query.*.findMany({ with })) ───── */
 
 export const customersRelations = relations(customers, ({ many }) => ({ orders: many(orders) }));
@@ -376,4 +542,7 @@ export const agentStepsRelations = relations(agentSteps, ({ one }) => ({ run: on
 export const activitiesRelations = relations(activities, ({ one }) => ({ deal: one(deals, { fields: [activities.deal_id], references: [deals.id] }) }));
 
 /** Every demo table, children first: the order `reset` truncates in. */
-export const DEMO_TABLES = ["rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+export const DEMO_TABLES = ["attachments", "rai_calls", "rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_messages", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+
+export const policiesRelations = relations(policies, ({ many }) => ({ rules: many(policyRules) }));
+export const policyRulesRelations = relations(policyRules, ({ one }) => ({ policy: one(policies, { fields: [policyRules.policy_code], references: [policies.code] }) }));

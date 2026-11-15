@@ -1,26 +1,25 @@
 import { useEffect, useState } from 'react'
-import { Lightbulb, Hand, Rocket, LifeBuoy, TrendingUp, Loader2, Check, Languages, Clock, ShieldAlert } from 'lucide-react'
+import { Lightbulb, Hand, Rocket, LifeBuoy, TrendingUp, Loader2, Check, Languages, Clock, ShieldAlert, Building2, Camera } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
-import { api } from '../api'
+import { OWNER } from '@ph/shared'
 import { useApp } from '../store'
-import { Card, PageHeader, Toggle, Button, Select, Skeleton } from '../components/ui'
-import { cn, rupees } from '../lib'
+import { Card, PageHeader, Toggle, Button, Select, Skeleton, EmptyState } from '../components/ui'
+import { cn, initials, rupees } from '../lib'
 
+// Each line says exactly what the agent does differently (apps/agent: settings.ts, criticality.ts, evidence.ts).
 const AUTONOMY = [
-  { value: 'suggest', icon: Lightbulb, title: 'Suggest only', text: 'Drafts replies and actions. A human sends every one.' },
-  { value: 'approval', icon: Hand, title: 'Act with approval', text: 'Acts on its own within guardrails. Anything above them waits for you.' },
-  { value: 'autonomous', icon: Rocket, title: 'Fully autonomous', text: 'Resolves end to end. Humans only see escalations.' },
+  { value: 'suggest', icon: Lightbulb, title: 'Suggest only', text: 'Answers questions, but every refund, whatever the amount, waits in Approvals for you.' },
+  { value: 'approval', icon: Hand, title: 'Act with approval', text: 'Refunds alone within the limits when the checks are clean. An unclear photo, a risk signal or a bigger amount waits for you.' },
+  { value: 'autonomous', icon: Rocket, title: 'Fully autonomous', text: 'Like approval, but within the limit it also refunds when the photo check is only unclear. Risk signals and bigger amounts still wait.' },
 ]
 const ESCALATION = [
-  { key: 'critical', label: 'Critical tickets', text: 'Severity marked critical on intake' },
-  { key: 'fraud', label: 'Fraud signals', text: 'Risk score above 0.7 or repeat refund pattern' },
-  { key: 'legal', label: 'Legal threats or abuse', text: 'Consumer court, police, abusive language' },
-  { key: 'vip', label: 'VIP customers', text: 'Lifetime value above ₹1,00,000' },
-  { key: 'negative', label: 'Angry twice in a row', text: 'Negative sentiment on 2 consecutive messages' },
+  { key: 'fraud', label: 'Fraud or chargeback mentions', text: 'On: straight to you as critical. Off: Aria works it, and refunds still need the limits and risk checks.' },
+  { key: 'legal', label: 'Legal threats or abuse', text: 'Police, consumer court, a lawyer, threats. On: straight to you as critical. Off: Aria works it as usual.' },
+  { key: 'vip', label: 'VIP customers', text: 'Customers who have spent ₹15,000 or more: anything beyond a simple question goes to you.' },
+  { key: 'negative', label: 'Upset customers', text: 'Upset twice in a row goes to you; upset with 2+ tickets this month goes one level up. Off: mood changes nothing.' },
 ]
 const LANGS = ['English', 'Hindi', 'Hinglish', 'Tamil', 'Telugu', 'Kannada', 'Marathi', 'Bengali', 'Gujarati', 'Malayalam']
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-const COLORS = ['#0F9D8A', '#5B6CD6', '#F5A524', '#E5484D', '#0E1B2C']
 
 function Section({ icon: Icon, title, text, children }) {
   return (
@@ -41,22 +40,22 @@ const Label = ({ children }) => <label className="mb-1.5 block text-xs font-medi
 const inputCls = 'h-9 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-500'
 
 export default function Settings() {
-  const { settings, setSettings, toast } = useApp()
+  const { settings, saveSettings, toast, error } = useApp()
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { if (settings && !form) setForm(structuredClone(settings)) }, [settings, form])
 
+  if (!form && error) return <Card><EmptyState icon={ShieldAlert} title="Settings aren't available" text={`The demo API didn't return them: ${error}`} /></Card>
   if (!form) return <div className="space-y-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-40" />)}</div>
 
   const dirty = JSON.stringify(form) !== JSON.stringify(settings)
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
   const save = async () => {
     setSaving(true)
-    await api.saveSettings(form)
-    setSettings(structuredClone(form))
+    const ok = await saveSettings(form)
     setSaving(false)
-    toast({ title: 'Agent settings saved', desc: `${form.agentName} is using the new rules now.` })
+    if (ok) toast({ title: 'Agent settings saved', desc: `${form.agentName || 'Aria'} applies them from the next request (within 10 seconds).` })
   }
   const toggleIn = (list, item) => (list.includes(item) ? list.filter((x) => x !== item) : [...list, item])
 
@@ -65,45 +64,49 @@ export default function Settings() {
       <PageHeader title="Agent settings" description="Shape how your AI teammate behaves: its voice, its playbooks and how far it can go on its own." />
 
       <div className="space-y-4">
-        <Section icon={ResolveAIGlyph} title="Profile" text="How the agent introduces itself to customers.">
+        <Section icon={Building2} title="Workspace" text="Who runs this business. Tickets Aria hands over, approvals and deals all come to this person.">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="grid size-12 place-items-center rounded-full bg-human/15 text-base font-semibold text-human" aria-hidden>{initials(OWNER.name)}</span>
+            <dl className="grid min-w-0 flex-1 grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
+              <div><dt className="text-xs text-slate-500">Owner</dt><dd className="mt-0.5 font-medium text-slate-900">{OWNER.name}</dd></div>
+              <div><dt className="text-xs text-slate-500">Role</dt><dd className="mt-0.5 font-medium text-slate-900">{OWNER.role}</dd></div>
+              <div><dt className="text-xs text-slate-500">Business</dt><dd className="mt-0.5 font-medium text-slate-900">{OWNER.business}</dd></div>
+              <div className="min-w-0"><dt className="text-xs text-slate-500">Email</dt><dd className="ref mt-0.5 truncate text-slate-900">{OWNER.email}</dd></div>
+            </dl>
+          </div>
+          <p className="mt-3 text-xs text-slate-500">The only person on the team, and the signed-in user in Zendesk and HubSpot too.</p>
+        </Section>
+
+        <Section icon={ResolveAIGlyph} title="Profile" text="How the agent introduces itself to customers. Both go into every agent's instructions on the next request.">
           <div className="flex flex-wrap items-start gap-6">
-            <div className="grid size-16 place-items-center rounded-2xl text-2xl font-semibold text-white shadow-lg transition-colors" style={{ background: form.avatarColor }}>
+            <div className="grid size-16 place-items-center rounded-2xl bg-brand-500 text-2xl font-semibold text-canvas shadow-lg">
               {form.agentName?.[0] || '?'}
             </div>
             <div className="grid min-w-0 flex-1 grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <Label>Agent name</Label>
-                <input className={inputCls} value={form.agentName} onChange={(e) => set({ agentName: e.target.value })} />
+                <input className={inputCls} maxLength={40} value={form.agentName} onChange={(e) => set({ agentName: e.target.value })} />
+                <p className="mt-1 text-xs text-slate-500">The name it uses with customers and on chat lines.</p>
               </div>
               <div>
                 <Label>Tone of voice</Label>
                 <Select label="Tone" className="w-full" value={form.tone} onChange={(tone) => set({ tone })} options={['Friendly', 'Professional', 'Concise', 'Warm & empathetic'].map((v) => ({ value: v, label: v }))} />
-              </div>
-              <div className="sm:col-span-2">
-                <Label>Avatar colour</Label>
-                <div className="flex gap-2">
-                  {COLORS.map((c) => (
-                    <button key={c} onClick={() => set({ avatarColor: c })} aria-label={`Colour ${c}`}
-                      className={cn('grid size-8 place-items-center rounded-full ring-offset-2 transition', form.avatarColor === c && 'ring-2 ring-slate-900')} style={{ background: c }}>
-                      {form.avatarColor === c && <Check className="size-4 text-white" />}
-                    </button>
-                  ))}
-                </div>
+                <p className="mt-1 text-xs text-slate-500">How every customer-facing reply is written.</p>
               </div>
             </div>
           </div>
         </Section>
 
-        <Section icon={LifeBuoy} title="Playbooks" text="Which jobs the agent is allowed to take on.">
+        <Section icon={LifeBuoy} title="Playbooks" text="Which jobs the agent is allowed to take on. Off means that agent doesn't act at all.">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {[
-              { key: 'support', icon: LifeBuoy, title: 'Customer support', text: 'Refunds, order tracking, address changes, invoices, complaints.' },
-              { key: 'sales', icon: TrendingUp, title: 'Sales', text: 'Qualify leads, answer pricing questions, create deals in the CRM.' },
+              { key: 'support', icon: LifeBuoy, title: 'Customer support', text: `Off: every chat gets a polite hand-off and a ticket assigned to ${OWNER.first}; Aria doesn't answer or refund.` },
+              { key: 'sales', icon: TrendingUp, title: 'Sales', text: `Off: enquiries still create the contact and deal in the CRM, unscored, with a note for ${OWNER.first}; no call is booked.` },
             ].map((p) => (
               <div key={p.key} className={cn('rounded-xl border p-4 transition', form.playbooks[p.key] ? 'border-brand-200 bg-brand-50/40' : 'border-slate-200')}>
                 <div className="flex items-center justify-between">
                   <p.icon className={cn('size-5', form.playbooks[p.key] ? 'text-brand-600' : 'text-slate-400')} />
-                  <Toggle checked={form.playbooks[p.key]} onChange={(v) => set({ playbooks: { ...form.playbooks, [p.key]: v } })} label={p.title} />
+                  <Toggle checked={!!form.playbooks?.[p.key]} onChange={(v) => set({ playbooks: { ...form.playbooks, [p.key]: v } })} label={p.title} />
                 </div>
                 <p className="mt-3 text-sm font-semibold text-slate-900">{p.title}</p>
                 <p className="mt-0.5 text-xs text-slate-500">{p.text}</p>
@@ -112,7 +115,7 @@ export default function Settings() {
           </div>
         </Section>
 
-        <Section icon={Rocket} title="Autonomy" text="How much the agent can do before a human has to step in.">
+        <Section icon={Rocket} title="Autonomy" text="How much the agent can do before a human has to step in, during business hours. No mode lifts the refund limits.">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {AUTONOMY.map((a, i) => {
               const on = form.autonomy === a.value
@@ -139,12 +142,36 @@ export default function Settings() {
             <input type="range" min={0} max={10000} step={100} value={form.refundLimit} onChange={(e) => set({ refundLimit: +e.target.value })} className="flex-1 accent-brand-500" />
             <div className="relative w-32">
               <span className="absolute top-1/2 left-3 -translate-y-1/2 text-sm text-slate-400">₹</span>
-              <input type="number" min={0} step={100} value={form.refundLimit} onChange={(e) => set({ refundLimit: Math.max(0, +e.target.value) })} className={cn(inputCls, 'pl-7 tabular')} />
+              <input type="number" min={0} step={100} value={form.refundLimit} onChange={(e) => set({ refundLimit: Math.max(0, Number(e.target.value) || 0) })} className={cn(inputCls, 'ref pl-7')} />
             </div>
           </div>
           <p className="mt-2 text-xs text-slate-500">Refunds up to <b className="text-slate-700">{rupees(form.refundLimit)}</b> are issued instantly. Larger ones wait for a human.</p>
 
+          <Label><span className="mt-6 block">Auto-refund verified damage up to</span></Label>
+          <div className="flex items-center gap-4">
+            <input type="range" min={0} max={10000} step={100} value={form.verifiedDamageLimit ?? form.refundLimit} onChange={(e) => set({ verifiedDamageLimit: +e.target.value })} className="flex-1 accent-brand-500" aria-label="Verified damage limit" />
+            <div className="relative w-32">
+              <span className="absolute top-1/2 left-3 -translate-y-1/2 text-sm text-slate-400">₹</span>
+              <input type="number" min={0} step={100} value={form.verifiedDamageLimit ?? form.refundLimit} onChange={(e) => set({ verifiedDamageLimit: Math.max(0, Number(e.target.value) || 0) })} className={cn(inputCls, 'ref pl-7')} aria-label="Verified damage limit in rupees" />
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            {(form.verifiedDamageLimit ?? 0) > form.refundLimit
+              ? <>Damage claims whose photo Aria verified, with no risk signal, are refunded alone up to <b className="text-slate-700">{rupees(form.verifiedDamageLimit)}</b>.</>
+              : <>At or below the auto-refund limit this adds nothing: verified damage follows the {rupees(form.refundLimit)} limit.</>}
+          </p>
+
+          <div className="mt-6 flex items-center gap-3 rounded-lg border border-slate-200 px-4 py-3">
+            <Camera className="size-4 shrink-0 text-slate-500" aria-hidden />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-slate-800">Require photos for damage claims</p>
+              <p className="text-xs text-slate-500">{form.requireDamagePhotos ? 'On: no damage refund without a photo, whatever the amount.' : 'Off: photos only where the damage policy asks (orders above ₹1,000).'}</p>
+            </div>
+            <Toggle checked={!!form.requireDamagePhotos} onChange={(v) => set({ requireDamagePhotos: v })} label="Require photos for damage claims" />
+          </div>
+
           <Label><span className="mt-6 block">Always escalate to a human when…</span></Label>
+          <p className="mb-2 text-xs text-slate-500">Money debited for a failed payment always goes to {OWNER.first}; that can't be switched off.</p>
           <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
             {ESCALATION.map((r) => (
               <li key={r.key} className="flex items-center gap-3 px-4 py-3">
@@ -152,18 +179,18 @@ export default function Settings() {
                   <p className="text-sm font-medium text-slate-800">{r.label}</p>
                   <p className="text-xs text-slate-500">{r.text}</p>
                 </div>
-                <Toggle checked={form.escalation[r.key]} onChange={(v) => set({ escalation: { ...form.escalation, [r.key]: v } })} label={r.label} />
+                <Toggle checked={!!form.escalation?.[r.key]} onChange={(v) => set({ escalation: { ...form.escalation, [r.key]: v } })} label={r.label} />
               </li>
             ))}
           </ul>
         </Section>
 
-        <Section icon={Languages} title="Languages" text="The agent detects the customer's language and replies in it.">
+        <Section icon={Languages} title="Languages" text="Aria replies in the customer's language when it is one of these, otherwise in the first one picked.">
           <div className="flex flex-wrap gap-2">
             {LANGS.map((l) => {
               const on = form.languages.includes(l)
               return (
-                <button key={l} onClick={() => set({ languages: toggleIn(form.languages, l) })}
+                <button key={l} onClick={() => set({ languages: on && form.languages.length === 1 ? form.languages : toggleIn(form.languages, l) })} title={on && form.languages.length === 1 ? 'Keep at least one language' : undefined}
                   className={cn('inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition', on ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 text-slate-600 hover:border-slate-300')}>
                   {on && <Check className="size-3.5" />}{l}
                 </button>
@@ -172,7 +199,7 @@ export default function Settings() {
           </div>
         </Section>
 
-        <Section icon={Clock} title="Business hours" text="When your human team is around to take escalations.">
+        <Section icon={Clock} title="Business hours" text={`When ${OWNER.first} is around (IST). Outside them Aria works in the mode below and tells customers when a person is back.`}>
           <div className="flex flex-wrap gap-1.5">
             {DAYS.map((d) => {
               const on = form.hours.days.includes(d)
@@ -191,8 +218,9 @@ export default function Settings() {
           <div className="mt-4 sm:max-w-md">
             <Label>Outside business hours</Label>
             <Select label="After hours" className="w-full" value={form.hours.afterHours} onChange={(afterHours) => set({ hours: { ...form.hours, afterHours } })} options={[
-              { value: 'autonomous', label: 'Keep resolving. Queue escalations for the morning' },
-              { value: 'collect', label: 'Collect details only and promise a callback' },
+              { value: 'autonomous', label: 'Fully autonomous: refunds within limits even on an unclear photo' },
+              { value: 'approval', label: 'Act with approval: refunds within limits on clean cases only' },
+              { value: 'suggest', label: 'Suggest only: every refund waits for the morning' },
             ]} />
           </div>
         </Section>

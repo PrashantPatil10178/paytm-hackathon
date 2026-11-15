@@ -1,7 +1,8 @@
 export { createDb, type Db, type Tx } from "./client.ts";
 export * from "./map.ts";
 export { runMigrations } from "./migrate.ts";
+export { ensurePolicies, POLICIES } from "./policies.ts";
 export * as schema from "./schema.ts";
-export { agentMemoryTables, ensureResolveAIConfig, ensureSeeded, resetDemoData } from "./seed.ts";
+export { agentMemoryTables, DEFAULT_SETTINGS, ensureResolveAIConfig, ensureSeeded, resetDemoData } from "./seed.ts";
 // Query helpers, re-exported so every app uses this package's single copy of drizzle-orm.
-export { and, asc, count, desc, eq, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
+export { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, not, or, sql } from "drizzle-orm";

@@ -26,7 +26,7 @@ bun install
 bun run dev              # everything; API uses its built-in stand-in agent
 bun run dev:agent        # everything, with the API forwarding /chat and /lead to apps/agent on :8000
 bun run dev:zendesk      # API + one app (also dev:hubspot, dev:shop, dev:api)
-bun run dev:dashboard    # dashboard + the Ask Aria runtime (apps/copilot)
+bun run dev:dashboard    # API + dashboard + the Ask Aria runtime (apps/copilot); Analytics and Campaigns read the live API
 bun run reset            # wipe and re-seed the demo data in Postgres. Do this before every demo run.
 bun run db:generate      # new SQL migration after editing packages/db/src/schema.ts (commit it)
 bun run db:migrate       # apply migrations + seed an empty DB (the API does this on startup too)

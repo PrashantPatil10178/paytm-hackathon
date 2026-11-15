@@ -9,7 +9,7 @@
     "dev:zendesk": "turbo run dev --filter=@ph/api --filter=@ph/zendesk",
     "dev:hubspot": "turbo run dev --filter=@ph/api --filter=@ph/hubspot",
     "dev:shop": "turbo run dev --filter=@ph/api --filter=@ph/shopkart",
-    "dev:dashboard": "turbo run dev --filter=@ph/dashboard --filter=@ph/copilot",
+    "dev:dashboard": "turbo run dev --filter=@ph/api --filter=@ph/dashboard --filter=@ph/copilot",
     "test:agent": "bun run --cwd apps/agent test",
     "build": "turbo run build",
     "start": "turbo run start",

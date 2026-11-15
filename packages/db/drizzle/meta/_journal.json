@@ -12,8 +12,22 @@
     {
       "idx": 1,
       "version": "7",
-      "when": 1794724063452,
-      "tag": "0001_resolveai_agents",
+      "when": 1794723324784,
+      "tag": "0001_campaigns_analytics",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794726531239,
+      "tag": "0002_report_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794729854010,
+      "tag": "0003_resolveai_agents",
       "breakpoints": true
     }
   ]

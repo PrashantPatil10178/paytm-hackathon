@@ -45,7 +45,8 @@ export interface Lead {
   name: string
   company: string
   need: string
-  channel: ChannelId
+  /** Where the enquiry came in; 'manual' when someone added it in the Control Room. */
+  channel: ChannelId | 'manual'
   score: number
   value: number
   stage: string

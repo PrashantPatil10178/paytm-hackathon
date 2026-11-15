@@ -1,6 +1,6 @@
 # ResolveAI Agent (VoltAgent)
 
-The agent service the demo API forwards ShopKart chats (to `POST /intake`, with the channel token) and `POST /lead` to when `AGENT_URL` is set.
+The agent service the demo API forwards ShopKart chats (to `POST /intake`, with the channel token), `POST /lead`, `/analysis` and `/campaigns/sync` to when `AGENT_URL` is set.
 Built on [VoltAgent](https://voltagent.dev/docs) (`@voltagent/core` + `@voltagent/server-hono`), running on Bun.
 
 ```sh
@@ -8,16 +8,20 @@ bun run dev:agent      # from the repo root: everything, with the API forwarding
 bun run test:agent     # bun test, no other services or API keys needed
 ```
 
-Every request goes through a **main agent**, then one **level agent** (or a person):
+Every support request goes through a **main agent**, then one **level agent** (or a person). The other agents work
+sales enquiries, analytics and campaign leads:
 
-| Agent | Handles | Tools |
-| --- | --- | --- |
-| `main` | Every request: new or status check, intent, signals, confidence, plan | none (it decides, others act) |
-| `low` | Information: where is my order, questions | `get_customer_orders`, `get_order`, `search_past_cases`, `add_internal_note`, `update_ticket`, `escalate_to_human` |
-| `medium` | Actions within limits: refunds up to ₹1,000 | the low tools plus `start_refund` |
-| `high` | Refunds above ₹1,000: plan it, a person approves | lookups, `search_past_cases`, `request_approval`, `escalate_to_human` (no direct refunds) |
-| critical | Failed payments, fraud or legal | none: code assigns a person and writes the brief |
-| `sales` | Business enquiries | `update_deal`, `add_deal_note`, `get_free_slots`, `book_meeting` |
+| Agent | Model tier | Handles | Tools |
+| --- | --- | --- | --- |
+| `main` | heavy | Every request: new or status check, intent, signals, confidence, plan | none (it decides, others act) |
+| `low` | heavy | Information: where is my order, questions | `get_customer_orders`, `get_order`, `search_past_cases`, `add_internal_note`, `update_ticket`, `escalate_to_human` |
+| `medium` | heavy | Actions within limits: refunds up to ₹1,000 | the low tools plus `start_refund` |
+| `high` | heavy | Refunds above ₹1,000: plan it, a person approves | lookups, `search_past_cases`, `request_approval`, `escalate_to_human` (no direct refunds) |
+| critical | – | Failed payments, fraud or legal | none: code assigns a person and writes the brief |
+| `writer` | lite | Short status updates from the ticket's facts | none |
+| `sales` | lite | Business enquiries | `update_deal`, `add_deal_note`, `get_free_slots`, `book_meeting` |
+| `analysis` | heavy | Control Room "Run analysis" | `get_metrics`, `get_previous_reports`, `publish_report` |
+| `leads` | lite | Control Room "Fetch new leads": one run per new campaign response, 3 at a time | `create_lead`, `skip_response` |
 
 How a request flows (`src/service.ts`):
 
@@ -37,30 +41,47 @@ How a request flows (`src/service.ts`):
 
 What is code and what is the model:
 
-- **Always done in code**: channel check, one ticket per chat session, the level (money and risk rules), the triage
-  note, the reply on the ticket, audit steps, approvals execution, saving cases.
-- **Decided by the agents**: what the customer needs, which order, the plan, and how the level agent resolves it.
-- **Guard rails in the tools**: tools act only on the request's own ticket and customer (operation context, never
-  model arguments); `start_refund` refuses above ₹1,000; the high agent has no refund tool at all.
-- **Connectors**: every call goes to the base URL and token set on Control Room → Connectors. A connector that is
-  turned off fails with a clear 502.
-- **If a model fails**, the customer still gets a reply and the ticket goes to a person with a note.
+- **Always done in code** (`src/service.ts`): channel check, one ticket per chat session, the level (money and risk
+  rules), the triage note, the reply on the ticket, audit steps, approvals execution, saving cases; a CRM contact + deal
+  per enquiry; the queue of campaign responses.
+- **Decided by the agents**: what the customer needs, which order, the plan, and how the level agent resolves it; for
+  leads the score, stage, next step and whether to book a call.
+- **Guard rails in the tools**, not just the prompt: tools act only on the request's own ticket, customer, deal or
+  campaign response (operation context, never model arguments); `start_refund` refuses above ₹1,000; the high agent
+  has no refund tool at all; `publish_report` accepts only known chart datasets and publishes once per run;
+  `create_lead` takes the deal amount from the response's stated budget, and the API refuses to decide a response twice.
+- **Connectors**: Zendesk, shop and CRM calls go to the base URL and token set on Control Room → Connectors. A
+  connector that is turned off fails with a clear 502. Campaigns and analytics go straight to the demo API.
+- **If a model fails**, the customer still gets a reply and the ticket goes to a person with a note; a campaign
+  response the agent couldn't decide stays new.
 
-Storage: with `DATABASE_URL` (repo-root `.env`), each chat's conversation memory (`@voltagent/postgres`, `voltagent_*`
-tables) and the chat → ticket map (`agent_chat_sessions`) are in Postgres and survive restarts. Without it, both are
-in process.
+Memory (`src/memory.ts`; full notes in the repo's CLAUDE.md, "Agent memory"): with `DATABASE_URL`, conversation memory
+(`@voltagent/postgres`, `voltagent_*` tables) and the chat → ticket map (`agent_chat_sessions`) are in Postgres and
+survive restarts; without it, both are in process.
 
-Model: `AGENT_MODEL`, else `COPILOT_MODEL`, else `anthropic/claude-opus-5-5`, as `provider/model`, from the repo-root
-`.env`. `openai/<deployment>` with `OPENAI_BASE_URL` + `OPENAI_API_KEY` runs on Azure OpenAI. `GET :8000/health` shows
-the model and whether its key is set. Swagger UI: http://localhost:8000/ui
+- Threads: support per chat session; sales and leads per person (email), so a returning person is recognised; analysis
+  one thread run with no raw history, reading a working-memory note the service rewrites after every report.
+- Cleanup: `bun run reset` wipes it with the demo data; threads idle longer than `AGENT_MEMORY_RETENTION_DAYS`
+  (default 30, 0 = forever) are deleted on start and every 6 hours.
+
+Models (`src/models.ts`), as `provider/model` from the repo-root `.env`:
+
+- **heavy** (main, level agents, analysis): `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`. Needs `ANTHROPIC_API_KEY`
+  (`CLAUDE_API_KEY` works too).
+- **lite** (writer, sales, leads): `AGENT_MODEL_LITE`, else `AGENT_MODEL`, else `COPILOT_MODEL`, else `openai/gpt-5.6-luna`.
+  `openai/<deployment>` with `OPENAI_BASE_URL` + `OPENAI_API_KEY` runs on Azure OpenAI.
+
+`GET :8000/health` shows both models and whether each key is set. Swagger UI: http://localhost:8000/ui
 
 | File | What's in it |
 | --- | --- |
-| `src/index.ts` | VoltAgent bootstrap, Hono server, `/health`, `/intake`, `/approvals/:id/decided`, `/lead` |
-| `src/service.ts` | Intake, triage → level → routing, status checks, approvals, memory, fallbacks; leads |
+| `src/index.ts` | VoltAgent bootstrap, Hono server, `/health`, `/intake`, `/approvals/:id/decided`, `/lead`, `/analysis`, `/campaigns/sync` |
+| `src/models.ts` | The heavy and lite model tiers, key lookup |
+| `src/memory.ts` | Conversation memory, the analysis working-memory note, thread keys, retention |
+| `src/service.ts` | Intake, triage → level → routing, status checks, approvals, case memory, fallbacks; leads, analysis, campaign sync |
 | `src/criticality.ts` | The level rules (low / medium / high / critical) and the ₹1,000 auto-refund limit |
-| `src/agents/` | `main.ts` (triage schema), `levels.ts` (low / medium / high), `sales.ts` |
-| `src/tools/` | `support.ts` (level tools, each records a step), `sales.ts`, `context.ts` (per-request ids) |
+| `src/agents/` | `main.ts` (triage schema, writer), `levels.ts` (low / medium / high), `sales.ts`, `analysis.ts`, `leads.ts` |
+| `src/tools/` | `support.ts` (level tools, each records a step), `sales.ts`, `analysis.ts`, `leads.ts`, `context.ts` (per-request ids) |
 | `src/platform.ts` | Client for `/resolveai/*`: channel tokens, connectors, runs, steps, approvals, cases |
 | `src/sessions.ts` | Chat session → ticket store (Postgres, or in memory for tests) |
 | `src/demo-api.ts` | Typed client for Zendesk, CRM and shop, sent to each connector's base URL and token |

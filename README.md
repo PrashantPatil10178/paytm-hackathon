@@ -13,7 +13,7 @@ tickets and deals through the API, which keeps everything in Postgres; every scr
 | **Zendesk (Demo)** | http://localhost:3001 | Helpdesk: views, ticket list, ticket detail with replies and internal notes |
 | **HubSpot CRM (Demo)** | http://localhost:3002 | CRM: deals pipeline (drag and drop), deal detail, contacts |
 | **ShopKart** | http://localhost:3003 | Shop: products, My Orders, Help, Business Enquiry, support chat |
-| **ResolveAI Control Room** | http://localhost:3004 | ResolveAI's own dashboard: KPIs, audit, tickets, approvals, board, channels, connectors, settings (mock JSON for now) |
+| **ResolveAI Control Room** | http://localhost:3004 | ResolveAI's own dashboard: KPIs, audit, tickets, approvals, board, channels, connectors, settings (mock JSON), plus live **Analytics** and **Campaigns** pages |
 | Demo API | http://localhost:4000 | All endpoints from the build guide, data in Postgres |
 
 Stack: Bun 1.4 (runtime, HTML bundler and dev server with HMR, no Vite), React 19, Tailwind CSS v4 via
@@ -48,15 +48,17 @@ bun run start        # production mode (bundles once at startup)
 
 ## Hooking up the real agent
 
-`POST /chat` and `POST /lead` are the agent's entry points. Set `AGENT_URL` when starting the API and
-both are forwarded there unchanged:
+`POST /chat`, `POST /lead`, `POST /analysis` and `POST /campaigns/sync` are the agent's entry points. Set `AGENT_URL`
+when starting the API and all four are forwarded there unchanged:
 
 ```sh
 AGENT_URL=http://localhost:8000 bun run dev   # or: bun run dev:agent
 ```
 
-The agent lives in `apps/agent` (TypeScript, [VoltAgent](https://voltagent.dev/docs)): a support agent for chats and a
-sales agent for enquiries. It uses `AGENT_MODEL` (else `COPILOT_MODEL`) and the same keys as Ask Aria; see its README.
+The agent lives in `apps/agent` (TypeScript, [VoltAgent](https://voltagent.dev/docs)): a support agent for chats, a
+sales agent for enquiries, an analysis agent for the Control Room's Analytics page and a leads agent that turns campaign
+responses into CRM leads. Heavy work (support, analysis) runs on `anthropic/claude-sonnet-5`, light work (sales, leads) on
+`openai/gpt-5.6-luna`; override with `AGENT_MODEL_HEAVY` / `AGENT_MODEL_LITE`. See its README.
 
 The agent receives exactly what the shop sends and must answer in the same shape:
 
@@ -64,9 +66,11 @@ The agent receives exactly what the shop sends and must answer in the same shape
 | --- | --- | --- |
 | `POST {AGENT_URL}/chat` | `{ session_id, customer_id, message }` | `{ reply, ticket_id? }` |
 | `POST {AGENT_URL}/lead` | `{ name, phone, email, business_name, need, budget, start_when }` | `{ ok, message, deal_id? }` |
+| `POST {AGENT_URL}/analysis` | `{ focus? }` | `{ report }` (also saved via `POST /analytics/reports`) |
+| `POST {AGENT_URL}/campaigns/sync` | `{ limit? }` (default 10) | `{ processed, converted, skipped, failed, remaining, results[] }` |
 
 Without `AGENT_URL` (or if the agent is unreachable) a small rule-based stand-in answers instead, using
-the same Zendesk and CRM endpoints. It covers the three demo stories so the screens can be built and
+the same Zendesk, CRM, campaign and analytics endpoints. It covers the demo stories so the screens can be built and
 rehearsed before the agent is ready.
 
 The agent then calls the endpoints below on `http://localhost:4000`.
@@ -142,6 +146,25 @@ API issues at startup) when `AGENT_URL` is set.
 | GET / POST | `/resolveai/cases` | The main agent's memory of finished cases. `?q=` full-text search |
 
 With `RESOLVEAI_INTERNAL_KEY` set, the agent-only routes need the `x-resolveai-key` header.
+### Campaigns (the leads agent's input)
+
+| Method | URL | Notes |
+| --- | --- | --- |
+| GET | `/campaigns` | Campaigns with spend, clicks and response counts by status |
+| GET | `/campaigns/responses?status=&campaign_id=&limit=` | status is `new`, `converted` or `skipped`. New ones oldest first. |
+| GET | `/campaigns/responses/{id}` | The response plus `existing_contact` (the CRM contact with that email, and their deals) |
+| POST | `/campaigns/responses/{id}/convert` | `{ score, deal_name, amount, next_step, note }`: contact (reused by email) + deal + timeline note, in one transaction. 409 if already processed. |
+| POST | `/campaigns/responses/{id}/skip` | `{ reason }`. 409 if already processed. |
+| POST | `/campaigns/sync` | Runs the leads agent over new responses (`{ limit? }`) |
+
+### Analytics
+
+| Method | URL | Notes |
+| --- | --- | --- |
+| GET | `/analytics/metrics` | Live totals and every chart dataset, computed from Postgres |
+| GET / POST | `/analytics/reports` | Latest 10 reports. POST `{ headline, insights: [{ dataset, title, finding, tone }] }`; the totals are snapshotted with it. |
+| GET | `/analytics/reports/latest` | `{ report }` or `{ report: null }` |
+| POST | `/analysis` | Runs the analysis agent (`{ focus? }`) |
 
 ## Demo script
 

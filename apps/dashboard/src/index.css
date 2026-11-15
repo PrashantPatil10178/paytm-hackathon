@@ -239,3 +239,15 @@
 .aria-chat .copilotKitMessage :is(ul, ol) { margin-block: 0.25rem; }
 .aria-chat .copilotKitMessage :is(h1, h2, h3, h4) { font-size: 14px; font-weight: 600; }
 .aria-chat .copilotKitUserMessage, .aria-chat .copilotKitUserMessage * { font-size: 13.5px; line-height: 1.55; }
+
+/*
+ * Sidebar cascade. The resizable panel sets --p from 0 (at 160px wide or more) to 1 (closed);
+ * the panel sets --n (how many items) and each item its --i (top to bottom). Items leave in order,
+ * top first: each drifts left and fades over its own slice of --p, so dragging scrubs the motion
+ * and the 0.4s glide plays it.
+ */
+.cascade-item {
+  --t: clamp(0, calc(var(--p, 0) * (1 + var(--n, 1) * 0.05) - var(--i, 0) * 0.05), 1);
+  opacity: calc(1 - var(--t));
+  translate: calc(var(--t) * -14px) 0;
+}

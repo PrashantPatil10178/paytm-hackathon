@@ -59,7 +59,6 @@ export function createLevelAgent(level: Level, api: DemoAPI, model: AgentOptions
     model,
     tools: supportTools(api, platform, level),
     maxSteps: 10,
-    temperature: 0.2,
     ...(memory && { memory }),
   });
 }

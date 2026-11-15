@@ -55,7 +55,6 @@ export function createMainAgent(model: AgentOptions["model"], memory?: Memory) {
     purpose: "Triages every incoming request: new or status check, intent, criticality signals and a plan",
     instructions: INSTRUCTIONS,
     model,
-    temperature: 0,
     ...(memory && { memory }),
   });
 }

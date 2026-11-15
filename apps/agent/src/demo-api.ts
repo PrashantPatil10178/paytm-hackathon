@@ -4,10 +4,17 @@
  * connector's token. A connector that is turned off refuses every call.
  */
 import type {
+  AnalysisReport,
+  AnalysisScope,
+  AnalyticsMetrics,
   BookMeetingBody,
   ConnectorAccess,
   ConnectorId,
+  CampaignResponse,
   Contact,
+  ConvertResponseBody,
+  ConvertResponseResult,
+  CreateReportBody,
   CreateCommentBody,
   CreateContactBody,
   CreateDealBody,
@@ -19,6 +26,7 @@ import type {
   Order,
   Quote,
   SaveQuoteBody,
+  SkipResponseBody,
   Slot,
   Ticket,
   TicketSummary,
@@ -47,10 +55,15 @@ const CACHE_MS = 10_000;
  * `connectors` returns the live connector config (from the Control Room). Without it every connector
  * defaults to `${baseUrl}/zendesk`, `/shop` and `/crm`, which is what the tests use.
  */
+/** The CRM contact a campaign response's email already belongs to (GET /campaigns/responses/{id}). */
+export type KnownContact = Contact & { deals: Pick<Deal, "id" | "name" | "stage" | "amount">[] };
+
 export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, connectors?: () => Promise<ConnectorAccess[]>) {
   let cache: { at: number; list: ConnectorAccess[] } | null = null;
 
-  async function access(id: ConnectorId): Promise<ConnectorAccess> {
+  // Campaigns and analytics are ResolveAI's own records in the demo API, not a connector.
+  async function access(id: ConnectorId | undefined): Promise<ConnectorAccess> {
+    if (!id) return { id: "zendesk", base_url: baseUrl, token: null, enabled: true };
     if (!connectors) return { id, base_url: `${baseUrl}${PREFIX[id]}`, token: null, enabled: true };
     if (!cache || Date.now() - cache.at > CACHE_MS) cache = { at: Date.now(), list: await connectors() };
     const c = cache.list.find((x) => x.id === id);
@@ -59,10 +72,11 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
   }
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const id = (Object.keys(PREFIX) as ConnectorId[]).find((k) => path.startsWith(`${PREFIX[k]}/`))!;
+    const id = (Object.keys(PREFIX) as ConnectorId[]).find((k) => path.startsWith(`${PREFIX[k]}/`));
     const c = await access(id);
-    if (!c.enabled) throw new DemoAPIError(503, `The ${NAMES[id]} connector is turned off in the Control Room`);
-    const url = `${c.base_url.replace(/\/$/, "")}${path.slice(PREFIX[id].length)}`;
+    const name = id ? NAMES[id] : "the demo API";
+    if (!c.enabled) throw new DemoAPIError(503, `The ${name} connector is turned off in the Control Room`);
+    const url = `${c.base_url.replace(/\/$/, "")}${id ? path.slice(PREFIX[id].length) : path}`;
     let res: Response;
     try {
       res = await fetchImpl(url, {
@@ -75,7 +89,7 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
         signal: AbortSignal.timeout(30_000),
       });
     } catch (e) {
-      throw new DemoAPIError(0, `Can't reach ${NAMES[id]} at ${c.base_url}: ${(e as Error).message}`);
+      throw new DemoAPIError(0, `Can't reach ${name} at ${c.base_url}: ${(e as Error).message}`);
     }
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
     if (!res.ok) throw new DemoAPIError(res.status, data?.error ?? res.statusText);
@@ -103,5 +117,16 @@ export function createDemoAPI(baseUrl: string, fetchImpl: typeof fetch = fetch, 
     slots: () => call<{ slots: Slot[] }>("GET", "/crm/slots"),
     bookMeeting: (body: BookMeetingBody) => call<Meeting>("POST", "/crm/meetings", body),
     saveQuote: (dealId: number, body: SaveQuoteBody) => call<Quote>("POST", `/crm/deals/${dealId}/quote`, body),
+
+    // Campaigns (the leads agent's input)
+    newResponses: () => call<{ responses: CampaignResponse[] }>("GET", "/campaigns/responses?status=new"),
+    campaignResponse: (id: number) => call<CampaignResponse & { existing_contact: KnownContact | null }>("GET", `/campaigns/responses/${id}`),
+    convertResponse: (id: number, body: ConvertResponseBody) => call<ConvertResponseResult>("POST", `/campaigns/responses/${id}/convert`, body),
+    skipResponse: (id: number, body: SkipResponseBody) => call<CampaignResponse>("POST", `/campaigns/responses/${id}/skip`, body),
+
+    // Analytics (the analysis agent's input and output)
+    metrics: () => call<AnalyticsMetrics>("GET", "/analytics/metrics"),
+    reports: (scope?: AnalysisScope) => call<{ reports: AnalysisReport[] }>("GET", `/analytics/reports${scope ? `?scope=${scope}` : ""}`),
+    saveReport: (body: CreateReportBody) => call<AnalysisReport>("POST", "/analytics/reports", body),
   };
 }

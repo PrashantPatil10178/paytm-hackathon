@@ -72,3 +72,17 @@ export const toApproval = (r: Row<typeof s.approvals>): Approval => ({
 });
 
 export const toCase = (r: Row<typeof s.resolvedCases>): ResolvedCase => ({ ...r, created_at: iso(r.created_at) });
+export const toCampaign = (r: Row<typeof s.campaigns>): Campaign => ({ ...r, started_at: iso(r.started_at) });
+
+type ResponseRow = Row<typeof s.campaignResponses> & { campaign: Pick<Row<typeof s.campaigns>, "id" | "name" | "channel"> };
+
+export function toCampaignResponse({ campaign_id: _, campaign, ...r }: ResponseRow): CampaignResponse {
+  return {
+    ...r,
+    campaign: { id: campaign.id, name: campaign.name, channel: campaign.channel },
+    created_at: iso(r.created_at),
+    processed_at: r.processed_at ? iso(r.processed_at) : null,
+  };
+}
+
+export const toReport = (r: Row<typeof s.analysisReports>): AnalysisReport => ({ ...r, created_at: iso(r.created_at) });

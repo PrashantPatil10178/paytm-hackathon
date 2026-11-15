@@ -9,7 +9,10 @@ import { useApp } from '../store'
 import { api } from '../api'
 import { ApprovalsCard, LeadCard, MetricsCard, TicketCard, TicketListCard } from './cards'
 
-const PAGES = { overview: '/', audit: '/audit', tickets: '/tickets', approvals: '/approvals', board: '/board', leads: '/leads', channels: '/channels', connectors: '/connectors', settings: '/settings' }
+const PAGES = {
+  overview: '/', analytics: '/analytics', audit: '/audit', tickets: '/tickets', approvals: '/approvals', board: '/board',
+  leads: '/leads', campaigns: '/campaigns', sales_analytics: '/sales/analytics', channels: '/channels', connectors: '/connectors', settings: '/settings',
+}
 
 const STATUS = z.enum(['open', 'in_progress', 'waiting', 'solved'])
 const LEVEL = z.enum(['low', 'medium', 'high', 'critical'])
@@ -143,6 +146,8 @@ export default function AriaTools() {
       { title: 'How is Aria doing?', message: 'How has Aria performed over the last 14 days?' },
       { title: 'Explain RA-1041', message: 'Why is RA-1041 blocked, and what did Aria check?' },
       { title: 'Hottest lead', message: 'Which lead should sales call first, and why?' },
+      { title: 'Sales pipeline', message: 'Show me the open pipeline and which deals are hot.' },
+      { title: 'New campaign leads', message: 'Fetch new leads from our campaigns.' },
     ],
   })
 

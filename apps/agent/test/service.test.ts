@@ -10,10 +10,14 @@ import { APICallError } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { createLevelAgents } from "../src/agents/levels.ts";
 import { createMainAgent, createWriterAgent, type Triage } from "../src/agents/main.ts";
+import { createAnalysisAgent } from "../src/agents/analysis.ts";
+import { createLeadsAgent } from "../src/agents/leads.ts";
 import { createSalesAgent } from "../src/agents/sales.ts";
 import { assessCriticality } from "../src/criticality.ts";
 import { createDemoAPI } from "../src/demo-api.ts";
 import { createPlatform } from "../src/platform.ts";
+import { analysisNote, analysisThread, createAgentMemory } from "../src/memory.ts";
+import { indianRupees } from "../src/tools/analysis.ts";
 import { createService } from "../src/service.ts";
 
 /* ───── Fake demo API ───── */
@@ -36,6 +40,12 @@ let db: {
 };
 
 const TOKEN = "rai_test_token";
+let db: { tickets: Json[]; comments: Json[]; orders: Json[]; contacts: Json[]; deals: Json[]; notes: Json[]; meetings: Json[]; responses: Json[]; reports: Json[] };
+
+const response = (id: number, x: Json) => ({
+  id, campaign: { id: 1, name: "Diwali bulk gifting", channel: "meta_ads" }, phone: "", need: "bulk_order", start_when: "", budget: null,
+  status: "new", contact_id: null, deal_id: null, note: "", created_at: "2026-11-15T05:00:00.000Z", processed_at: null, ...x,
+});
 
 beforeEach(() => {
   db = {
@@ -58,8 +68,20 @@ beforeEach(() => {
     steps: [],
     approvals: [],
     cases: [],
+    responses: [
+      response(1, { name: "Meera Joshi", email: "meera@joshisweets.example", company: "Joshi Sweets", budget: 90000, start_when: "This week", message: "Need 500 Diwali hampers with our logo." }),
+      response(2, { name: "Promo Blast", email: "noreply@promo.example", company: "", need: "other", message: "WIN a FREE iPhone!!! bit.ly/xx" }),
+      response(3, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, message: "Still interested in billing." }),
+    ],
+    reports: [],
   };
 });
+
+const METRICS = {
+  generated_at: "2026-11-15T10:00:00.000Z",
+  totals: { tickets: 10, tickets_ai: 6, ai_rate: 60, campaign_spend: 83350, campaign_leads: 0 },
+  datasets: [{ id: "tickets_per_day", title: "Tickets per day", description: "x", series: [{ key: "ai", label: "AI", unit: "count" }], rows: [{ key: "2026-11-15", label: "15 Nov", ai: 6 }] }],
+};
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const ticketView = (t: Json) => ({ ...t, comments: db.comments.filter((c) => c.ticket_id === t.id) });
@@ -178,6 +200,28 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   }
   if (p === "/resolveai/cases") return json({ cases: db.cases.slice(-3) });
 
+  if (p === "/campaigns/responses" && url.searchParams.get("status") === "new") return json({ responses: db.responses.filter((r) => r.status === "new") });
+  if ((m = p.match(/^\/campaigns\/responses\/(\d+)(\/convert|\/skip)?$/))) {
+    const r = db.responses.find((x) => x.id === Number(m![1]));
+    if (!r) return json({ error: "Campaign response not found" }, 404);
+    if (!m[2]) {
+      const known = r.email === "rakesh@sharmarestaurants.example" ? { id: 1, company: "Sharma Restaurants", deals: [{ id: 1, name: "Sharma Restaurants – Billing setup", stage: "meeting_booked", amount: 50000 }] } : null;
+      return json({ ...r, existing_contact: known });
+    }
+    if (r.status !== "new") return json({ error: `Campaign response ${r.id} was already ${r.status}` }, 409);
+    if (m[2] === "/skip") return json(Object.assign(r, { status: "skipped", note: body.reason }));
+    const deal = { id: 9 + db.deals.length, name: body.deal_name, amount: body.amount, score: body.score, next_step: body.next_step, stage: "new_lead" };
+    db.deals.push(deal);
+    Object.assign(r, { status: "converted", deal_id: deal.id, note: body.note });
+    return json({ response: r, contact: { id: 20 + db.deals.length }, deal, existing_contact: false }, 201);
+  }
+  if (p === "/analytics/metrics") return json(METRICS);
+  if (p === "/analytics/reports" && method === "GET") return json({ reports: db.reports });
+  if (p === "/analytics/reports" && method === "POST") {
+    const r = { id: 1 + db.reports.length, author: "ResolveAI Bot", snapshot: METRICS.totals, created_at: new Date().toISOString(), ...body };
+    db.reports.push(r);
+    return json(r, 201);
+  }
   return json({ error: `${method} ${p} not found` }, 404);
 }) as typeof fetch;
 
@@ -218,6 +262,32 @@ function triage(t: Partial<Triage> & Pick<Triage, "intent">): Step {
   return { text: JSON.stringify(full) };
 }
 
+const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], finishReason: { unified: "stop" as const, raw: undefined }, usage, warnings: [] });
+
+/**
+ * A model that answers from the prompt it is given, for agents run in parallel (where a fixed script
+ * would interleave). Calls `decide` with the latest user message; once a tool has run, it finishes.
+ */
+function byPrompt(decide: (prompt: string) => Step) {
+  let n = 0;
+  return new MockLanguageModelV3({
+    doGenerate: async ({ prompt }) => {
+      const msgs = prompt as Json[];
+      if (msgs.at(-1)!.role === "tool") return textResult("Done.");
+      const user = [...msgs].reverse().find((x) => x.role === "user")!;
+      const text = typeof user.content === "string" ? user.content : user.content.map((c: Json) => c.text ?? "").join("");
+      const step = decide(text);
+      if ("text" in step) return textResult(step.text);
+      return {
+        content: [{ type: "tool-call" as const, toolCallId: `call-p${++n}`, toolName: step.tool, input: JSON.stringify(step.args ?? {}) }],
+        finishReason: { unified: "tool-calls" as const, raw: undefined },
+        usage,
+        warnings: [],
+      };
+    },
+  });
+}
+
 const failing = () =>
   new MockLanguageModelV3({
     doGenerate: async () => {
@@ -230,7 +300,7 @@ function service(model: MockLanguageModelV3, baseUrl = "http://demo", fetchImpl:
   const platform = createPlatform(baseUrl, fetchImpl);
   const api = createDemoAPI(baseUrl, fetchImpl, () => platform.connectors());
   const quiet = { warn() {}, error() {} };
-  return createService({ api, platform, main: createMainAgent(model), writer: createWriterAgent(model), levels: createLevelAgents(api, model, platform), sales: createSalesAgent(api, model), log: quiet });
+  return createService({ api, platform, main: createMainAgent(model), writer: createWriterAgent(model), levels: createLevelAgents(api, model, platform), sales: createSalesAgent(api, model), analysis: createAnalysisAgent(api, model), leads: createLeadsAgent(api, model), log: quiet });
 }
 
 /** Sends a chat, then waits for the level agent working in the background, like the customer would. */
@@ -622,4 +692,189 @@ test("lead: creates contact and deal, the agent scores it and books a call", asy
   expect(res).toEqual({ status: 201, body: { ok: true, message: "Thanks Meera! I've booked an intro call for Mon 17 Nov, 11:00 am.", deal_id: 9 } });
   expect(db.deals[0]).toMatchObject({ name: "Shah Traders – Bulk order", amount: 50000, score: "hot", stage: "meeting_booked" });
   expect(db.meetings).toHaveLength(1);
+});
+
+/* ───── Analysis agent ───── */
+
+const INSIGHTS = [
+  { dataset: "tickets_per_day", title: "AI handled 60% of tickets", finding: "6 of 10 tickets stayed with the AI.", tone: "good" },
+  { dataset: "campaign_performance", title: "₹83,350 spent, 0 leads yet", finding: "Run the leads agent on the new responses.", tone: "watch" },
+  { dataset: "pipeline_by_score", title: "Pipeline steady", finding: "Keep following up hot deals.", tone: "good" },
+];
+
+test("analysis: reads the metrics and publishes one report", async () => {
+  const svc = service(
+    scripted([
+      { tool: "get_metrics" },
+      { tool: "get_previous_reports" },
+      { tool: "publish_report", args: { headline: "AI handled 60% of tickets; campaigns have 0 leads yet.", insights: INSIGHTS } },
+      { text: "Published the report." },
+    ]),
+  );
+  const res = await svc.analyze({ focus: "How are campaigns doing?" });
+
+  expect(res.status).toBe(201);
+  expect(res.body).toMatchObject({ report: { id: 1, headline: "AI handled 60% of tickets; campaigns have 0 leads yet.", insights: INSIGHTS } });
+  expect(db.reports).toHaveLength(1);
+});
+
+test("analysis: a second publish in the same run is refused", async () => {
+  const svc = service(
+    scripted([
+      { tool: "publish_report", args: { headline: "First", insights: INSIGHTS } },
+      { tool: "publish_report", args: { headline: "Second", insights: INSIGHTS } },
+      { text: "Done." },
+    ]),
+  );
+  const res = await svc.analyze({});
+  expect(res.body).toMatchObject({ report: { headline: "First" } });
+  expect(db.reports).toHaveLength(1);
+});
+
+test("analysis: a sales analysis may only write about sales charts", async () => {
+  const sales = INSIGHTS.filter((i) => i.dataset !== "tickets_per_day");
+  const svc = service(
+    scripted([
+      { tool: "publish_report", args: { headline: "Mixed", insights: INSIGHTS } }, // tickets_per_day is not a sales chart
+      { tool: "publish_report", args: { headline: "Sales only", insights: [...sales, { ...sales[0]!, title: "Third" }] } },
+      { text: "Done." },
+    ]),
+  );
+  const res = await svc.analyze({ scope: "sales" });
+  expect(res.body).toMatchObject({ report: { headline: "Sales only", scope: "sales" } });
+  expect(db.reports).toHaveLength(1);
+});
+
+test("analysis: a finding about an unknown chart is rejected, and no report means 502", async () => {
+  const svc = service(
+    scripted([
+      { tool: "publish_report", args: { headline: "x", insights: [...INSIGHTS, { dataset: "made_up_chart", title: "t", finding: "f", tone: "good" }] } },
+      { text: "I could not publish." },
+    ]),
+  );
+  const res = await svc.analyze({});
+  expect(res.status).toBe(502);
+  expect(db.reports).toHaveLength(0);
+});
+
+/* ───── Leads agent ───── */
+
+/** Spam → skip, already in the CRM → skip, otherwise a hot lead. Tries to sneak in an amount too. */
+const leadTriage = (prompt: string): Step => {
+  if (/FREE iPhone/.test(prompt)) return { tool: "skip_response", args: { reason: "Spam: prize message with a link" } };
+  if (/open deals/.test(prompt)) return { tool: "skip_response", args: { reason: "Already in the pipeline" } };
+  return { tool: "create_lead", args: { score: "hot", deal_name: "Joshi Sweets – Bulk order", next_step: "Book a call this week", note: "₹90,000, this week.", amount: 9_999_999 } };
+};
+
+test("leads: converts real responses, skips spam and people already in the pipeline", async () => {
+  const res = await service(byPrompt(leadTriage)).syncLeads({});
+
+  expect(res.status).toBe(200);
+  expect(res.body).toMatchObject({ processed: 3, converted: 1, skipped: 2, failed: 0, remaining: 0 });
+  expect(db.responses.map((r) => r.status)).toEqual(["converted", "skipped", "skipped"]);
+  // The amount comes from the response's budget, not from the model.
+  expect(db.deals).toEqual([expect.objectContaining({ name: "Joshi Sweets – Bulk order", amount: 90000, score: "hot", stage: "new_lead" })]);
+  expect((res.body as Json).results[0]).toMatchObject({ response_id: 1, outcome: "converted", deal_id: 9, score: "hot" });
+});
+
+test("leads: respects the limit and reports what is left", async () => {
+  const res = await service(byPrompt(leadTriage)).syncLeads({ limit: 1 });
+  expect(res.body).toMatchObject({ processed: 1, remaining: 2 });
+  expect(db.responses.filter((r) => r.status === "new")).toHaveLength(2);
+});
+
+test("leads: if the model fails, responses stay new for the next run", async () => {
+  const res = await service(failing()).syncLeads({});
+  expect(res.body).toMatchObject({ processed: 3, converted: 0, failed: 3, remaining: 3 });
+  expect(db.responses.every((r) => r.status === "new")).toBe(true);
+  expect(db.deals).toHaveLength(0);
+});
+
+test("leads: a response decided elsewhere mid-run is not converted twice", async () => {
+  const raced = byPrompt((prompt) => {
+    // Another sync run skips it while this one is still thinking.
+    db.responses.find((r) => prompt.includes(`Campaign response #${r.id} `))!.status = "skipped";
+    return { tool: "create_lead", args: { score: "warm", deal_name: "x", next_step: "y", note: "z" } };
+  });
+  const res = await service(raced).syncLeads({});
+  expect(res.body).toMatchObject({ converted: 0, failed: 3 });
+  expect(db.deals).toHaveLength(0);
+});
+
+/* ───── Memory ───── */
+
+/** Every message text the model was shown on one call, system prompt included. */
+const shown = (call: { prompt: unknown }) =>
+  (call.prompt as Json[]).map((m) => `${m.role}: ${typeof m.content === "string" ? m.content : m.content.map((c: Json) => c.text ?? "").join("")}`);
+
+test("memory: the analysis agent sees a note about its last report, not the last run's raw history", async () => {
+  const model = scripted([
+    { tool: "publish_report", args: { headline: "First headline: AI handled 60%.", insights: INSIGHTS } },
+    { text: "Published." },
+    { tool: "publish_report", args: { headline: "Second headline.", insights: INSIGHTS } },
+    { text: "Published again." },
+  ]);
+  const api = createDemoAPI("http://demo", fakeFetch);
+  const { analysisMemory } = createAgentMemory(undefined); // in process
+  const platform = createPlatform("http://demo", fakeFetch);
+  const svc = createService({
+    api,
+    platform,
+    main: createMainAgent(model),
+    writer: createWriterAgent(model),
+    levels: createLevelAgents(api, model, platform),
+    sales: createSalesAgent(api, model),
+    analysis: createAnalysisAgent(api, model, analysisMemory),
+    leads: createLeadsAgent(api, model),
+    analysisMemory,
+    log: { warn() {}, error() {} },
+  });
+
+  await svc.analyze({ focus: "first question" });
+  const note = await analysisMemory.getWorkingMemory(analysisThread("all"));
+  expect(note).toContain("Headline: First headline: AI handled 60%.");
+  expect(note).toContain("[good] AI handled 60% of tickets (tickets_per_day)");
+
+  await svc.analyze({ focus: "second question" });
+  const second = shown(model.doGenerateCalls[2]!).join("\n");
+  expect(second).toContain("First headline: AI handled 60%."); // the note, via the system prompt
+  expect(second).toContain("second question");
+  expect(second).not.toContain("first question"); // contextLimit 0: no replay of the earlier run
+
+  const after = await analysisMemory.getWorkingMemory(analysisThread("all"));
+  expect(after).toContain("Headline: Second headline.");
+  expect(after).toContain("## Report before that"); // the previous headline is kept, one level deep
+});
+
+test("memory: two replies from the same person share a thread and run one after another", async () => {
+  db.responses.push(response(4, { name: "Meera Joshi", email: "MEERA@joshisweets.example ", company: "Joshi Sweets", budget: 20000, message: "Also need 50 small boxes." }));
+  const model = byPrompt(leadTriage);
+  await service(model).syncLeads({});
+
+  const calls = model.doGenerateCalls.map((c) => (c.prompt as Json[]).map((m) => m.role as string));
+  const prompts = model.doGenerateCalls.map(shown);
+  // The first model call for each response: its only user line is that response's prompt.
+  const firstCall = (id: number) => prompts.findIndex((lines) => lines.at(-1)!.startsWith("user:") && lines.at(-1)!.includes(`Campaign response #${id} `));
+  const first = firstCall(1);
+  const later = firstCall(4);
+  // Meera's earlier run (#1) is finished before her later one (#4) starts, and #4 is shown it from the shared thread.
+  expect(first).toBeGreaterThanOrEqual(0);
+  expect(later).toBeGreaterThan(first);
+  expect(calls[later]!.slice(1, -1)).toContain("assistant");
+  // Someone else's run starts with an empty thread.
+  expect(calls[firstCall(2)]!.slice(1, -1)).not.toContain("assistant");
+});
+
+test("memory: analysisNote keeps the report before last", () => {
+  const report = (headline: string) => ({ id: 1, scope: "all" as const, headline, insights: [], author: "ResolveAI Bot", created_at: "2026-11-15T06:00:00.000Z", snapshot: METRICS.totals as any });
+  const first = analysisNote(report("One"), null);
+  const second = analysisNote(report("Two"), first);
+  expect(second).toContain("Headline: Two");
+  expect(second).toContain("## Report before that");
+  expect(second).toContain("Headline: One");
+  expect(analysisNote(report("Three"), second)).not.toContain("Headline: One"); // only one level deep
+});
+
+test("analysis: ₹ amounts are rewritten with Indian grouping", () => {
+  expect(indianRupees("₹603,000 of ₹903000 and ₹1,20,000; ₹9,050/lead, ₹4.5 avg")).toBe("₹6,03,000 of ₹9,03,000 and ₹1,20,000; ₹9,050/lead, ₹4.5 avg");
 });

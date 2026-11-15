@@ -1,5 +1,7 @@
 import { resetDemoData } from "@ph/db";
 import { agentMode, agentRoutes } from "./agent.ts";
+import { analyticsRoutes } from "./analytics.ts";
+import { campaignRoutes } from "./campaigns.ts";
 import { crmRoutes } from "./crm.ts";
 import { prepareShopkartToken, resolveaiRoutes } from "./resolveai.ts";
 import { db, prepare } from "./db.ts";
@@ -25,6 +27,8 @@ const server = Bun.serve({
     ...zendeskRoutes,
     ...crmRoutes,
     ...shopRoutes,
+    ...campaignRoutes,
+    ...analyticsRoutes,
     ...agentRoutes,
     ...resolveaiRoutes,
   },
@@ -36,9 +40,9 @@ const server = Bun.serve({
 
 console.log(`Demo API ready on ${server.url}`);
 console.log(`  data: Postgres at ${new URL(process.env.DATABASE_URL!).host} (${state === "seeded" ? "empty, seeded the demo data" : "existing data kept; bun run reset re-seeds"})`);
-console.log(`  /chat and /lead: ${agentMode}`);
 console.log(
   tokenSource === "env"
     ? "  ShopKart channel token: from SHOPKART_CHANNEL_TOKEN"
     : "  ShopKart channel token: issued a fresh one for this run (set SHOPKART_CHANNEL_TOKEN in .env to pin it)",
 );
+console.log(`  /chat, /lead, /analysis, /campaigns/sync: ${agentMode}`);

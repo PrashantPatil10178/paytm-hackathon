@@ -10,23 +10,41 @@
  *     → finished cases are saved to memory (rai_cases) for next time
  *   POST /approvals/:id/decided (from the demo API, after a person decides in the Control Room)
  *     → the approved refund is carried out, the customer is told, the case is saved
- *   POST /lead → the sales agent, as before
+ *   POST /lead → the sales agent; POST /analysis → the analysis agent;
+ *   POST /campaigns/sync → the leads agent over new campaign responses (a campaign response the
+ *   agent couldn't decide stays new for the next run)
  *
  * Plain code does everything that must always happen (ticket, level, reply, audit steps, memory);
  * the agents make the decisions in between. If a model call fails the customer still gets an answer
  * and the ticket goes to a person.
  */
-import { BOT, ENQUIRY_NEEDS, rupees, SUPPORT_AGENTS, type ChatResponse, type LeadResponse, type CaseOutcome, type CreateStepBody, type Order, type Ticket } from "@ph/shared";
-import type { Agent } from "@voltagent/core";
+import {
+  BOT,
+  ENQUIRY_NEEDS,
+  rupees,
+  SUPPORT_AGENTS,
+  type AnalysisResponse,
+  type CampaignResponse,
+  type CaseOutcome,
+  type ChatResponse,
+  type CreateStepBody,
+  type LeadResponse,
+  type LeadSyncResponse,
+  type LeadSyncResult,
+  type Order,
+  type Ticket,
+} from "@ph/shared";
+import type { Agent, Memory } from "@voltagent/core";
 import { Output } from "ai";
 import { z } from "zod";
 import type { LevelAgents } from "./agents/levels.ts";
 import { TriageSchema, type Triage } from "./agents/main.ts";
 import { assessCriticality, ORDER_INTENTS, type Criticality } from "./criticality.ts";
-import { DemoAPIError, type DemoAPI } from "./demo-api.ts";
+import { DemoAPIError, type DemoAPI, type KnownContact } from "./demo-api.ts";
+import { analysisNote, analysisThread, personKey } from "./memory.ts";
 import type { Platform } from "./platform.ts";
 import { memorySessions, type SessionStore } from "./sessions.ts";
-import { runContext } from "./tools/context.ts";
+import { runContext, type AnalysisRun, type LeadsRun } from "./tools/context.ts";
 
 const ChatBody = z.object({
   session_id: z.string().min(1),
@@ -44,6 +62,13 @@ const LeadBody = z.object({
   start_when: z.string().default(""),
 });
 
+const AnalysisBody = z.object({ focus: z.string().trim().max(300).optional(), scope: z.enum(["all", "sales"]).default("all") }).default({ scope: "all" });
+
+const LeadSyncBody = z.object({ limit: z.coerce.number().int().min(1).max(25).default(10) }).default({ limit: 10 });
+
+/** Campaign responses worked on at once: quicker than one by one, gentle on the model's rate limit. */
+const LEAD_CONCURRENCY = 3;
+
 export type Result<T> = { status: number; body: T | { error: string } };
 
 const today = () => new Date().toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
@@ -59,12 +84,16 @@ export interface ServiceDeps {
   writer: Agent;
   levels: LevelAgents;
   sales: Agent;
+  analysis: Agent;
+  leads: Agent;
   /** Chat session → ticket. Postgres in the app, in memory in tests. */
   sessions?: SessionStore;
+  /** The analysis agent's memory (with working memory), where the note about the last report is kept. */
+  analysisMemory?: Memory;
   log?: Pick<Console, "warn" | "error">;
 }
 
-export function createService({ api, platform, main, writer, levels, sales, sessions = memorySessions(), log = console }: ServiceDeps) {
+export function createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions = memorySessions(), analysisMemory, log = console }: ServiceDeps) {
   /** Level agents that are still working after /intake answered. */
   const inFlight = new Set<Promise<unknown>>();
   const track = (job: Promise<unknown>) => {
@@ -488,9 +517,10 @@ export function createService({ api, platform, main, writer, levels, sales, sess
 
       let message = "Thanks! Our team will contact you shortly.";
       try {
+        // One thread per person: a second enquiry from the same email sees what happened with the first.
         const res = await sales.generateText(prompt, {
-          userId: `contact-${contact.id}`,
-          conversationId: `lead-${deal.id}`,
+          userId: `person:${personKey(b.email)}`,
+          conversationId: `sales:${personKey(b.email)}`,
           context: runContext({ dealId: deal.id, contactId: contact.id }),
         });
         message = res.text.trim() || message;
@@ -505,6 +535,97 @@ export function createService({ api, platform, main, writer, levels, sales, sess
     });
   }
 
+  async function analyze(raw: unknown): Promise<Result<AnalysisResponse>> {
+    const parsed = AnalysisBody.safeParse(raw ?? {});
+    if (!parsed.success) return invalid(parsed.error);
+    const { focus, scope } = parsed.data;
+
+    return guard<AnalysisResponse>(async () => {
+      const run: AnalysisRun = { kind: "analysis", scope };
+      const prompt =
+        scope === "sales"
+          ? `[Sales analysis for the Control Room's Sales area · today ${today()}]\nScope: sales only (pipeline, lead scores, campaigns, lead sources).\nFocus: ${focus || "how the pipeline and campaigns are doing, and what sales should do next"}`
+          : `[Control Room analysis request · today ${today()}]\nFocus: ${focus || "a general health check of support, sales, the shop and campaigns"}`;
+      try {
+        // No raw history (contextLimit 0): what Aria knows about earlier runs is the working-memory note, which
+        // VoltAgent puts in the system prompt, plus get_previous_reports. The run itself is still saved.
+        await analysis.generateText(prompt, { memory: { ...analysisThread(scope), options: { contextLimit: 0 } }, context: runContext(run) });
+      } catch (e) {
+        log.error("[agent] analysis agent failed:", e);
+        if (!run.report) return { status: 502, body: { error: `Aria couldn't finish the analysis (${errorText(e)}).` } };
+      }
+      if (!run.report) return { status: 502, body: { error: "Aria finished without publishing a report. Try again." } };
+      await rememberReport(run.report);
+      return { status: 201, body: { report: run.report } };
+    });
+  }
+
+  async function syncLeads(raw: unknown): Promise<Result<LeadSyncResponse>> {
+    const parsed = LeadSyncBody.safeParse(raw ?? {});
+    if (!parsed.success) return invalid(parsed.error);
+    const { limit } = parsed.data;
+
+    return guard(async () => {
+      const { responses: queue } = await api.newResponses();
+      const batch = queue.slice(0, limit);
+      // Responses from the same person share a memory thread: run those one after another, people in parallel.
+      const byPerson = [...Map.groupBy(batch, (r) => personKey(r.email)).values()];
+      const done = await mapPool(byPerson, LEAD_CONCURRENCY, async (mine) => {
+        const out: LeadSyncResult[] = [];
+        for (const r of mine) out.push(await workResponse(r));
+        return out;
+      });
+      const order = new Map(batch.map((r, i) => [r.id, i]));
+      const results = done.flat().sort((a, b) => order.get(a.response_id)! - order.get(b.response_id)!);
+      const of = (o: LeadSyncResult["outcome"]) => results.filter((x) => x.outcome === o).length;
+      return {
+        status: 200,
+        body: { processed: results.length, converted: of("converted"), skipped: of("skipped"), failed: of("failed"), remaining: queue.length - batch.length + of("failed"), results },
+      };
+    });
+  }
+
+  /** Runs the leads agent on one campaign response. Never throws: a failure is reported and the response stays new. */
+  async function workResponse(r: CampaignResponse): Promise<LeadSyncResult> {
+    const base = { response_id: r.id, name: r.name, company: r.company, campaign: r.campaign.name };
+    const run: LeadsRun = { kind: "leads", responseId: r.id, budget: r.budget ?? 0 };
+    try {
+      const { existing_contact } = await api.campaignResponse(r.id);
+      const need = ENQUIRY_NEEDS.find((n) => n.id === r.need)?.label ?? r.need;
+      const prompt = [
+        `Campaign response #${r.id} · "${r.campaign.name}" (${r.campaign.channel}) · today ${today()}`,
+        `Name: ${r.name}`,
+        `Company: ${r.company || "not given"}`,
+        `Email: ${r.email}`,
+        `Need: ${need}`,
+        `Budget: ${r.budget == null ? "not given" : rupees(r.budget)}`,
+        `Wants to start: ${r.start_when || "not given"}`,
+        `Message: ${r.message}`,
+        `CRM: ${crmLine(existing_contact)}`,
+      ].join("\n");
+      const who = personKey(r.email);
+      const res = await leads.generateText(prompt, { userId: `person:${who}`, conversationId: `leads:${who}`, context: runContext(run) });
+      if (!run.outcome) return { ...base, outcome: "failed", reason: `Aria didn't decide: ${res.text.trim().slice(0, 160) || "no answer"}` };
+    } catch (e) {
+      log.error(`[agent] leads agent failed on campaign response #${r.id}:`, e);
+      if (!run.outcome) return { ...base, outcome: "failed", reason: errorText(e) };
+    }
+    const o = run.outcome!;
+    return o.outcome === "converted" ? { ...base, outcome: "converted", deal_id: o.dealId, score: o.score, reason: o.reason } : { ...base, outcome: "skipped", reason: o.reason };
+  }
+
+  /** Rewrites the analysis thread's working-memory note. A failure here never fails the request. */
+  async function rememberReport(report: NonNullable<AnalysisRun["report"]>) {
+    if (!analysisMemory) return;
+    try {
+      const thread = analysisThread(report.scope ?? "all");
+      const previous = await analysisMemory.getWorkingMemory(thread);
+      await analysisMemory.updateWorkingMemory({ ...thread, content: analysisNote(report, previous), options: { mode: "replace" } });
+    } catch (e) {
+      log.warn("[agent] couldn't update the analysis memory note:", e);
+    }
+  }
+
   async function guard<T>(fn: () => Promise<Result<T>>): Promise<Result<T>> {
     try {
       return await fn();
@@ -517,7 +638,7 @@ export function createService({ api, platform, main, writer, levels, sales, sess
     }
   }
 
-  return { intake, approvalDecided, lead, settled };
+  return { intake, approvalDecided, lead, analyze, syncLeads, settled };
 }
 
 /** An order number the customer typed after the word "order" ("order 1023", "order no. #1023"). */
@@ -549,6 +670,26 @@ function fallbackStatus(f: { ticket: number; status: string; with: string; waiti
   if (f.status === "solved") return `Your request (ticket #${f.ticket}) is resolved. Let me know if anything else needs fixing.`;
   if (f.waiting_for_approval) return `Your ${f.waiting_for_approval} is with a teammate for approval (ticket #${f.ticket}). You'll hear back here shortly.`;
   return `Your request (ticket #${f.ticket}) is being handled by ${f.with}. You'll get an update here as soon as there's progress.`;
+
+function crmLine(c: KnownContact | null): string {
+  if (!c) return "no contact with this email yet";
+  const open = c.deals.filter((d) => d.stage !== "closed_won" && d.stage !== "closed_lost");
+  if (!open.length) return `already a contact (#${c.id}, ${c.company}), no open deals`;
+  return `already a contact (#${c.id}, ${c.company}) with open deals: ${open.map((d) => `#${d.id} ${d.name} (${d.stage}, ${rupees(d.amount)})`).join("; ")}`;
+}
+
+/** Like Promise.all over `items`, with at most `size` running at once. Keeps the input order. */
+async function mapPool<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
+  return out;
 }
 
 function invalid(error: z.ZodError): Result<never> {

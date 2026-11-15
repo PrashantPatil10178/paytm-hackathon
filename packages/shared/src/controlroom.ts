@@ -116,7 +116,9 @@ export interface Stats {
 }
 
 export interface ChannelConnection {
+  /** The ResolveAI channel id (rai_channels), e.g. "shopkart" */
   id: string
+  kind: ChannelId
   name: string
   desc: string
   handle: string

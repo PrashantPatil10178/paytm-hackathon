@@ -6,7 +6,7 @@ import type {
   DealCard, DealDetail, DealStage, LeadSyncResponse, PlaceCallBody,
 } from '@ph/shared'
 import type {
-  Approvals, ChannelConnection, ChannelId, ChannelOffer, Connector, ConnectorOffer, Decision, Lead, Settings, Stats, Status,
+  Approvals, ChannelConnection, ChannelId, ChannelOffer, Connector, ConnectorOffer, Conversation, Decision, Lead, Settings, Stats, Status,
   TeamTask, Ticket,
 } from './types'
 import type { Channel, ChannelToken } from '@ph/shared'
@@ -70,6 +70,8 @@ export const api = {
 export const live = {
   // Control Room records. The store polls tickets, leads, approvals, settings and stats once for every page.
   useTickets: () => usePoll<{ tickets: Ticket[] }>('/control-room/tickets', 3000),
+  /** Chats Aria answered directly, without a ticket (low-level questions). */
+  useConversations: () => usePoll<{ conversations: Conversation[] }>('/control-room/conversations', 3000),
   useLeads: () => usePoll<{ leads: Lead[] }>('/control-room/leads', 3000),
   useApprovals: () => usePoll<Approvals>('/control-room/approvals', 3000),
   useStats: () => usePoll<Stats>('/control-room/stats', 5000),

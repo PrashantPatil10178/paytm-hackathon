@@ -7,17 +7,38 @@ import type { ToolExecuteOptions } from "@voltagent/core";
  * act on someone else's records.
  */
 export interface SupportRun {
-  ticketId: number;
+  /** The request's Zendesk ticket; null while a low-level chat is answered without one */
+  ticketId: number | null;
   customerId: number;
   /** The ResolveAI run this request belongs to (steps and approvals hang off it) */
   runId: number;
   /** Which level agent is working: low, medium or high */
   agent: "low" | "medium" | "high";
+  /**
+   * Orders a refund or approval may be about: ones the customer named in the chat, the ticket's order, or
+   * their only order. Set by the service in code; the money tools refuse every other order.
+   */
+  orderIds: number[];
+  /** Opens the ticket when a ticketless chat has to go to a person (the service attaches the conversation). */
+  openTicket?: () => Promise<number>;
+  /** The ticket being opened, so two tool calls never open two tickets */
+  opening?: Promise<number>;
+}
+
+/** The request's ticket, opening it first when the chat had none (only a ticketless low chat can lack one). */
+export async function ticketOf(run: SupportRun): Promise<number> {
+  if (run.ticketId) return run.ticketId;
+  if (!run.openTicket) throw new Error("This request has no ticket");
+  run.opening ??= run.openTicket();
+  run.ticketId = await run.opening;
+  return run.ticketId;
 }
 
 export interface SalesRun {
   dealId: number;
   contactId: number;
+  /** Set by book_meeting: from then on the deal stays in Meeting booked. */
+  meetingBooked?: boolean;
 }
 
 /** One POST /analysis run. `report` is set by publish_report so the service can return it. */

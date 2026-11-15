@@ -56,7 +56,7 @@ export function Help() {
           </div>
         </section>
 
-        <section className="h-[600px] overflow-hidden rounded-2xl border border-line shadow-[var(--shadow-lift)] lg:sticky lg:top-24" aria-label="Chat with support">
+        <section className="h-[600px] overflow-clip rounded-2xl border border-line shadow-[var(--shadow-lift)] lg:sticky lg:top-24" aria-label="Chat with support">
           <ChatPanel />
         </section>
       </div>

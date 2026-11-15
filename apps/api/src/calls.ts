@@ -284,7 +284,7 @@ async function contactFor(call: CallRow): Promise<number> {
     .from(s.contacts)
     .where(
       x.email
-        ? sql`lower(${s.contacts.email}) = ${x.email} or right(regexp_replace(${s.contacts.phone}, '\\D', '', 'g'), 10) = ${last10}`
+        ? sql`lower(trim(${s.contacts.email})) = ${x.email} or right(regexp_replace(${s.contacts.phone}, '\\D', '', 'g'), 10) = ${last10}`
         : sql`right(regexp_replace(${s.contacts.phone}, '\\D', '', 'g'), 10) = ${last10}`,
     )
     .orderBy(desc(s.contacts.id))

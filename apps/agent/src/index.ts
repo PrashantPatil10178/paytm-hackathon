@@ -55,7 +55,7 @@ const api = createDemoAPI(API_URL, fetch, () => platform.connectors());
 // Heavy: triage and money/policy decisions with customers, and reasoning across every dataset.
 // Lite: short status messages and rule-based triage of sales enquiries and campaign responses.
 const main = createMainAgent(MODELS.heavy, memory);
-const writer = createWriterAgent(MODELS.lite);
+const writer = createWriterAgent(MODELS.heavy); // every customer-facing reply gets the strong model
 const levels = createLevelAgents(api, MODELS.heavy, platform, memory);
 const analysis = createAnalysisAgent(api, MODELS.heavy, analysisMemory);
 const sales = createSalesAgent(api, MODELS.lite, memory);
@@ -65,7 +65,7 @@ const service = createService({ api, platform, main, writer, levels, sales, anal
 const bearer = (header: string | undefined) => header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
 
 new VoltAgent({
-  agents: { main, writer, low: levels.low, medium: levels.medium, high: levels.high, sales, analysis, leads },
+  agents: { main, writer, direct: levels.direct, low: levels.low, medium: levels.medium, high: levels.high, sales, analysis, leads },
   logger: createPinoLogger({ name: "resolveai-agent", level: "info" }),
   checkDependencies: false,
   server: honoServer({
@@ -74,7 +74,7 @@ new VoltAgent({
       app.get("/health", (c) =>
         c.json({
           status: "ok",
-          models: { heavy: { model: MODELS.heavy, key: hasKey(MODELS.heavy), agents: ["main", "low", "medium", "high", "analysis"] }, lite: { model: MODELS.lite, key: hasKey(MODELS.lite), agents: ["writer", "sales", "leads"] } },
+          models: { heavy: { model: MODELS.heavy, key: hasKey(MODELS.heavy), agents: ["main", "writer", "low-direct", "low", "medium", "high", "analysis"] }, lite: { model: MODELS.lite, key: hasKey(MODELS.lite), agents: ["sales", "leads"] } },
           api: API_URL,
           storage: DATABASE_URL ? "postgres" : "memory",
           memory_retention_days: DATABASE_URL && RETENTION_DAYS > 0 ? RETENTION_DAYS : null,
@@ -107,7 +107,7 @@ new VoltAgent({
   }),
 });
 
-console.log(`ResolveAI agent: heavy ${MODELS.heavy} (main, level agents, analysis), lite ${MODELS.lite} (writer, sales, leads), demo API ${API_URL}, memory ${DATABASE_URL ? `Postgres at ${new URL(DATABASE_URL).host}` : "in process"}`);
+console.log(`ResolveAI agent: heavy ${MODELS.heavy} (main, writer, level agents, analysis), lite ${MODELS.lite} (sales, leads), demo API ${API_URL}, memory ${DATABASE_URL ? `Postgres at ${new URL(DATABASE_URL).host}` : "in process"}`);
 console.log("  Channels send requests to POST /intake with their token (Control Room → Channels).");
 if (!DATABASE_URL) console.warn("  DATABASE_URL is not set: chat memory and sessions are lost when the agent restarts.");
 

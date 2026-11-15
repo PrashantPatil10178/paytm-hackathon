@@ -260,10 +260,10 @@ function useAreaContent(areaId: AreaId): AreaContent {
   switch (areaId) {
     case 'support': {
       const status = pathname === '/tickets' ? params.get('status') ?? 'all' : null
-      const live = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress').length
-      const waiting = tickets.filter((t) => t.status === 'waiting').length
+      const working = tickets.filter((t) => t.status === 'in_progress').length
+      const open = tickets.filter((t) => t.status === 'open' || t.status === 'waiting').length
       return {
-        fact: `${live} live · ${waiting} waiting`,
+        fact: `${working} in progress · ${open} open`,
         groups: [
           {
             label: 'Tickets',
@@ -324,8 +324,10 @@ function useAreaContent(areaId: AreaId): AreaContent {
       }
     case 'home': {
       const pending = approvals.pending.length
+      // Approvals plus open tickets Aria isn't working on (handed over, or waiting on a reply).
+      const onYou = pending + tickets.filter((t) => t.status === 'open' || t.status === 'waiting').length
       return {
-        fact: pending ? `${pending} waiting on you` : 'Nothing waiting on you',
+        fact: onYou ? `${onYou} waiting on you` : 'Nothing waiting on you',
         groups: [{ items: [page('/'), page('/analytics'), page('/approvals', { count: pending, countTone: 'amber' })] }],
         extra: 'live',
       }
@@ -370,7 +372,7 @@ export function AreaPanel({ onSearch, onCollapse, onNavigate }: { onSearch: () =
   ))
   const liveList = live.length > 0 && (
     <div>
-      <SectionLabel label="Live now" meta={live.length} i={listAt} />
+      <SectionLabel label="Open tickets" meta={live.length} i={listAt} />
       <ul className="space-y-px">{live.map((t, k) => <LiveRow key={t.id} t={t} i={rowsAt[k]!} onNavigate={onNavigate} />)}</ul>
     </div>
   )

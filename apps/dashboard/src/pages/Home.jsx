@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { MessagesSquare, CornerUpRight, Timer, Flame, Activity, ChartColumn, History, Gauge, Radio, ArrowUpRight, ShieldCheck, Coffee, CalendarRange } from 'lucide-react'
@@ -127,69 +127,114 @@ function ApprovalsCallout({ pending }) {
   )
 }
 
+/** 42 → 42s, 130 → 2m 10s, 0 → —. Minutes appear only when there is a whole minute. */
+function solveParts(seconds) {
+  if (!(seconds > 0)) return [['—']]
+  const s = Math.round(seconds)
+  if (s < 60) return [[s, 's']]
+  return [[Math.floor(s / 60), 'm'], [String(s % 60).padStart(2, '0'), 's']]
+}
+
 /* ───────── Working now ───────── */
+
+/** A ticket counts as being worked on when its run is still triaging/working (the API reports that as
+ * in_progress) or Aria recorded a step in the last 2 minutes. Open tickets Aria has finished with
+ * (handed to the owner, waiting for a reply or an approval) are listed separately, without the live trace. */
+const ACTIVE_MS = 2 * 60_000
+
+function lastAt(t) {
+  return new Date(t.steps.at(-1)?.time ?? t.createdAt).getTime()
+}
+
+/** The current time, refreshed every 15 s, so "working now" expires without a new poll. */
+function useClock(every = 15_000) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), every)
+    return () => clearInterval(id)
+  }, [every])
+  return now
+}
 
 function WorkingNow({ tickets, agent }) {
   const navigate = useNavigate()
-  const live = tickets
-    .filter((t) => t.status === 'open' || t.status === 'in_progress')
-    .sort((a, b) => new Date(b.steps.at(-1)?.time ?? b.createdAt) - new Date(a.steps.at(-1)?.time ?? a.createdAt))
+  const clock = useClock()
+  const open = tickets.filter((t) => t.status !== 'solved').sort((a, b) => lastAt(b) - lastAt(a))
+  const busy = (t) => t.status === 'in_progress' || clock - lastAt(t) < ACTIVE_MS
+  const working = open.filter(busy)
+  const waiting = open.filter((t) => !busy(t))
 
   return (
     <Panel
       icon={Activity}
       title="Working now"
-      meta={live.length}
+      meta={working.length}
       action={<AllLink to="/tickets">All tickets</AllLink>}
-      footer={live.length > 0 && <><span>Each row is the path {agent} took through your tools</span><span className="ref">live</span></>}
+      footer={working.length > 0 && <><span>Each row is the path {agent} is taking through your tools</span><span className="ref">live</span></>}
     >
-      {live.length === 0 ? (
-        <div className="flex items-center gap-3 px-4 py-10 text-sm text-slate-500">
+      {working.length === 0 ? (
+        <div className="flex items-center gap-3 px-4 py-8 text-sm text-slate-500">
           <Coffee className="size-5 shrink-0 text-slate-400" aria-hidden />
-          <span>Nothing open. Start a chat in ShopKart (<a className="ref text-slate-700 underline-offset-2 hover:underline" href={SHOP_URL} target="_blank" rel="noreferrer">{hostOf(SHOP_URL)}</a>) and it shows up here the moment {agent} picks it up.</span>
+          <span>
+            {agent} isn't working on anything right now.{' '}
+            {open.length === 0 && <>Start a chat in ShopKart (<a className="ref text-slate-700 underline-offset-2 hover:underline" href={SHOP_URL} target="_blank" rel="noreferrer">{hostOf(SHOP_URL)}</a>) and it shows up here the moment {agent} picks it up.</>}
+          </span>
         </div>
       ) : (
         <ul className="divide-y divide-ink/[0.06]">
-          {live.map((t) => {
-            const first = t.steps[0]
-            const now = t.steps.at(-1)
-            const elapsed = first && now ? duration(first.time, now.time) : '—'
-            return (
-              <li key={t.id}>
-                <button onClick={() => navigate(`/tickets?id=${t.id}`)} className={cn('block w-full cursor-pointer px-4 py-4 text-left', Row)}>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
-                        <span className="ref text-slate-700">{t.id}</span>
-                        <span aria-hidden>·</span>
-                        <span>{t.customer.name}</span>
-                        <ChannelTag channel={t.channel} compact />
-                        <StatusBadge status={t.status} />
-                      </p>
-                      <p className="mt-1.5 truncate text-[15px] font-medium text-slate-950">{t.issue}</p>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <p className="ref text-xs text-slate-700">{elapsed}</p>
-                      <p className="ref mt-1 text-[11px] text-slate-500">{t.steps.length} steps</p>
-                    </div>
-                  </div>
-                  <div className="mt-3.5 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-                    <div className="max-w-full overflow-x-auto pb-0.5 [scrollbar-width:none]">
-                      <ToolChain steps={t.steps} size="md" labels live animate />
-                    </div>
-                    {now ? (
-                      <p className="text-xs text-slate-500">
-                        Now <span className="text-slate-800">{now.step}</span> in {now.tool} · <span className="ref">{ago(now.time)}</span>
-                      </p>
-                    ) : <p className="text-xs text-slate-500">Opened <span className="ref">{ago(t.createdAt)}</span>, no steps yet</p>}
-                  </div>
-                </button>
-              </li>
-            )
-          })}
+          {working.map((t) => <TicketRow key={t.id} t={t} live onOpen={() => navigate(`/tickets?id=${t.id}`)} />)}
         </ul>
       )}
+      {waiting.length > 0 && (
+        <>
+          <p className="border-t border-ink/[0.06] bg-ink/[0.02] px-4 py-2 text-xs font-medium text-slate-600">
+            Waiting on you <span className="ref ml-1 text-slate-500">{waiting.length}</span>
+            <span className="ml-2 font-normal text-slate-500">{agent} has done its part; these need a person, a reply or an approval.</span>
+          </p>
+          <ul className="divide-y divide-ink/[0.06]">
+            {waiting.map((t) => <TicketRow key={t.id} t={t} onOpen={() => navigate(`/tickets?id=${t.id}`)} />)}
+          </ul>
+        </>
+      )}
     </Panel>
+  )
+}
+
+function TicketRow({ t, live = false, onOpen }) {
+  const first = t.steps[0]
+  const now = t.steps.at(-1)
+  const elapsed = first && now ? duration(first.time, now.time) : '—'
+  return (
+    <li>
+      <button onClick={onOpen} className={cn('block w-full cursor-pointer px-4 py-4 text-left', Row)}>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+              <span className="ref text-slate-700">{t.id}</span>
+              <span aria-hidden>·</span>
+              <span>{t.customer.name}</span>
+              <ChannelTag channel={t.channel} compact />
+              <StatusBadge status={t.status} />
+            </p>
+            <p className="mt-1.5 truncate text-[15px] font-medium text-slate-950">{t.issue}</p>
+          </div>
+          <div className="shrink-0 text-right">
+            <p className="ref text-xs text-slate-700">{elapsed}</p>
+            <p className="ref mt-1 text-[11px] text-slate-500">{t.steps.length} steps</p>
+          </div>
+        </div>
+        <div className="mt-3.5 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+          <div className="max-w-full overflow-x-auto pb-0.5 [scrollbar-width:none]">
+            <ToolChain steps={t.steps} size="md" labels live={live} animate={live} />
+          </div>
+          {now ? (
+            <p className="text-xs text-slate-500">
+              {live ? 'Now' : 'Last'} <span className="text-slate-800">{now.step}</span> in {now.tool} · <span className="ref">{ago(now.time)}</span>
+            </p>
+          ) : <p className="text-xs text-slate-500">Opened <span className="ref">{ago(t.createdAt)}</span>, no steps yet</p>}
+        </div>
+      </button>
+    </li>
   )
 }
 
@@ -263,7 +308,7 @@ function RecentActivity({ audit }) {
   const navigate = useNavigate()
   return (
     <Panel icon={History} title="Recent activity" meta="newest first" action={<AllLink to="/audit">Audit log</AllLink>}>
-      {audit.length === 0 && <p className="px-4 py-6 text-[13px] text-slate-500">No agent activity yet. Every step Aria takes on a ticket or lead is listed here.</p>}
+      {audit.length === 0 && <p className="px-4 py-6 text-[13px] text-slate-500">No agent activity yet. Every step Aria takes on a ticket, chat or lead is listed here.</p>}
       <ul className="divide-y divide-ink/[0.06]">
         {audit.slice(0, 7).map((a) => (
           <li key={a.key}>
@@ -464,7 +509,7 @@ export default function Home() {
               <Kpi icon={MessagesSquare} label="Queries handled" parts={[[num(derived.total)]]} delta={stats.deltas.queries} spark={derived.spark} />
               <Kpi icon={ResolveAIGlyph} label="Solved by AI" parts={derived.total > 0 ? [[derived.aiPct.toFixed(1), '%']] : [['—']]} delta={stats.deltas.aiRate} unit=" pt" spark={derived.aiSpark} />
               <Kpi icon={CornerUpRight} label="Escalated to humans" parts={[[stats.escalated.value]]} delta={stats.deltas.escalated} goodWhenDown spark={stats.escalated.spark} />
-              <Kpi icon={Timer} label="Avg. solve time" parts={solve > 0 ? [[Math.floor(solve / 60), 'm'], [String(Math.round(solve % 60)).padStart(2, '0'), 's']] : [['—']]} delta={stats.deltas.solveTime} goodWhenDown spark={stats.solveTime.spark} />
+              <Kpi icon={Timer} label="Avg. solve time" parts={solveParts(solve)} delta={stats.deltas.solveTime} goodWhenDown spark={stats.solveTime.spark} />
               <Kpi icon={Flame} label="Hot leads" parts={[[stats.hotLeads.value]]} delta={stats.deltas.hotLeads} spark={stats.hotLeads.spark} />
             </>
           ) : (

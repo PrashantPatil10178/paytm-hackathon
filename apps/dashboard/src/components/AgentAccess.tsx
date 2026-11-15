@@ -10,12 +10,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { Cable, Check, Copy, KeyRound, Loader2, RefreshCw, Radio } from 'lucide-react'
 import type { Channel, ChannelToken, Connector } from '@ph/shared'
 import { Badge, Button, Panel, Toggle } from './ui'
-import { ago, cn } from '../lib'
+import { AGENT_URL, ago, cn } from '../lib'
 import { useApp } from '../store'
+import { copyText } from '@ph/shared/react'
 
 const BASE = '/api/resolveai'
 /** Where channels send requests. The agent service (apps/agent) on :8000 unless VITE_AGENT_URL says otherwise. */
-export const INTAKE_URL = `${(import.meta.env.VITE_AGENT_URL as string | undefined) ?? 'http://localhost:8000'}/intake`
+export const INTAKE_URL = `${AGENT_URL}/intake`
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -58,7 +59,7 @@ function Dot({ tone, label }: { tone: 'ok' | 'warn' | 'off' | 'bad'; label: stri
 export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
   const [done, setDone] = useState(false)
   return (
-    <Button size="sm" variant="ghost" icon={done ? Check : Copy} onClick={() => { navigator.clipboard?.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500) }}>
+    <Button size="sm" variant="ghost" icon={done ? Check : Copy} onClick={async () => { setDone(await copyText(text)); setTimeout(() => setDone(false), 1500) }}>
       {done ? 'Copied' : label}
     </Button>
   )

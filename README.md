@@ -57,14 +57,14 @@ AGENT_URL=http://localhost:8000 bun run dev   # or: bun run dev:agent
 
 The agent lives in `apps/agent` (TypeScript, [VoltAgent](https://voltagent.dev/docs)): a support agent for chats, a
 sales agent for enquiries, an analysis agent for the Control Room's Analytics page and a leads agent that turns campaign
-responses into CRM leads. Heavy work (support, analysis) runs on `anthropic/claude-sonnet-5`, light work (sales, leads) on
+responses into CRM leads. Heavy work (support, every customer reply, analysis) runs on `anthropic/claude-sonnet-5`, light work (sales, leads) on
 `openai/gpt-5.6-luna`; override with `AGENT_MODEL_HEAVY` / `AGENT_MODEL_LITE`. See its README.
 
 The agent receives exactly what the shop sends and must answer in the same shape:
 
 | Endpoint | Request | Response |
 | --- | --- | --- |
-| `POST {AGENT_URL}/chat` | `{ session_id, customer_id, message }` | `{ reply, ticket_id? }` |
+| `POST {AGENT_URL}/chat` | `{ session_id, customer_id, message, answer? }` | `{ reply, ticket_id?, ask? }`: no `ticket_id` when Aria answered without a ticket; `ask` = "which order?" card |
 | `POST {AGENT_URL}/lead` | `{ name, phone, email, business_name, need, budget, start_when }` | `{ ok, message, deal_id? }` |
 | `POST {AGENT_URL}/analysis` | `{ focus? }` | `{ report }` (also saved via `POST /analytics/reports`) |
 | `POST {AGENT_URL}/campaigns/sync` | `{ limit? }` (default 10) | `{ processed, converted, skipped, failed, remaining, results[] }` |
@@ -74,6 +74,25 @@ the same Zendesk, CRM, campaign and analytics endpoints. It covers the demo stor
 rehearsed before the agent is ready.
 
 The agent then calls the endpoints below on `http://localhost:4000`.
+
+## Demo stories
+
+Run `bun run reset` first. In ShopKart (pick the customer top right) open the support chat:
+
+1. **Answered without a ticket.** Arjun: "Where is my order 1031?". Aria looks it up and answers in a few seconds, no
+   ticket chip. It shows in the Control Room under Support → Conversations (and in Home's activity and the audit log),
+   and counts as a query solved by AI. "Any update?" in the same chat is answered from that answer, still no ticket.
+2. **Which order?** Rohan: "My item arrived broken, I want a refund". He has several orders, so Aria asks which item
+   (a card with his products) instead of guessing. Pick one and the request continues with that order.
+3. **Refund handled by AI.** Ananya: "The coffee mugs in my order 1023 arrived broken". Medium: ticket, refund of ₹500
+   started (order 1023 → refund initiated), ticket solved.
+4. **Approval.** Rohan: "My headphones from order 1018 stopped working, refund please". High (₹2,499 > ₹1,000): the
+   refund waits in Control Room → Approvals; approve it and the refund runs, the ticket is solved and the customer
+   is told in the chat.
+5. **Payment escalation.** Vikram: "₹15,000 was debited for order 1050 but the payment failed". Critical: ticket assigned
+   to Kabir, urgent, with a brief; Aria never acts on it.
+6. **Hot sales lead.** ShopKart → Business enquiry with a ₹60,000 budget starting this week: contact + deal in HubSpot,
+   scored hot, intro call booked with Kabir (IST slots), visible in Control Room → Sales → Leads.
 
 ## API
 
@@ -156,6 +175,7 @@ What the ResolveAI Control Room reads, built from the live records. Shapes are i
 | --- | --- | --- |
 | GET | `/control-room/tickets` | `{ tickets }`, newest first: Zendesk ticket + comments + requester + order + every run and step on it |
 | GET / PATCH | `/control-room/tickets/{id}` | PATCH `{ status: open \| in_progress \| waiting \| solved }` → the Zendesk ticket (waiting = pending). `{ ticket }` |
+| GET | `/control-room/conversations` | `{ conversations }`: chats Aria answered without a ticket (one per run, ids `C-<run id>`), newest first |
 | GET | `/control-room/leads` | `{ leads }`: CRM deals with their contact, activities and Sarvam calls |
 | GET / PATCH | `/control-room/leads/{id}` | PATCH `{ stage? (label or id), value?, name?, company? }` → deal / contact. `{ lead }` |
 | GET | `/control-room/approvals` | `{ pending, history }` from `rai_approvals` (ids `AP-<n>`) |

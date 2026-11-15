@@ -8,6 +8,7 @@ import Calls from './pages/Calls'
 import SalesAnalytics from './pages/SalesAnalytics'
 import Audit from './pages/Audit'
 import Tickets from './pages/Tickets'
+import Conversations from './pages/Conversations'
 import Approvals from './pages/Approvals'
 import Board from './pages/Board'
 import Leads from './pages/Leads'
@@ -26,6 +27,7 @@ export default function App() {
             <Route path="analytics" element={<Analytics />} />
             <Route path="approvals" element={<Approvals />} />
             <Route path="tickets" element={<Tickets />} />
+            <Route path="conversations" element={<Conversations />} />
             <Route path="board" element={<Board />} />
             <Route path="leads" element={<Leads />} />
             <Route path="calls" element={<Calls />} />

@@ -37,5 +37,7 @@ const appUrl = (env: string | undefined, port: number) =>
 export const ZENDESK_URL = appUrl(import.meta.env.VITE_ZENDESK_URL, 3001)
 export const HUBSPOT_URL = appUrl(import.meta.env.VITE_HUBSPOT_URL, 3002)
 export const SHOP_URL = appUrl(import.meta.env.VITE_SHOP_URL, 3003)
+/** The agent service (apps/agent), where channels send requests. */
+export const AGENT_URL = appUrl(import.meta.env.VITE_AGENT_URL, 8000)
 /** "localhost:3003" or "192.168.1.5:3003", for link text. */
 export const hostOf = (url: string) => url.replace(/^https?:\/\//, '').replace(/\/$/, '')

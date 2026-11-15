@@ -1,6 +1,6 @@
 import { clock } from "@ph/shared";
-import { CheckCheck, MessageCircle, SendHorizontal, Ticket, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { Check, CheckCheck, MessageCircle, SendHorizontal, Ticket, X } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useChat, useCustomer, type ChatMessage } from "../store.tsx";
 import { LogoMark } from "./Logo.tsx";
 import { BRAND, ResolveAIGlyph } from "@ph/shared/brand";
@@ -32,7 +32,7 @@ export function ChatWidget() {
         <div
           role="dialog"
           aria-label="ShopKart Support chat"
-          className="fixed inset-0 z-50 flex animate-sheet-in flex-col overflow-hidden bg-paper sm:inset-auto sm:right-6 sm:bottom-24 sm:h-[min(600px,calc(100dvh-8rem))] sm:w-[384px] sm:rounded-2xl sm:shadow-[var(--shadow-pop)]"
+          className="fixed inset-0 z-50 flex animate-sheet-in flex-col overflow-clip bg-paper sm:inset-auto sm:right-6 sm:bottom-24 sm:h-[min(600px,calc(100dvh-8rem))] sm:w-[384px] sm:rounded-2xl sm:shadow-[var(--shadow-pop)]"
         >
           <ChatPanel onClose={() => setOpen(false)} autoFocus />
         </div>
@@ -186,10 +186,110 @@ function Bubble({ m, tail }: { m: ChatMessage; tail: boolean }) {
       } ${tail ? (mine ? "mt-1.5 rounded-tr-none" : "mt-1.5 rounded-tl-none") : ""}`}
     >
       <p className="text-[14.5px] leading-snug whitespace-pre-wrap text-[#111b21] [overflow-wrap:anywhere]">{m.text}</p>
+      {m.ask && <QuestionCard m={m} />}
       <span className="mt-0.5 flex items-center justify-end gap-1 self-end text-[11px] text-[#667781]">
         {clock(m.at.toISOString())}
         {mine && <CheckCheck size={15} className="text-chat-tick" aria-label="Delivered" />}
       </span>
     </div>
+  );
+}
+
+const OTHER = "other";
+
+/**
+ * Aria's question, inside its bubble: pick one choice (a product or order) or type another answer, then Send.
+ * A fieldset of native radios, so arrow keys move between choices and Enter in the text box sends.
+ * Once answered (or the customer typed something else instead) it locks and shows what was picked.
+ */
+function QuestionCard({ m }: { m: ChatMessage }) {
+  const { send, typing } = useChat();
+  const ask = m.ask!;
+  const name = useId();
+  const [picked, setPicked] = useState<string | null>(null);
+  const [other, setOther] = useState("");
+  const done = m.answered !== undefined;
+  const choice = picked && picked !== OTHER ? ask.choices[Number(picked)] : undefined;
+  const ready = !done && !typing && (choice || (picked === OTHER && other.trim()));
+
+  const submit = () => {
+    if (!ready) return;
+    if (choice) void send(`${choice.label} (order #${choice.value})`, { value: choice.value, text: `${choice.label} (order #${choice.value})` });
+    else void send(other.trim(), { value: null, text: other.trim() });
+  };
+
+  return (
+    <form
+      className="mt-2 mb-1 min-w-[16rem]"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      <fieldset disabled={done} className="m-0 min-w-0 border-0 p-0">
+        <legend className="mb-0.5 p-0 text-[13.5px] font-bold text-ink">{ask.prompt}</legend>
+        {ask.description && <p className="mb-2 text-[12.5px] text-ink-2">{ask.description}</p>}
+        <div className="flex flex-col gap-1.5">
+          {ask.choices.map((c, i) => {
+            const on = picked === String(i) || (done && m.answered === `${c.label} (order #${c.value})`);
+            return (
+              <label
+                key={`${c.value}-${i}`}
+                className={`relative flex cursor-pointer items-center gap-2.5 rounded-xl border p-2 transition-colors has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-jamun ${
+                  on ? "border-jamun bg-jamun-wash" : "border-line bg-paper hover:border-jamun/40"
+                } ${done && !on ? "opacity-50" : ""} ${done ? "cursor-default" : ""}`}
+              >
+                <input type="radio" name={name} value={i} checked={on} onChange={() => setPicked(String(i))} className="sr-only" />
+                {c.image ? <img src={c.image} alt="" className="size-10 flex-none rounded-lg bg-wash object-cover" /> : null}
+                <span className="min-w-0 flex-1 leading-tight">
+                  <span className="block truncate text-[13.5px] font-semibold text-ink">{c.label}</span>
+                  {c.description && <span className="block truncate text-[12px] text-ink-2">{c.description}</span>}
+                </span>
+                <span className={`grid size-5 flex-none place-items-center rounded-full border-2 ${on ? "border-jamun bg-jamun text-white" : "border-line"}`} aria-hidden>
+                  {on && <Check size={12} strokeWidth={3} />}
+                </span>
+              </label>
+            );
+          })}
+          {ask.other && (
+            <label
+              className={`relative flex cursor-pointer flex-col gap-2 rounded-xl border p-2 transition-colors has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-jamun ${
+                picked === OTHER ? "border-jamun bg-jamun-wash" : "border-line bg-paper hover:border-jamun/40"
+              } ${done ? "cursor-default opacity-50" : ""}`}
+            >
+              <span className="flex items-center gap-2.5">
+                <input type="radio" name={name} value={OTHER} checked={picked === OTHER} onChange={() => setPicked(OTHER)} className="sr-only" />
+                <span className="flex-1 text-[13.5px] font-semibold text-ink">{ask.other.label}</span>
+                <span className={`grid size-5 flex-none place-items-center rounded-full border-2 ${picked === OTHER ? "border-jamun bg-jamun text-white" : "border-line"}`} aria-hidden>
+                  {picked === OTHER && <Check size={12} strokeWidth={3} />}
+                </span>
+              </span>
+              {picked === OTHER && (
+                <input
+                  autoFocus
+                  value={other}
+                  onChange={(e) => setOther(e.target.value)}
+                  aria-label={ask.other.label}
+                  placeholder={ask.other.placeholder}
+                  inputMode="numeric"
+                  className="h-9 rounded-lg border border-line bg-paper px-3 text-[13.5px] text-ink placeholder:text-ink-3 focus:border-jamun focus:outline-none"
+                />
+              )}
+            </label>
+          )}
+        </div>
+        {done ? (
+          <p className="mt-2 text-[12px] text-ink-2">{m.answered ? `You picked: ${m.answered}` : "Closed: you asked something else."}</p>
+        ) : (
+          <button
+            type="submit"
+            disabled={!ready}
+            className="mt-2.5 flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-full bg-jamun text-[13.5px] font-semibold text-white transition-colors hover:bg-jamun-ink disabled:cursor-not-allowed disabled:bg-ink-3/40"
+          >
+            Send <SendHorizontal size={15} aria-hidden />
+          </button>
+        )}
+      </fieldset>
+    </form>
   );
 }

@@ -3,7 +3,7 @@
  * findings about them. It never supplies chart numbers: the dashboard draws every chart from the same
  * metrics, and a finding can only point at one of the known datasets.
  */
-import { ANALYTICS_DATASETS, SALES_DATASETS, type AnalysisScope, type AnalyticsDatasetId } from "@ph/shared";
+import { ANALYTICS_DATASETS, SALES_DATASETS, type AnalysisScope, type AnalyticsDatasetId, type AnalyticsTotals } from "@ph/shared";
 import { createTool } from "@voltagent/core";
 import { z } from "zod";
 import type { DemoAPI } from "../demo-api.ts";
@@ -16,6 +16,15 @@ const allowed = (scope: AnalysisScope): AnalyticsDatasetId[] => (scope === "sale
 export const indianRupees = (text: string) =>
   text.replace(/₹\s?(\d[\d,]*)(\.\d+)?/g, (_m, int: string, frac = "") => `₹${Number(int.replace(/,/g, "")).toLocaleString("en-IN")}${frac}`);
 
+/**
+ * The ticket totals in words, from the numbers. Without it the model read "4 AI, 4 escalated" as "the AI escalated
+ * all 4 of its tickets", and the working-memory note then carried that into the next report.
+ */
+const supportInWords = (t: AnalyticsTotals) =>
+  `${t.tickets} tickets in all. ${t.tickets_ai} (${t.ai_rate}%) were handled by the AI alone; ${t.tickets_escalated} ` +
+  `(${t.tickets ? Math.round((t.tickets_escalated / t.tickets) * 1000) / 10 : 0}%) were handed to a person. These are separate groups: ` +
+  `tickets_escalated is not a share of tickets_ai. ${t.tickets_solved} solved, ${t.tickets_open} not solved yet.`;
+
 export function analysisTools(api: DemoAPI) {
   const getMetrics = createTool({
     name: "get_metrics",
@@ -24,11 +33,13 @@ export function analysisTools(api: DemoAPI) {
       "campaigns (a sales analysis gets only the sales charts). Money is in ₹. Call this before writing anything.",
     parameters: z.object({}),
     execute: async (_args, opts) => {
-      const ids = allowed(runOf<AnalysisRun>(opts).scope);
+      const { scope } = runOf<AnalysisRun>(opts);
+      const ids = allowed(scope);
       const m = await api.metrics();
       return {
         generated_at: m.generated_at,
         totals: m.totals,
+        ...(scope === "all" && { support_in_words: supportInWords(m.totals) }),
         datasets: m.datasets.filter((d) => ids.includes(d.id)).map(({ id, description, series, rows }) => ({ id, description, series, rows })),
       };
     },

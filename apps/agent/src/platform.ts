@@ -72,6 +72,8 @@ export function createPlatform(baseUrl: string, fetchImpl: typeof fetch = fetch,
     createRun: (body: CreateRunBody) => call<AgentRun>("POST", "/runs", body),
     updateRun: (id: number, changes: UpdateRunBody) => call<AgentRun>("PATCH", `/runs/${id}`, changes),
     run: (id: number) => call<AgentRun>("GET", `/runs/${id}`),
+    /** This chat's runs, newest first, with their steps */
+    runsForSession: (sessionId: string) => call<{ runs: AgentRun[] }>("GET", `/runs?session_id=${encodeURIComponent(sessionId)}&limit=20`).then((r) => r.runs),
     runsForTicket: (ticketId: number) => call<{ runs: AgentRun[] }>("GET", `/runs?ticket_id=${ticketId}&limit=5`).then((r) => r.runs),
     addStep: (runId: number, step: CreateStepBody) => call<AgentStep>("POST", `/runs/${runId}/steps`, step),
 
@@ -79,6 +81,9 @@ export function createPlatform(baseUrl: string, fetchImpl: typeof fetch = fetch,
     approval: (id: number) => call<Approval>("GET", `/approvals/${id}`),
     pendingApprovalFor: (ticketId: number) =>
       call<{ approvals: Approval[] }>("GET", "/approvals?status=pending").then((r) => r.approvals.find((a) => a.ticket_id === ticketId)),
+    /** A refund already waiting for approval on this order, from any ticket or chat. */
+    pendingApprovalForOrder: (orderId: number) =>
+      call<{ approvals: Approval[] }>("GET", "/approvals?status=pending").then((r) => r.approvals.find((a) => a.order_id === orderId)),
 
     searchCases: (q: string, limit = 3) => call<{ cases: ResolvedCase[] }>("GET", `/cases?q=${encodeURIComponent(q)}&limit=${limit}`).then((r) => r.cases),
     saveCase: (body: CreateCaseBody) => call<ResolvedCase>("POST", "/cases", body),

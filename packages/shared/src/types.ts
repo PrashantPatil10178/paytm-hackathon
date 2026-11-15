@@ -322,11 +322,50 @@ export interface ChatRequest {
   session_id: string;
   customer_id: number;
   message: string;
+  /** Set when the customer is answering a question Aria asked (ChatResponse.ask). */
+  answer?: ChatAnswer;
 }
 
 export interface ChatResponse {
   reply: string;
   ticket_id?: number;
+  /** Aria needs one more detail before it can act (e.g. which order). The chat shows it as a card to pick from. */
+  ask?: ChatQuestion;
+}
+
+/** One choice in a ChatQuestion. For an order question, `value` is the order id. */
+export interface ChatChoice {
+  value: string;
+  label: string;
+  description?: string;
+  /** Product image path, e.g. "/static/mug.jpg" */
+  image?: string;
+}
+
+/**
+ * A question Aria asks before it opens a ticket, because the request can't be worked without the answer
+ * ("Item damaged" from someone with several orders). Code decides when to ask, never the model.
+ */
+export interface ChatQuestion {
+  /** What the answer fills in. */
+  kind: "order";
+  prompt: string;
+  description?: string;
+  choices: ChatChoice[];
+  /** A free-text answer besides the choices, e.g. an order number not in the list. */
+  other?: { label: string; placeholder: string };
+  /** The customer's original message, sent back with the answer so the request can be worked as a whole. */
+  original: string;
+}
+
+export interface ChatAnswer {
+  kind: ChatQuestion["kind"];
+  /** The original message the question was about. */
+  original: string;
+  /** The picked choice's value, or null for a free-text answer. */
+  value: string | null;
+  /** What the customer sees as their reply: the choice's label or what they typed. */
+  text: string;
 }
 
 export type EnquiryNeed = "bulk_order" | "billing_setup" | "payment_setup" | "other";
@@ -511,6 +550,7 @@ export interface AnalyticsTotals {
   tickets_solved: number;
   /** Tickets still with the AI (assigned to the bot, never escalated) */
   tickets_ai: number;
+  /** Tickets the AI handed to a person. A different set from tickets_ai, not a part of it. */
   tickets_escalated: number;
   /** 0–100 */
   ai_rate: number;

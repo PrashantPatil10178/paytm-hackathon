@@ -17,7 +17,7 @@ export const TriageSchema = z.object({
     .number()
     .int()
     .nullable()
-    .describe("The order number the customer gives, even if it is NOT in their order list; else the one that clearly matches from the list; null if unclear"),
+    .describe("The order number the customer gives, even if it is NOT in their order list; else the order of the item they name; else null unless exactly one order fits"),
   summary: z.string().min(5).max(160).describe("The problem in one plain sentence, without names, phone numbers or emails"),
   signals: z.object({
     angry: z.boolean(),
@@ -38,8 +38,11 @@ past cases, and you return a triage:
 - intent: what they want. order_tracking for "where is my order"; damaged_item for broken or wrong items;
   refund for refund requests without damage; payment_failed when money was taken but the order failed.
 - order_id: if the customer gives an order number, use exactly that number, even when it isn't in their order
-  list (code then checks it). Otherwise pick from the list: the damaged or delivered one for a refund, the
-  failed_debited one for a payment problem, the placed or shipped one for tracking.
+  list (code then checks it). If they name an item, the order with that item. Otherwise only when exactly one
+  order fits (the failed_debited one for a payment problem); if several could fit, null: never guess, the
+  customer is asked which one.
+- kind after Aria asked them something (which order, a detail): their answer continues that request, so it is
+  a new_request with the same intent, not a status_check.
   out_of_scope only when the message has nothing to do with shopping at ShopKart (weather, jokes, general
   knowledge, homework, other companies' products). A ShopKart question you can't answer from the data is NOT
   out_of_scope: use question or other, and the team will pick it up.

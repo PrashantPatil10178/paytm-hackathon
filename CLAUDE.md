@@ -13,7 +13,7 @@ Judges watch the agent's work appear live, so the screens matter as much as the 
 | `apps/zendesk` | Zendesk look-alike: views, tickets, replies, internal notes | 3001 | Bun HTML bundler, React 19, Tailwind v4 |
 | `apps/hubspot` | HubSpot CRM look-alike: deals pipeline (drag and drop), contacts | 3002 | same |
 | `apps/shopkart` | Customer side: shop, My Orders, support chat, business enquiry | 3003 | same |
-| `apps/dashboard` | ResolveAI Control Room: areas Home, Support, Sales, Connect, Aria (KPIs, analytics, tickets, leads, campaigns, approvals, board, connectors, audit, settings) | 3004 | Vite 8, React 19 (TS + some JSX), Tailwind v4, Recharts |
+| `apps/dashboard` | ResolveAI Control Room: areas Home, Support, Sales, Connect, Aria (KPIs, analytics, tickets, conversations, leads, campaigns, approvals, board, connectors, audit, settings) | 3004 | Vite 8, React 19 (TS + some JSX), Tailwind v4, Recharts |
 | `apps/agent` | The ResolveAI agents (support, sales, analysis, leads): `/chat`, `/lead`, `/analysis`, `/campaigns/sync` | 8000 | Bun, VoltAgent (`@voltagent/core`, `server-hono`) |
 | `apps/copilot` | CopilotKit runtime behind the dashboard's "Ask Aria" chat (`/api/copilotkit`) | 4100 | Bun, `@copilotkit/runtime/v2` |
 | `packages/db` | Postgres: Drizzle schema, SQL migrations, seed data, row → API type mappers | – | Drizzle ORM on `Bun.SQL` |
@@ -53,8 +53,9 @@ instructions), not as hidden background jobs.
 - Seed data is only the shop catalogue: customers 101–105 (also the Zendesk users), products, orders, and the 4 campaigns
   (no responses). No tickets, contacts, deals, responses or reports are seeded: every record on every screen comes from a
   real chat, enquiry, call or agent run. New tickets start at #2041, deals and contacts at 1. Demo stories are in
-  `README.md` (refund handled by AI, payment escalation, hot sales lead).
-- The Control Room reads everything from `/control-room/*` (`apps/api/src/controlroom.ts`, shapes in
+  `README.md` (tracking answered without a ticket, refund handled by AI, payment escalation, hot sales lead).
+- The Control Room reads everything from `/control-room/*` (`apps/api/src/controlroom.ts`, incl. `/conversations` =
+  chats answered without a ticket, counted in `/stats` as AI-solved queries; shapes in
   `packages/shared/src/controlroom.ts`, imported as a namespace: `import type * as CR from "@ph/shared/controlroom"`).
   Each GET is polled, so each handler is a couple of batched query rounds (`inArray`, `Promise.all`), never per row.
 
@@ -82,26 +83,36 @@ instructions), not as hidden background jobs.
   request end to end, `src/agents/` instructions, `src/tools/` tools, `src/criticality.ts` the level rules,
   `src/demo-api.ts` the tools' client, `src/platform.ts` the client for ResolveAI's own records.
 - Flow: a channel posts to `POST /intake` with `Authorization: Bearer <channel token>` → the main agent returns a
-  structured triage (new request or status check, intent, signals, confidence, plan) → `assessCriticality` sets the
-  level in code → the ticket is opened/updated with `level`, `handled_by`, priority and a triage note → the level
-  agent acts, or a person gets a brief → the reply goes back and onto the ticket → finished cases are saved to
-  memory (`rai_cases`). High-level refunds wait in `rai_approvals`; the demo API calls the agent's
+  structured triage (new request or status check, intent, signals, confidence, plan) → code checks the order (a refund,
+  damage claim or cancellation needs the order named: number, item, a pick from the "which order?" card
+  (`ChatResponse.ask` / `ChatRequest.answer`), the chat ticket's order, or the customer's only order; otherwise Aria
+  asks, no ticket) → `assessCriticality` sets the level in code → **low** (where is my order, delivery, policy
+  questions) is answered straight in the chat by the `direct` agent with **no ticket** (the run is still recorded,
+  `ticket_id` null, and shows in the Control Room's Conversations); its `escalate_to_human` opens the ticket then
+  (context callback `openTicket`), with the chat so far copied in → **medium and above** get a ticket (`level`,
+  `handled_by`, priority, triage note), the level agent works it in the background (the "I'm on it" ack is sent only
+  if it hasn't answered within 8 s), or a person gets a brief → the reply goes back and onto the ticket → finished
+  cases are saved to memory (`rai_cases`). High-level refunds wait in `rai_approvals`; the demo API calls the agent's
   `POST /approvals/:id/decided` after a person decides, and the agent carries it out and tells the customer.
-- Levels: low = information (answers, closes); medium = actions within limits (refunds up to the auto-refund
+- Tickets per chat: one per session while it's unsolved; a new problem after it's solved starts fresh (a follow-up on
+  the same issue may reopen it). The first ticket in a chat starts with the exchanges it had without one. "Any
+  update?" after a ticketless answer is answered from that run; upset / asks for a person / confidence < 0.6 → ticket.
+- Levels: low = information (answered in the chat, no ticket unless it has to go to a person); medium = actions within limits (refunds up to the auto-refund
   limit); high = refunds above the limit (approval first); critical = failed payments, fraud/legal → a person. Signals (angry + repeat
   contact, asks for a person) and confidence < 0.6 push a level up. Money and risk rules stay in code, never prompts.
 - The auto-refund limit is the Control Room setting `refundLimit` (default ₹1,000). The agent reads it with
   `platform.refundLimit()` (`GET /control-room/settings`, cached 10 s, ₹1,000 if unreachable) for the level rules, the
   level agent's prompt and `start_refund`; the API's stand-in reads it from the DB. The rule itself stays in code.
 - Tools read the ticket/customer/deal/run from the VoltAgent operation context (`src/tools/context.ts`), never from model
-  arguments; each tool records a step on the run. Each level agent gets only its level's tools.
+  arguments; each tool records a step on the run. Each level agent gets only its level's tools. `start_refund` and
+  `request_approval` only take orders in the run's `orderIds` (named by the customer, set in code).
 - The agents reach tools through the **connectors** (base URL + token per tool, `rai_connectors`, Control Room →
   Connectors; campaigns and analytics go straight to the demo API). A connector turned off makes its calls fail with a clear 502. Channels and their hashed tokens are in
   `rai_channels`; the demo API's own ShopKart forwarding uses `SHOPKART_CHANNEL_TOKEN` (or issues one at startup).
 - If a model call fails, the customer still gets a reply and the ticket goes to a person with a note. Keep that.
 - With `DATABASE_URL`, conversation memory (`@voltagent/postgres`) and chat sessions survive agent restarts.
-- Models, two tiers (`src/models.ts`): heavy (main, low/medium/high, analysis) = `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`;
-  lite (writer, sales, leads) = `AGENT_MODEL_LITE`, else `AGENT_MODEL`, else `COPILOT_MODEL`, else `openai/gpt-5.6-luna`.
+- Models, two tiers (`src/models.ts`): heavy (main, writer, low/medium/high incl. low-direct, analysis) = `AGENT_MODEL_HEAVY`, else `anthropic/claude-sonnet-5`;
+  lite (sales, leads) = `AGENT_MODEL_LITE`, else `AGENT_MODEL`, else `COPILOT_MODEL`, else `openai/gpt-5.6-luna`.
   `CLAUDE_API_KEY` is accepted for `ANTHROPIC_API_KEY`. Agents set no `temperature`: current Claude models reject it.
 - Analysis and leads rules in tools/API: findings may only name known dataset ids (`ANALYTICS_DATASETS`), one report
   per run; a lead's deal amount is the response's stated budget (never the model's), a response is converted or skipped

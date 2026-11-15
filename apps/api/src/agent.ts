@@ -9,11 +9,14 @@
 import {
   BOT,
   ENQUIRY_NEEDS,
+  liveOrders,
+  ordersNamedIn,
   rupees,
   type AnalysisInsight,
   type AnalysisRequest,
   type AnalysisResponse,
   type CampaignResponse,
+  type ChatQuestion,
   type ChatRequest,
   type ChatResponse,
   type LeadRequest,
@@ -24,6 +27,7 @@ import {
   type LeadSyncResult,
   type Order,
   type Ticket,
+  OWNER,
   SUPPORT_AGENTS,
 } from "@ph/shared";
 import { eq, schema as s } from "@ph/db";
@@ -85,7 +89,8 @@ async function pickOrder(customerId: number, msg: string, intent: Intent): Promi
     if (hit) return hit;
   }
   if (intent === "payment") return mine.find((o) => o.payment_status === "failed_debited");
-  if (intent === "refund") return mine.find((o) => o.status === "damaged") ?? mine.find((o) => o.status === "delivered");
+  // Money: never pick the order for them. Only one they named (number or item), or their only order.
+  if (intent === "refund") return ordersNamedIn(msg, mine)[0] ?? (mine.length === 1 ? mine[0] : undefined);
   if (intent === "track") return mine.find((o) => o.status === "placed" || o.status === "shipped") ?? mine[0];
   return undefined;
 }
@@ -99,33 +104,72 @@ function trackingReply(o: Order): string {
     case "shipped":
       return `Order #${o.id} is on its way and should reach you in 1–2 days.`;
     case "delivered":
-      return `Order #${o.id} was delivered on ${new Date(o.updated_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}.`;
+      return `Order #${o.id} was delivered on ${new Date(o.updated_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" })}.`;
     case "damaged":
       return `Order #${o.id} was delivered but marked as damaged. I can start a refund for you. Just say "refund".`;
   }
 }
 
+/** "Which order?" before a refund when the customer didn't say: no ticket until they pick. */
+function askWhichOrder(req: ChatRequest, orders: Order[]): ChatResponse {
+  const ask: ChatQuestion = {
+    kind: "order",
+    prompt: "Which order is this about?",
+    description: "Pick the order, so we look at the right one.",
+    choices: liveOrders(orders).slice(0, 6).map((o) => ({ value: String(o.id), label: o.items[0]?.name ?? `Order #${o.id}`, description: `Order #${o.id} · ${o.status} · ${rupees(o.amount)}`, image: o.items[0]?.image })),
+    other: { label: "A different order", placeholder: "Order number, e.g. 1047" },
+    original: req.message,
+  };
+  return { reply: "Sure, I can help with that. Which order is it about?", ask };
+}
+
+/** A question answered in the chat without a ticket, recorded as a ResolveAI run so the Control Room counts it. */
+async function recordAnswer(req: ChatRequest, message: string, reply: string, intent: string) {
+  const [run] = await db
+    .insert(s.agentRuns)
+    .values({ channel_id: "shopkart", session_id: req.session_id, customer_id: req.customer_id, message, kind: "request", intent, level: "low", level_reason: "information request", handled_by: "low", status: "resolved", plan: ["Look up the order", "Answer in the chat"], reply })
+    .returning({ id: s.agentRuns.id });
+  await db.insert(s.agentSteps).values([
+    { run_id: run!.id, agent: "main", step: "Receive request", tool: "ShopKart chat", result: "success", detail: message.slice(0, 160) },
+    { run_id: run!.id, agent: "low", step: "Check order", tool: "ShopKart", result: "success", detail: "Order status looked up (stand-in)" },
+    { run_id: run!.id, agent: "main", step: "Answer", tool: "ShopKart chat", result: "success", detail: "Answered in the chat; no ticket needed" },
+  ]);
+}
+
 async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
   const customer = await findCustomer(req.customer_id);
-  const intent = intentOf(req.message);
-  const order = await pickOrder(customer.id, req.message, intent);
+  // An answer to "which order?" is worked as the original message plus the order picked.
+  const message = req.answer ? `${req.answer.original}\n(About order #${req.answer.value ?? "?"}: ${req.answer.text})` : req.message;
+  const intent = intentOf(req.answer?.original ?? req.message);
+  const mine = await customerOrders(customer.id);
+  const order = mine.find((o) => req.answer?.value === String(o.id)) ?? (await pickOrder(customer.id, message, intent));
 
-  // One ticket per chat session, like a real messaging integration.
-  let ticket: Ticket;
+  // One ticket per chat session while it's unsolved, like a real messaging integration.
   const [session] = await db.select().from(s.chatSessions).where(eq(s.chatSessions.session_id, req.session_id));
-  if (session && (await ticketExists(session.ticket_id))) {
-    ticket = await findTicket(session.ticket_id);
-    await addComment(ticket.id, { body: req.message, public: true, author: customer.name, author_type: "customer" });
-    if (ticket.status === "solved") await updateTicket(ticket.id, { status: "open" });
+  const open = session && (await ticketExists(session.ticket_id)) ? await findTicket(session.ticket_id) : null;
+  const live = open && open.status !== "solved" ? open : null;
+
+  if (intent === "refund" && !order && !req.answer && liveOrders(mine).length > 1) return askWhichOrder(req, mine);
+  // Where is my order: answered in the chat, no ticket (unless the chat already has an open one).
+  if (intent === "track" && order && !live) {
+    const reply = trackingReply(order);
+    await recordAnswer(req, message, reply, "order_tracking");
+    return { reply };
+  }
+
+  let ticket: Ticket;
+  if (live) {
+    ticket = live;
+    await addComment(ticket.id, { body: message, public: true, author: customer.name, author_type: "customer" });
   } else {
     const subject =
       intent === "payment" && order ? `Payment failed but ${rupees(order.amount)} debited – order #${order.id}`
       : intent === "refund" && order ? `Damaged item, refund requested – order #${order.id}`
       : intent === "track" && order ? `Where is my order #${order.id}?`
-      : req.message.length > 60 ? `${req.message.slice(0, 57)}…` : req.message;
+      : message.length > 60 ? `${message.slice(0, 57)}…` : message;
     ticket = await createTicket({
       subject,
-      comment: req.message,
+      comment: message,
       requester_id: customer.id,
       via: "chat",
       assignee: BOT,
@@ -152,7 +196,7 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
       body: `Checked the payment gateway: ${rupees(order.amount)} captured from the customer's bank, but order #${order.id} never got a payment confirmation. That's above the ${rupees(AUTO_REFUND_LIMIT)} auto-refund limit, so handing to Payments for a manual reconcile.`,
     });
     await updateTicket(ticket.id, { assignee: SUPPORT_AGENTS[0], priority: "urgent", status: "open", escalated_by_ai: true });
-    reply = `I can see ${rupees(order.amount)} left your bank for order #${order.id}, but the payment never reached us. Amounts this large need a person to check, so I've passed this to Priya on our payments team with all the details. You'll hear back within 2 hours. Your ticket number is #${ticket.id}.`;
+    reply = `I can see ${rupees(order.amount)} left your bank for order #${order.id}, but the payment never reached us. Amounts this large need a person to check, so I've passed this to ${OWNER.first} from our team with all the details. You'll hear back within 2 hours. Your ticket number is #${ticket.id}.`;
   } else if (intent === "refund" && order) {
     const refundable = (order.status === "damaged" || order.status === "delivered") && (order.payment_status === "paid" || order.payment_status === "cod");
     if (order.amount <= AUTO_REFUND_LIMIT && refundable) {

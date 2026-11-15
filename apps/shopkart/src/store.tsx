@@ -1,6 +1,13 @@
-import type { ChatResponse, Customer, Ticket } from "@ph/shared";
+import type { ChatAnswer, ChatQuestion, ChatResponse, Customer, Ticket } from "@ph/shared";
 import { api, usePoll } from "@ph/shared/react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+
+/** A message id. crypto.randomUUID only exists on secure pages (https or localhost), not when the shop is
+ *  opened over the network by IP, so fall back to getRandomValues, which works everywhere. */
+const uid = (): string =>
+  typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 
 /* ───────────── Logged-in customer (demo switcher) ───────────── */
 
@@ -40,6 +47,10 @@ export interface ChatMessage {
   text: string;
   at: Date;
   failed?: boolean;
+  /** Aria asked the customer to pick something (which order); the chat shows it as a card under the bubble. */
+  ask?: ChatQuestion;
+  /** What the customer answered; once set the card is closed. Typing something else instead dismisses it. */
+  answered?: string;
 }
 
 interface ChatCtx {
@@ -49,7 +60,8 @@ interface ChatCtx {
   typing: boolean;
   draft: string;
   setDraft: (d: string) => void;
-  send: (text: string) => Promise<void>;
+  /** Send a message. With `answer`, it answers the open question card. */
+  send: (text: string, answer?: Omit<ChatAnswer, "original" | "kind">) => Promise<void>;
   /** Open the widget with a message about this order ready to send */
   askAbout: (orderId: number) => void;
   inlineMounted: boolean;
@@ -62,6 +74,19 @@ export function useChat() {
   const ctx = useContext(ChatContext);
   if (!ctx) throw new Error("useChat outside ShopProvider");
   return ctx;
+}
+
+/**
+ * A typed reply to an open question, if it is one: an order number ("1047", "#1047", "order 1047") or the
+ * name of one of the products offered. Returns null for anything else (the customer moved on).
+ */
+function typedAnswer(text: string, ask: ChatQuestion): { value: string | null; text: string } | null {
+  const num = text.match(/#?\s*(\d{3,})/)?.[1];
+  if (num) return { value: ask.choices.find((c) => c.value === num)?.value ?? null, text };
+  const t = text.toLowerCase();
+  const hits = ask.choices.filter((c) => c.label.toLowerCase().split(/[^a-z]+/).some((w) => w.length >= 4 && t.includes(w)));
+  const orders = new Set(hits.map((c) => c.value));
+  return orders.size === 1 ? { value: hits[0]!.value, text } : null;
 }
 
 const newSession = (customerId: number) => `shopkart-${customerId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -115,34 +140,46 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
   }, [customer?.id]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, picked?: Omit<ChatAnswer, "original" | "kind">) => {
       const msg = text.trim();
       if (!msg || !customer || !thread) return;
       const push = (m: ChatMessage) => {
         thread.messages = [...thread.messages, m];
         force((n) => n + 1);
       };
-      push({ id: crypto.randomUUID(), from: "me", text: msg, at: new Date() });
+      // An open question card: a pick from it, or a typed order number / product name, answers it.
+      // Anything else typed is a new message, and the card closes unanswered.
+      const open = [...thread.messages].reverse().find((m) => m.ask && m.answered === undefined);
+      let answer: ChatAnswer | undefined;
+      if (open?.ask) {
+        const typed = picked ?? typedAnswer(msg, open.ask);
+        if (typed) answer = { kind: open.ask.kind, original: open.ask.original, ...typed };
+        thread.messages = thread.messages.map((m) => (m === open ? { ...m, answered: answer ? answer.text : "" } : m));
+      }
+      push({ id: uid(), from: "me", text: msg, at: new Date() });
       thread.sending = true;
       setDraft("");
       setTyping(true);
       try {
-        const res = await api.post<ChatResponse>("/chat", { session_id: thread.session, customer_id: customer.id, message: msg });
+        const res = await api.post<ChatResponse>("/chat", { session_id: thread.session, customer_id: customer.id, message: msg, ...(answer && { answer }) });
         if (res.ticket_id && res.ticket_id !== thread.ticketId) {
           thread.ticketId = res.ticket_id;
-          push({ id: crypto.randomUUID(), from: "system", text: `Ticket #${res.ticket_id} opened with ShopKart support`, at: new Date() });
+          push({ id: uid(), from: "system", text: `Ticket #${res.ticket_id} opened with ShopKart support`, at: new Date() });
         }
-        push({ id: crypto.randomUUID(), from: "bot", text: res.reply, at: new Date() });
+        push({ id: uid(), from: "bot", text: res.reply, at: new Date(), ...(res.ask && { ask: res.ask }) });
         if (thread.ticketId) {
           const t = await api.get<Ticket>(`/zendesk/tickets/${thread.ticketId}`).catch(() => null);
           // Seen = what the thread already shows: customer messages, earlier replies and this answer.
           // A later reply (the level agent finishing, an approval) is left for the poll to pick up.
           const before = thread.seen;
-          if (t) thread.seen = new Set(t.comments.filter((c) => c.public && (before?.has(c.id) || c.author_type === "customer" || c.body === res.reply)).map((c) => c.id));
+          // A chat answered without a ticket gets one later with the earlier exchange copied in: those
+          // comments are already on screen, so they count as seen too.
+          const shown = new Set(thread.messages.map((m) => m.text));
+          if (t) thread.seen = new Set(t.comments.filter((c) => c.public && (before?.has(c.id) || c.author_type === "customer" || c.body === res.reply || shown.has(c.body))).map((c) => c.id));
         }
       } catch (e) {
         push({
-          id: crypto.randomUUID(),
+          id: uid(),
           from: "bot",
           text: `I couldn't get an answer just now (${(e as Error).message}). Please send that again.`,
           at: new Date(),

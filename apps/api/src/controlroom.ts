@@ -10,7 +10,7 @@
  */
 import type * as CR from "@ph/shared/controlroom";
 import { BOT, DEAL_STAGES, OWNER, rupees, type DealStage, type TicketChannel } from "@ph/shared";
-import { and, count, DEFAULT_SETTINGS, desc, eq, gte, inArray, isNotNull, schema as s, sql } from "@ph/db";
+import { and, count, DEFAULT_SETTINGS, desc, eq, gte, inArray, isNotNull, isNull, schema as s, sql } from "@ph/db";
 import { updateContact, updateDeal } from "./crm.ts";
 import { db } from "./db.ts";
 import { bad, body, handle, intParam, notFound, ok, oneOf } from "./http.ts";
@@ -140,7 +140,7 @@ async function saveSettings(b: Partial<CR.Settings>): Promise<CR.Settings> {
 
 const VIA: Record<TicketChannel, CR.ChannelId> = { chat: "chat", email: "email", web: "webchat", api: "api" };
 /** Steps that mark the agent's first answer to the customer on a run. */
-const REPLY_STEPS = ["Acknowledge", "Pass to owner", "Escalate to human", "Status update", "Out of scope", "Hand to team", "Hand over"];
+const REPLY_STEPS = ["Acknowledge", "Answer", "Ask which order", "Pass to owner", "Escalate to human", "Status update", "Out of scope", "Hand to team", "Hand over"];
 
 const isPersonReply = (c: CommentRow) => c.public && c.author_type === "agent" && c.author !== BOT;
 
@@ -166,8 +166,8 @@ interface TicketView {
   created: Date;
   person: boolean;
   escalated: boolean;
-  /** Seconds from the request arriving to its first public AI or agent reply; null when unanswered */
-  firstReply: number | null;
+  /** Seconds from the request arriving to the last public AI or agent reply, for solved tickets (the reply that solved it) */
+  solvedIn: number | null;
 }
 
 /**
@@ -226,8 +226,8 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
     const pub = mine.filter((c) => c.public);
     const person = withPerson(t, mine);
     const status = crStatus(t, latest);
-    const firstAnswer = pub.find((c) => c.author_type !== "customer");
     const lastNote = mine.filter((c) => !c.public).at(-1);
+    const lastReply = pub.filter((c) => c.author_type !== "customer").at(-1);
     const ticket: CR.Ticket = {
       id: String(t.id),
       customer: { name: requester.name, contact: maskedContact(requester.phone, requester.email), city: cityOf.get(requester.id) ?? "" },
@@ -250,7 +250,9 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
         .sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id - b.id)
         .map(toStep),
       // A ticket with a person and nothing written yet says who has it (the business has one person: the owner).
-      result: latest?.reply || lastNote?.body || (person && status !== "solved" ? `With ${t.assignee && t.assignee !== BOT ? t.assignee : OWNER.name}` : ""),
+      // The last thing the customer was told, by the AI or a person (every run's reply is posted on the ticket). A run
+      // that finished earlier can't stand in for it: a status check, then an approval, update different runs.
+      result: lastReply?.body || lastNote?.body || (person && status !== "solved" ? `With ${t.assignee && t.assignee !== BOT ? t.assignee : OWNER.name}` : ""),
     };
     return {
       ticket,
@@ -258,8 +260,8 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
       person,
       escalated: t.escalated_by_ai || t.handled_by === "human",
       // From when the request reached ResolveAI (its first run; the ticket itself is opened after triage), else
-      // from the ticket opening, to the first public AI or agent reply.
-      firstReply: firstAnswer ? Math.max(0, (firstAnswer.created_at.getTime() - Math.min(t.created_at.getTime(), myRuns[0]?.created_at.getTime() ?? Infinity)) / 1000) : null,
+      // from the ticket opening, to the reply that solved it. Not the first reply: that is an instant "I'm on it".
+      solvedIn: status === "solved" && lastReply ? Math.max(0, (lastReply.created_at.getTime() - Math.min(t.created_at.getTime(), myRuns[0]?.created_at.getTime() ?? Infinity)) / 1000) : null,
     };
   });
 }
@@ -317,16 +319,21 @@ async function loadLeads(dealId?: number): Promise<LeadView[]> {
 
   return rows.map(({ deal: d, contact: c }) => {
     const myCalls = calls.filter((x) => x.deal_id === d.id || (x.deal_id === null && x.contact_id === c.id));
-    const byCall = calls.some((x) => x.contact_id === c.id || x.deal_id === d.id);
-    const channel: CR.Lead["channel"] = byCall
-      ? "voice"
-      : c.source === "Business enquiry form"
-        ? "form"
-        : c.source === "Campaign"
-          ? (CAMPAIGN_TO_CHANNEL[campaignOf.get(c.id) ?? ""] ?? "form")
-          : c.source === "Chat"
-            ? "chat"
-            : "manual";
+    // Where the lead came in (the contact's source). A form or campaign lead that Aria later called stays a form or
+    // campaign lead; its calls show in the steps. Only a lead with no other origin counts as voice because of a call.
+    const byCall = myCalls.length > 0 || calls.some((x) => x.contact_id === c.id);
+    const channel: CR.Lead["channel"] =
+      c.source === "Voice call"
+        ? "voice"
+        : c.source === "Business enquiry form"
+          ? "form"
+          : c.source === "Campaign"
+            ? (CAMPAIGN_TO_CHANNEL[campaignOf.get(c.id) ?? ""] ?? "form")
+            : c.source === "Chat"
+              ? "chat"
+              : byCall
+                ? "voice"
+                : "manual";
     const steps: (CR.Step & { at: number })[] = [
       ...(activitiesOf.get(d.id) ?? []).map((a) => ({
         step: ACTIVITY_STEP[a.type] ?? a.type,
@@ -451,10 +458,70 @@ async function loadApprovals(): Promise<CR.Approvals> {
   };
 }
 
+/* ───── Conversations (answered in the chat, no ticket) ───── */
+
+interface ConversationView {
+  conversation: CR.Conversation;
+  created: Date;
+  /** Seconds from the message to Aria's answer */
+  answeredIn: number;
+  /** A new question that was triaged (not a status check or an out-of-scope message): counts as a query */
+  query: boolean;
+}
+
+/** The main agent's reading in a run's "Triage" step: "new request, order_tracking, confidence 90%: <summary>" */
+const triageSummary = (detail: string | undefined) => detail?.replace(/^[^:]*confidence \d+%:\s*/, "") ?? "";
+
+async function loadConversations(): Promise<ConversationView[]> {
+  const [runs, channels] = await Promise.all([
+    db.query.agentRuns.findMany({
+      where: and(isNull(s.agentRuns.ticket_id), isNotNull(s.agentRuns.reply)),
+      with: { steps: true },
+      orderBy: desc(s.agentRuns.id),
+      limit: 300,
+    }),
+    db.select({ id: s.channels.id, kind: s.channels.kind }).from(s.channels),
+  ]);
+  if (!runs.length) return [];
+  const customerIds = [...new Set(runs.map((r) => r.customer_id))];
+  const customers = await db.select().from(s.customers).where(inArray(s.customers.id, customerIds));
+  const customerOf = new Map(customers.map((c) => [c.id, c]));
+  const kindOf = new Map(channels.map((c) => [c.id, c.kind as CR.ChannelId]));
+  return runs.map((r) => {
+    const who = customerOf.get(r.customer_id);
+    const steps = [...r.steps].sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id - b.id);
+    const answeredAt = steps.findLast((x) => REPLY_STEPS.includes(x.step))?.created_at ?? r.updated_at;
+    return {
+      conversation: {
+        id: `C-${r.id}`,
+        customer: who ? { name: who.name, contact: maskedContact(who.phone, who.email), city: who.city } : { name: `Customer ${r.customer_id}`, contact: "", city: "" },
+        channel: kindOf.get(r.channel_id) ?? "chat",
+        issue: r.message.length > 120 ? `${r.message.slice(0, 117)}…` : r.message,
+        summary: triageSummary(steps.find((x) => x.step === "Triage")?.detail),
+        level: r.level,
+        kind: r.kind,
+        createdAt: iso(r.created_at),
+        answeredAt: iso(answeredAt),
+        conversation: [
+          { from: "customer", time: iso(r.created_at), text: r.message },
+          { from: "ai", time: iso(answeredAt), text: r.reply! },
+        ],
+        steps: steps.map(toStep),
+        result: r.reply!,
+      },
+      created: r.created_at,
+      answeredIn: Math.max(0, (answeredAt.getTime() - r.created_at.getTime()) / 1000),
+      query: r.kind === "request" && r.intent !== "out_of_scope" && !!r.level,
+    };
+  });
+}
+
 /* ───── Stats ───── */
 
 async function computeStats(): Promise<CR.Stats> {
-  const [tickets, leads] = await Promise.all([loadTickets(), loadLeads()]);
+  const [tickets, leads, conversations] = await Promise.all([loadTickets(), loadLeads(), loadConversations()]);
+  // Questions Aria answered in the chat without a ticket are queries too, handled and solved by the AI.
+  const answered = conversations.filter((c) => c.query);
   const days = lastDays();
   const index = new Map(days.map((d, i) => [d, i]));
   const perDay = <T>(xs: T[], dateOf: (x: T) => Date, value: (xs: T[]) => number) => {
@@ -468,11 +535,17 @@ async function computeStats(): Promise<CR.Stats> {
   /** The two halves of a 14-day series: [previous 7 days, last 7 days]. */
   const halves = (xs: number[]): [number[], number[]] => [xs.slice(0, 7), xs.slice(7)];
 
-  const ai = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => !t.person).length);
+  const aiTickets = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => !t.person).length);
+  const aiChats = perDay(answered, (c) => c.created, (xs) => xs.length);
+  const ai = aiTickets.map((n, i) => n + aiChats[i]!);
   const human = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => t.person).length);
   const escalatedDaily = perDay(tickets, (t) => t.created, (xs) => xs.filter((t) => t.escalated).length);
-  const solved = tickets.filter((t) => t.ticket.status === "solved" && t.firstReply !== null);
-  const solveDaily = perDay(solved, (t) => t.created, (xs) => median(xs.map((t) => t.firstReply!)));
+  // Solve time: a solved ticket from the request to the reply that solved it; a chat answer from message to answer.
+  const solved = [
+    ...tickets.flatMap((t) => (t.ticket.status === "solved" && t.solvedIn !== null ? [{ created: t.created, seconds: t.solvedIn }] : [])),
+    ...answered.map((c) => ({ created: c.created, seconds: c.answeredIn })),
+  ];
+  const solveDaily = perDay(solved, (t) => t.created, (xs) => median(xs.map((t) => t.seconds)));
   const hotDaily = perDay(leads, (l) => l.created, (xs) => xs.filter((l) => l.lead.hot).length);
 
   const total = days.map((_, i) => ai[i]! + human[i]!);
@@ -480,10 +553,10 @@ async function computeStats(): Promise<CR.Stats> {
   const [prevAi, nowAi] = halves(ai).map(sum) as [number, number];
   const since = (t: { created: Date }, d: number) => Date.now() - t.created.getTime() < d * DAY;
   // Solve time per half from the tickets themselves, not a median of daily medians.
-  const solveIn = (from: number, to: number) => median(solved.filter((t) => since(t, to) && !since(t, from)).map((t) => t.firstReply!));
+  const solveIn = (from: number, to: number) => median(solved.filter((t) => since(t, to) && !since(t, from)).map((t) => t.seconds));
 
   const channelCounts = new Map<CR.ChannelId, number>();
-  for (const c of [...tickets.map((t) => t.ticket.channel), ...leads.flatMap((l) => (l.lead.channel === "manual" ? [] : [l.lead.channel]))]) {
+  for (const c of [...tickets.map((t) => t.ticket.channel), ...answered.map((x) => x.conversation.channel), ...leads.flatMap((l) => (l.lead.channel === "manual" ? [] : [l.lead.channel]))]) {
     channelCounts.set(c, (channelCounts.get(c) ?? 0) + 1);
   }
   const LEVELS: CR.Level[] = ["low", "medium", "high", "critical"];
@@ -499,10 +572,10 @@ async function computeStats(): Promise<CR.Stats> {
       hotLeads: pct(...(halves(hotDaily).map(sum).reverse() as [number, number])),
     },
     escalated: { value: tickets.filter((t) => t.escalated && since(t, 30)).length, spark: escalatedDaily },
-    solveTime: { seconds: median(solved.filter((t) => since(t, 30)).map((t) => t.firstReply!)), spark: solveDaily },
+    solveTime: { seconds: median(solved.filter((t) => since(t, 30)).map((t) => t.seconds)), spark: solveDaily },
     hotLeads: { value: leads.filter((l) => l.lead.hot && l.open).length, spark: hotDaily },
     byChannel: [...channelCounts].map(([channel, n]) => ({ channel, count: n })).sort((a, b) => b.count - a.count),
-    byLevel: LEVELS.map((level) => ({ level, count: tickets.filter((t) => t.ticket.level === level).length })),
+    byLevel: LEVELS.map((level) => ({ level, count: tickets.filter((t) => t.ticket.level === level).length + answered.filter((c) => (c.conversation.level ?? "low") === level).length })),
   };
 }
 
@@ -687,6 +760,10 @@ export const controlRoomRoutes = {
       await updateTicket(id, { status: STATUS_TO_ZENDESK[status], actor: "human" });
       return ok({ ticket: await oneTicket(id) });
     }),
+  },
+
+  "/control-room/conversations": {
+    GET: handle(async () => ok({ conversations: (await loadConversations()).map((c) => c.conversation) })),
   },
 
   "/control-room/leads": {

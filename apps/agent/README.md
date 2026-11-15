@@ -14,11 +14,12 @@ sales enquiries, analytics and campaign leads:
 | Agent | Model tier | Handles | Tools |
 | --- | --- | --- | --- |
 | `main` | heavy | Every request: new or status check, intent, signals, confidence, plan | none (it decides, others act) |
-| `low` | heavy | Information: where is my order, questions | `get_customer_orders`, `get_order`, `search_past_cases`, `add_internal_note`, `update_ticket`, `escalate_to_human` |
+| `low-direct` | heavy | Information without a ticket: where is my order, delivery, policy questions. Its answer is the chat reply | `get_customer_orders`, `get_order`, `search_past_cases`, `escalate_to_human` (opens the ticket then, with the chat so far) |
+| `low` | heavy | Information on a chat that already has a ticket | `get_customer_orders`, `get_order`, `search_past_cases`, `add_internal_note`, `update_ticket`, `escalate_to_human` |
 | `medium` | heavy | Actions within limits: refunds up to the auto-refund limit (Control Room setting, default ₹1,000) | the low tools plus `start_refund` |
 | `high` | heavy | Refunds above the limit: plan it, a person approves | lookups, `search_past_cases`, `request_approval`, `escalate_to_human` (no direct refunds) |
 | critical | – | Failed payments, fraud or legal | none: code assigns a person and writes the brief |
-| `writer` | lite | Short status updates from the ticket's facts | none |
+| `writer` | heavy | Short status updates from the ticket's (or an earlier answer's) facts | none |
 | `sales` | lite | Business enquiries | `update_deal`, `add_deal_note`, `get_free_slots`, `book_meeting` |
 | `analysis` | heavy | Control Room "Run analysis" | `get_metrics`, `get_previous_reports`, `publish_report` |
 | `leads` | lite | Control Room "Fetch new leads": one run per new campaign response, 3 at a time | `create_lead`, `skip_response` |
@@ -30,10 +31,18 @@ How a request flows (`src/service.ts`):
 2. The main agent reads the message with the customer's orders, their open ticket and similar past cases, and returns
    a structured triage. Status checks ("any update?") are answered from the ticket, its latest run and any pending
    approval, without a new ticket.
-3. `src/criticality.ts` sets the level in code: hard rules for money and risk, then signals (angry and contacted us
+3. Which order: a refund, damage claim or cancellation is only worked on an order the customer named (number, item,
+   a pick from the "which order?" card, the chat ticket's order) or their only order. Otherwise the reply carries
+   `ask` (a ChatQuestion card) and nothing is opened; the answer comes back as `answer` with the original message.
+4. `src/criticality.ts` sets the level in code: hard rules for money and risk, then signals (angry and contacted us
    repeatedly, asked for a person) and low confidence push it up.
-4. The ticket is opened or updated with the level, who handles it, the priority and an internal triage note.
-5. The level agent works it with its own tools, or a person gets it with a brief. Every tool call is a step on the run.
+5. **Low** (and the chat has no open ticket): `low-direct` answers in the chat, no ticket and no ack; the run is
+   recorded with `ticket_id` null (Control Room → Support → Conversations). If it hands over, `escalate_to_human` opens
+   the ticket through the `openTicket` context callback, with the chat's earlier exchanges copied in.
+   **Medium and above**: the ticket is opened or updated (one per chat while unsolved; a new problem after a solved one
+   gets a new ticket) with the level, who handles it, the priority and an internal triage note; the level agent works
+   it in the background, or a person gets it with a brief. `/intake` waits up to 8 s (`ackAfterMs`) for the level agent
+   and returns its reply; only a slower one gets "I'm on it: ticket #…" first. Every tool call is a step on the run.
 6. The reply goes back to the channel and onto the ticket. Finished cases (resolved, escalated, rejected) are saved
    to memory (`/resolveai/cases`), and `search_past_cases` reads them next time.
 7. High-level refunds wait in Approvals. After a person decides, the demo API calls `POST /approvals/:id/decided`;
@@ -41,13 +50,13 @@ How a request flows (`src/service.ts`):
 
 What is code and what is the model:
 
-- **Always done in code** (`src/service.ts`): channel check, one ticket per chat session, the level (money and risk
+- **Always done in code** (`src/service.ts`): channel check, ticket or no ticket (low = none), one ticket per chat while unsolved, which order may be acted on, the level (money and risk
   rules), the triage note, the reply on the ticket, audit steps, approvals execution, saving cases; a CRM contact + deal
   per enquiry; the queue of campaign responses.
-- **Decided by the agents**: what the customer needs, which order, the plan, and how the level agent resolves it; for
+- **Decided by the agents**: what the customer needs, the plan, and how the level agent resolves it; for
   leads the score, stage, next step and whether to book a call.
 - **Guard rails in the tools**, not just the prompt: tools act only on the request's own ticket, customer, deal or
-  campaign response (operation context, never model arguments); `start_refund` refuses above the auto-refund limit (`refundLimit` in the Control Room settings, read through `platform.refundLimit()`, cached 10 s, ₹1,000 when unreachable); the high agent
+  campaign response (operation context, never model arguments); `start_refund` and `request_approval` refuse an order the customer didn't name (`orderIds` in the run context); `start_refund` refuses above the auto-refund limit (`refundLimit` in the Control Room settings, read through `platform.refundLimit()`, cached 10 s, ₹1,000 when unreachable); the high agent
   has no refund tool at all; `publish_report` accepts only known chart datasets and publishes once per run;
   `create_lead` takes the deal amount from the response's stated budget, and the API refuses to decide a response twice.
 - **Connectors**: Zendesk, shop and CRM calls go to the base URL and token set on Control Room → Connectors. A

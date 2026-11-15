@@ -4,8 +4,11 @@
  *
  * Which agent gets which tools is the point of the levels:
  *   low    → look up, search past cases, update and close the ticket
+ *   low, answering in the chat without a ticket ("direct") → look up, search past cases, escalate_to_human
+ *            (which opens the ticket then, through the run context)
  *   medium → plus start_refund (refuses above the auto-refund limit, a Control Room setting) and escalate_to_human
  *   high   → look up, request_approval for the refund, escalate_to_human. No direct refunds.
+ * start_refund and request_approval only take an order the customer named (run.orderIds, set in code).
  */
 import { rupees, SUPPORT_AGENTS, type CreateStepBody, type Order } from "@ph/shared";
 import { createTool, type ToolExecuteOptions } from "@voltagent/core";
@@ -13,7 +16,7 @@ import { z } from "zod";
 import { AUTO_REFUND_LIMIT } from "../criticality.ts";
 import type { DemoAPI } from "../demo-api.ts";
 import type { Platform } from "../platform.ts";
-import { runOf, type SupportRun } from "./context.ts";
+import { runOf, ticketOf, type SupportRun } from "./context.ts";
 
 export { AUTO_REFUND_LIMIT };
 
@@ -30,7 +33,14 @@ const orderView = (o: Order) => ({
 
 export type Level = SupportRun["agent"];
 
-export function supportTools(api: DemoAPI, platform: Platform | undefined, level: Level) {
+/** The customer didn't say which order: a refund or approval must not pick one for them. */
+const unnamed = (orderId: number) => ({
+  ok: false,
+  needs_customer: true,
+  why: `The customer hasn't said that order #${orderId} is the one. Ask them which order or item it is before refunding anything.`,
+});
+
+export function supportTools(api: DemoAPI, platform: Platform | undefined, level: Level, { direct = false }: { direct?: boolean } = {}) {
   /** The live auto-refund limit (Control Room settings, cached by the platform client); the default without one. */
   const refundLimit = () => (platform ? platform.refundLimit() : Promise.resolve(AUTO_REFUND_LIMIT));
 
@@ -89,8 +99,13 @@ export function supportTools(api: DemoAPI, platform: Platform | undefined, level
     }),
     execute: async ({ status, tags }, opts) => {
       const run = runOf<SupportRun>(opts);
-      const current = tags?.length ? await api.ticket(run.ticketId) : null;
-      const t = await api.updateTicket(run.ticketId, { status, ...(current && { tags: [...new Set([...current.tags, ...tags!])] }) });
+      const ticketId = await ticketOf(run);
+      // A refund waiting for a person's approval keeps its ticket open until they decide.
+      if (status === "solved" && platform && (await platform.pendingApprovalFor(ticketId).catch(() => undefined))) {
+        return { ok: false, why: "A refund on this ticket is waiting for approval; leave the ticket as it is." };
+      }
+      const current = tags?.length ? await api.ticket(ticketId) : null;
+      const t = await api.updateTicket(ticketId, { status, ...(current && { tags: [...new Set([...current.tags, ...tags!])] }) });
       await step(opts, { step: status === "solved" ? "Close ticket" : "Update ticket", tool: "Zendesk", result: "success", detail: `#${t.id} is ${t.status}` });
       return { ticket_id: t.id, status: t.status, tags: t.tags };
     },
@@ -101,7 +116,7 @@ export function supportTools(api: DemoAPI, platform: Platform | undefined, level
     description: "Add an internal note to the ticket (team only, the customer never sees it). Record what you checked and why you acted.",
     parameters: z.object({ body: z.string().min(1) }),
     execute: async ({ body }, opts) => {
-      await api.addComment(runOf<SupportRun>(opts).ticketId, { body, public: false });
+      await api.addComment(await ticketOf(runOf<SupportRun>(opts)), { body, public: false });
       await step(opts, { step: "Internal note", tool: "Zendesk", result: "success", detail: body.slice(0, 160) });
       return { ok: true };
     },
@@ -119,12 +134,16 @@ export function supportTools(api: DemoAPI, platform: Platform | undefined, level
     execute: async ({ order_id, reason }, opts) => {
       const run = runOf<SupportRun>(opts);
       const [order, limit] = await Promise.all([ownOrder(run, order_id), refundLimit()]);
+      if (!run.orderIds.includes(order_id)) {
+        await step(opts, { step: "Refund", tool: "Paytm", result: "blocked", detail: `#${order_id} wasn't named by the customer: ask which order first` });
+        return unnamed(order_id);
+      }
       if (order.amount > limit) {
         await step(opts, { step: "Refund", tool: "Paytm", result: "blocked", detail: `${rupees(order.amount)} is above the ${rupees(limit)} limit` });
         return { ok: false, needs_human: true, why: `${rupees(order.amount)} is above the ${rupees(limit)} auto-refund limit` };
       }
       const refunded = await api.refundOrder(order_id); // the API rejects orders that aren't refundable
-      await api.addComment(run.ticketId, {
+      await api.addComment(await ticketOf(run), {
         public: false,
         body: `Refund of ${rupees(order.amount)} started for order #${order_id} (within the ${rupees(limit)} auto-refund limit). Customer reported: ${reason}.`,
       });
@@ -148,12 +167,23 @@ export function supportTools(api: DemoAPI, platform: Platform | undefined, level
       const run = runOf<SupportRun>(opts);
       if (!platform) return { ok: false, why: "approvals are not available" };
       const order = await ownOrder(run, order_id);
+      if (!run.orderIds.includes(order_id)) {
+        await step(opts, { step: "Request approval", tool: "Approvals", result: "blocked", detail: `#${order_id} wasn't named by the customer: ask which order first` });
+        return unnamed(order_id);
+      }
       if (order.payment_status === "refund_initiated" || order.payment_status === "refunded") return { ok: false, why: `order #${order_id} already has a refund` };
-      const existing = await platform.pendingApprovalFor(run.ticketId);
+      // One approval per order: a second chat or ticket about the same order joins the one already waiting.
+      const sameOrder = await platform.pendingApprovalForOrder(order_id);
+      if (sameOrder) {
+        await step(opts, { step: "Request approval", tool: "Approvals", result: "escalated", detail: `#${sameOrder.id} for order #${order_id} is already waiting (ticket #${sameOrder.ticket_id})` });
+        return { ok: true, approval_id: sameOrder.id, already_pending: true, on_ticket: sameOrder.ticket_id };
+      }
+      const ticketId = await ticketOf(run);
+      const existing = await platform.pendingApprovalFor(ticketId);
       if (existing) return { ok: true, approval_id: existing.id, already_pending: true };
-      const approval = await platform.createApproval({ run_id: run.runId, ticket_id: run.ticketId, action: "refund", order_id, amount: order.amount, reason, summary, suggestion });
-      await api.addComment(run.ticketId, { public: false, body: `Approval requested (#${approval.id}): ${suggestion}\n${summary}` });
-      await api.updateTicket(run.ticketId, { status: "pending" });
+      const approval = await platform.createApproval({ run_id: run.runId, ticket_id: ticketId, action: "refund", order_id, amount: order.amount, reason, summary, suggestion });
+      await api.addComment(ticketId, { public: false, body: `Approval requested (#${approval.id}): ${suggestion}\n${summary}` });
+      await api.updateTicket(ticketId, { status: "pending" });
       await platform.updateRun(run.runId, { status: "waiting_approval" });
       await step(opts, { step: "Request approval", tool: "Approvals", result: "escalated", detail: `#${approval.id}: ${suggestion}` });
       return { ok: true, approval_id: approval.id };
@@ -171,14 +201,17 @@ export function supportTools(api: DemoAPI, platform: Platform | undefined, level
     }),
     execute: async ({ assignee, priority, note }, opts) => {
       const run = runOf<SupportRun>(opts);
-      await api.addComment(run.ticketId, { body: note, public: false });
+      const ticketId = await ticketOf(run); // a ticketless chat gets its ticket now, with the conversation so far
+      await api.addComment(ticketId, { body: note, public: false });
       // Moving it off the bot marks the ticket "Escalated by AI" in Zendesk.
-      const t = await api.updateTicket(run.ticketId, { assignee, priority, status: "open", handled_by: "human" });
-      await step(opts, { step: "Escalate to human", tool: "Zendesk", result: "escalated", detail: `Assigned to ${assignee}` });
-      return { ok: true, assignee: t.assignee, escalated_by_ai: t.escalated_by_ai };
+      const t = await api.updateTicket(ticketId, { assignee, priority, status: "open", handled_by: "human" });
+      await step(opts, { step: "Escalate to human", tool: "Zendesk", result: "escalated", detail: `#${ticketId} assigned to ${assignee}` });
+      return { ok: true, ticket_id: ticketId, assignee: t.assignee, escalated_by_ai: t.escalated_by_ai };
     },
   });
 
+  // Answering in the chat without a ticket: nothing to update or note on; handing over opens the ticket.
+  if (direct) return [getCustomerOrders, getOrder, searchPastCases, escalateToHuman];
   const read = [getCustomerOrders, getOrder, searchPastCases, addInternalNote];
   if (level === "low") return [...read, updateTicket, escalateToHuman];
   if (level === "medium") return [...read, updateTicket, startRefund, escalateToHuman];

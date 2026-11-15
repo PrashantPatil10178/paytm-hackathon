@@ -21,12 +21,17 @@
 import {
   BOT,
   ENQUIRY_NEEDS,
+  liveOrders,
+  ordersNamedIn,
   rupees,
   OWNER,
   SUPPORT_AGENTS,
+  type AgentRun,
   type AnalysisResponse,
   type CampaignResponse,
   type CaseOutcome,
+  type ChatAnswer,
+  type ChatQuestion,
   type ChatResponse,
   type CreateStepBody,
   type LeadResponse,
@@ -40,17 +45,21 @@ import { Output } from "ai";
 import { z } from "zod";
 import type { LevelAgents } from "./agents/levels.ts";
 import { TriageSchema, type Triage } from "./agents/main.ts";
-import { assessCriticality, ORDER_INTENTS, type Criticality } from "./criticality.ts";
+import { assessCriticality, MIN_CONFIDENCE, ORDER_INTENTS, type Criticality } from "./criticality.ts";
 import { DemoAPIError, type DemoAPI, type KnownContact } from "./demo-api.ts";
 import { analysisNote, analysisThread, personKey } from "./memory.ts";
 import type { Platform } from "./platform.ts";
 import { memorySessions, type SessionStore } from "./sessions.ts";
-import { runContext, type AnalysisRun, type LeadsRun } from "./tools/context.ts";
+import { runContext, type AnalysisRun, type LeadsRun, type SupportRun } from "./tools/context.ts";
 
 const ChatBody = z.object({
   session_id: z.string().min(1),
   customer_id: z.coerce.number().int().positive(),
   message: z.string().trim().min(1),
+  /** The customer's answer to a question we asked (which order), with the message it was about. */
+  answer: z
+    .object({ kind: z.literal("order"), original: z.string().trim().min(1).max(2000), value: z.string().nullable(), text: z.string().trim().min(1).max(200) })
+    .optional(),
 });
 
 const LeadBody = z.object({
@@ -92,9 +101,11 @@ export interface ServiceDeps {
   /** The analysis agent's memory (with working memory), where the note about the last report is kept. */
   analysisMemory?: Memory;
   log?: Pick<Console, "warn" | "error">;
+  /** How long /intake waits for a ticket's level agent before answering "I'm on it" instead (ms). Default 8 s. */
+  ackAfterMs?: number;
 }
 
-export function createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions = memorySessions(), analysisMemory, log = console }: ServiceDeps) {
+export function createService({ api, platform, main, writer, levels, sales, analysis, leads, sessions = memorySessions(), analysisMemory, log = console, ackAfterMs = 8_000 }: ServiceDeps) {
   /** Level agents that are still working after /intake answered. */
   const inFlight = new Set<Promise<unknown>>();
   const track = (job: Promise<unknown>) => {
@@ -106,7 +117,27 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     while (inFlight.size) await Promise.allSettled([...inFlight]);
   };
 
-  /* ───── Tickets ───── */
+  /* ───── Chats and tickets ───── */
+
+  /**
+   * One chat message being handled, and what this chat said before it. A low-level question is answered
+   * without a ticket; the first time this chat needs a ticket, the exchanges it had without one are copied
+   * onto the ticket so the team sees the whole conversation.
+   */
+  interface Chat {
+    runId: number;
+    /** The channel's name, for steps ("ShopKart chat") */
+    channel: string;
+    sessionId: string;
+    customerId: number;
+    customerName: string;
+    /** The message being worked (for an answer to "which order?": the original request plus the answer) */
+    message: string;
+    /** Earlier runs in this chat, oldest first */
+    earlier: AgentRun[];
+    /** This chat's exchanges since its last ticket that never got one, oldest first */
+    history: { message: string; reply: string }[];
+  }
 
   /** The ticket this chat session already has, if it still exists (a demo reset recycles ticket numbers). */
   async function knownTicket(sessionId: string): Promise<Ticket | null> {
@@ -132,24 +163,59 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     await api.addComment(t.id, { body: message, public: true, author: t.requester.name, author_type: "customer" });
   }
 
-  /** Reuses the session's ticket (adding the message, reopening it if solved) or opens a new one. */
-  async function ticketFor(known: Ticket | null, sessionId: string, customerId: number, message: string): Promise<{ ticket: Ticket; isNew: boolean }> {
+  /**
+   * Reuses the chat's ticket (adding the message, reopening it if solved) or opens a new one. A new ticket
+   * starts with what this chat said without a ticket (customer messages and Aria's answers), then this message.
+   */
+  async function ticketFor(known: Ticket | null, c: Chat): Promise<{ ticket: Ticket; isNew: boolean }> {
     if (known) {
-      await addCustomerMessage(known, message);
+      await addCustomerMessage(known, c.message);
       const ticket = known.status === "solved" ? await api.updateTicket(known.id, { status: "open" }) : known;
       return { ticket, isNew: false };
     }
+    const thread = [...c.history.flatMap((h) => [{ customer: true, body: h.message }, { customer: false, body: h.reply }]), { customer: true, body: c.message }];
+    const first = thread[0]!.body;
     const ticket = await api.createTicket({
-      subject: message.length > 60 ? `${message.slice(0, 57)}…` : message,
-      comment: message,
-      requester_id: customerId,
+      subject: first.length > 60 ? `${first.slice(0, 57)}…` : first,
+      comment: first,
+      requester_id: c.customerId,
       via: "chat",
       status: "open",
       assignee: BOT,
       tags: ["chat"],
     });
-    await sessions.set(sessionId, { ticketId: ticket.id, ticketCreatedAt: ticket.created_at });
+    for (const m of thread.slice(1)) {
+      if (m.customer) await addCustomerMessage(ticket, m.body);
+      else await api.addComment(ticket.id, { body: m.body, public: true });
+    }
+    await sessions.set(c.sessionId, { ticketId: ticket.id, ticketCreatedAt: ticket.created_at });
     return { ticket, isNew: true };
+  }
+
+  /** Writes the triage onto the run and the ticket (level, who handles it, priority, triage note). */
+  async function recordTriage(c: Chat, ticket: Ticket, isNew: boolean, triage: Triage, crit: Criticality, order: Order | null, why = "") {
+    await platform.updateRun(c.runId, {
+      ticket_id: ticket.id,
+      intent: triage.intent,
+      level: crit.level,
+      level_reason: crit.reasons.join("; "),
+      handled_by: crit.handled_by,
+      plan: triage.plan,
+      status: "working",
+    });
+    await api.updateTicket(ticket.id, {
+      ...(isNew && { subject: subjectFor(triage, order) }),
+      priority: crit.level,
+      type: triage.intent === "order_tracking" || triage.intent === "question" ? "question" : "incident",
+      tags: [...new Set([...ticket.tags.filter((t) => !t.startsWith("level:")), triage.intent, `level:${crit.level}`])],
+      level: crit.level,
+      handled_by: crit.handled_by,
+    });
+    await api.addComment(ticket.id, {
+      public: false,
+      body: `ResolveAI triage: ${LEVEL_LABEL[crit.level]} → ${HANDLER_LABEL[crit.handled_by]}.\nWhy: ${crit.reasons.join("; ")}.\nPlan:\n${triage.plan.map((p, i) => `${i + 1}. ${p}`).join("\n")}`,
+    });
+    await stepper(c.runId)("main", { step: isNew ? "Open ticket" : "Update ticket", tool: "Zendesk", result: "success", detail: `#${ticket.id}: ${LEVEL_LABEL[crit.level]}, routed to ${HANDLER_LABEL[crit.handled_by]}${why}` });
   }
 
   /* ───── Runs, steps and memory ───── */
@@ -196,27 +262,48 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     }
     const parsed = ChatBody.safeParse(raw);
     if (!parsed.success) return invalid(parsed.error);
-    const { session_id, customer_id, message } = parsed.data;
+    const { session_id, customer_id } = parsed.data;
+    let answer: ChatAnswer | undefined = parsed.data.answer;
 
     return guard(async () => {
-      const run = await platform.createRun({ channel_id: channel.id, session_id, customer_id, message });
+      // An answer to "which order?" is worked as the original request plus the order it names.
+      const run = await platform.createRun({ channel_id: channel.id, session_id, customer_id, message: answer ? answerMessage(answer) : parsed.data.message });
       const step = stepper(run.id);
-      await step("main", { step: "Receive request", tool: channel.name, result: "success", detail: message.slice(0, 160) });
+      await step("main", { step: "Receive request", tool: channel.name, result: "success", detail: (answer ? answerMessage(answer) : parsed.data.message).slice(0, 160) });
 
-      const [{ customer, orders }, known, cases] = await Promise.all([
+      const [{ customer, orders }, sessionTicket, earlierRuns] = await Promise.all([
         api.customerOrders(customer_id),
         knownTicket(session_id),
-        platform.searchCases(message).catch(() => []),
+        platform.runsForSession(session_id).catch(() => [] as AgentRun[]),
       ]);
+      const earlier = earlierRuns.filter((r) => r.id !== run.id).sort((a, b) => a.id - b.id);
+
+      // A typed answer right after "which order?" (instead of tapping a choice) answers it too, if it names one order.
+      const prev = earlier.at(-1);
+      if (!answer && prev?.steps?.some((s) => s.step === "Ask which order")) {
+        const hit = ordersNamedIn(parsed.data.message, orders);
+        if (hit.length === 1) answer = { kind: "order", original: prev.message, value: String(hit[0]!.id), text: parsed.data.message };
+      }
+      const message = answer ? answerMessage(answer) : parsed.data.message;
+      const picked = answer ? (answer.value && /^\d+$/.test(answer.value) ? Number(answer.value) : mentionedNumber(answer.text)) : null;
+
+      const lastTicketed = Math.max(0, ...earlier.filter((r) => r.ticket_id).map((r) => r.id));
+      const history = earlier
+        .filter((r) => r.id > lastTicketed && !r.ticket_id && r.reply && !(answer && r.message === answer.original))
+        .map((r) => ({ message: r.message, reply: r.reply! }));
+      const c: Chat = { runId: run.id, channel: channel.name, sessionId: session_id, customerId: customer_id, customerName: customer.name, message, earlier, history };
+      const cases = await platform.searchCases(message).catch(() => []);
 
       /* 1. The main agent triages. */
       const prompt = [
         `Today: ${today()}. Customer: ${customer.name} (id ${customer_id}).`,
         `Their orders: ${JSON.stringify(orders.map(orderBrief))}`,
-        known ? `Open ticket in this chat: #${known.id} "${known.subject}", status ${known.status}, assignee ${known.assignee ?? "nobody"}.` : "No ticket in this chat yet.",
-        cases.length ? `Similar past cases: ${JSON.stringify(cases.map((c) => ({ problem: c.problem, resolution: c.resolution, level: c.level, outcome: c.outcome })))}` : "No similar past cases.",
+        sessionTicket ? `Ticket in this chat: #${sessionTicket.id} "${sessionTicket.subject}", status ${sessionTicket.status}, assignee ${sessionTicket.assignee ?? "nobody"}.` : "No ticket in this chat yet.",
+        ...earlierLines(c),
+        cases.length ? `Similar past cases: ${JSON.stringify(cases.map((x) => ({ problem: x.problem, resolution: x.resolution, level: x.level, outcome: x.outcome })))}` : "No similar past cases.",
+        answer ? `They were asked which order this is about and answered: ${answer.text}.` : null,
         `Message: ${message}`,
-      ].join("\n");
+      ].filter(Boolean).join("\n");
       let triage: Triage | null = null;
       try {
         const res = await main.generateText(prompt, { output: Output.object({ schema: TriageSchema }), userId: `customer-${customer_id}`, conversationId: `${session_id}:main` });
@@ -224,98 +311,191 @@ export function createService({ api, platform, main, writer, levels, sales, anal
       } catch (e) {
         log.error(`[agent] main agent couldn't triage run ${run.id}:`, e);
       }
-      if (!triage) return handOver(run.id, known, session_id, customer_id, message, "the main agent couldn't read the request");
+      if (!triage) return handOver(c, sessionTicket, "the main agent couldn't read the request");
+      if (answer) triage.kind = "new_request"; // an answer continues the request; it isn't asking for an update
       await step("main", { step: "Triage", tool: "Aria LLM", result: "success", detail: `${triage.kind === "status_check" ? "status check" : "new request"}, ${triage.intent}, confidence ${Math.round(triage.confidence * 100)}%: ${triage.summary}` });
 
+      // The chat's ticket is reused while it's unsolved, or for a follow-up on the same issue. A new problem after
+      // it was solved starts fresh (its own ticket, or none if it's a simple question).
+      let named = picked ? orders.filter((o) => o.id === picked) : ordersNamedIn(message, orders);
+      const known = sessionTicket && (sessionTicket.status !== "solved" || triage.kind === "status_check" || sameIssue(sessionTicket, triage, named)) ? sessionTicket : null;
+
       /* 2. Out of scope: a polite answer, no ticket and no one pulled in. */
-      if (triage.intent === "out_of_scope") return outOfScope(run.id, known, message, triage);
+      if (triage.intent === "out_of_scope") return outOfScope(c, known, triage);
 
-      /* 3. A status check: answer from the ticket, don't open a new one. No earlier request to report on → the team. */
+      /* 3. A status check: answer from the earlier answer in this chat, or the ticket. Upset, asking for a person or
+            unsure → it becomes a request and gets a ticket. No earlier request at all → the team. */
+      let forceTicket = false;
       if (triage.kind === "status_check") {
-        const ticket = known ?? (await latestTicket(customer_id));
-        if (ticket) return statusUpdate(run.id, ticket, message, triage, !known);
-        return toTeam(run.id, null, session_id, customer_id, message, triage, "asked for an update, but we have no earlier request from this customer");
+        const answered = [...earlier].reverse().find((r) => r.kind === "request" && !r.ticket_id && r.reply && r.intent !== "out_of_scope" && r.id > lastTicketed);
+        if (answered) {
+          const s = triage.signals;
+          if (!(s.angry || s.wants_human || s.legal_or_fraud || triage.confidence < MIN_CONFIDENCE)) return statusFromRun(c, answered, triage);
+          forceTicket = true;
+          if ((triage.intent === "question" || triage.intent === "other") && answered.intent) triage.intent = answered.intent as Triage["intent"];
+          if (!named.length) named = ordersNamedIn(answered.message, orders); // it's about what they asked before
+        } else {
+          const ticket = known ?? (await latestTicket(customer_id));
+          if (ticket) return statusUpdate(run.id, ticket, message, triage, !known);
+          return toTeam(c, null, triage, "asked for an update, but we have no earlier request from this customer");
+        }
       }
 
-      /* 4. About an order, but the customer has no orders: nothing for an agent to work with → the team. */
+      /* 4. A person already owns this chat's open ticket: pass the message on, don't let the AI act over them. */
+      if (known && known.status !== "solved" && known.assignee && known.assignee !== BOT) {
+        await addCustomerMessage(known, message);
+        const reply = `Thanks, I've added this to your ticket #${known.id}. ${known.assignee.split(" – ")[0]} from our team is on it and will reply here.`;
+        await api.addComment(known.id, { body: reply, public: true });
+        await platform.updateRun(run.id, { ticket_id: known.id, intent: triage.intent, plan: triage.plan, handled_by: "human", status: "escalated", reply });
+        await step("main", { step: "Pass to owner", tool: "Zendesk", result: "escalated", detail: `#${known.id} is with ${known.assignee}` });
+        return { status: 200, body: { reply, ticket_id: known.id } };
+      }
+
+      /* 5. About an order, but the customer has no orders: nothing for an agent to work with → the team. */
       if (ORDER_INTENTS.includes(triage.intent) && orders.length === 0) {
-        return toTeam(run.id, known, session_id, customer_id, message, triage, "asked about an order, but there are no orders on this account");
+        return toTeam(c, known, triage, "asked about an order, but there are no orders on this account");
       }
 
-      /* 5. A new request: level, ticket, route. */
-      // The order they named isn't on their account: no agent can work it, so the team checks with them.
-      // Checked in code too ("order 9999", "order #9999"), in case the model left the number out.
-      const named = triage.order_id ?? mentionedOrder(message);
-      if (named && !orders.some((o) => o.id === named)) {
-        return toTeam(run.id, known, session_id, customer_id, message, triage, `asked about order #${named}, which isn't on their account`);
+      /* 6. An order number that isn't on their account: no agent can work it, so the team checks with them.
+            Checked in code too ("order 9999", "order #9999"), in case the model left the number out. */
+      const claimed = picked ?? mentionedOrder(message) ?? triage.order_id;
+      if (claimed && !orders.some((o) => o.id === claimed)) {
+        return toTeam(c, known, triage, `asked about order #${claimed}, which isn't on their account`);
       }
-      const order = named ? orders.find((o) => o.id === named)! : null;
+
+      /* 7. Which order? Never guessed for money: a refund, damage claim or cancellation needs the order named (number,
+            item, or picked from the question), the chat ticket's order, or a customer with a single order. Otherwise
+            ask, before anything is opened. The tools get the same list and refuse any other order. */
+      const ticketOrder = known ? orders.find((o) => o.id === ticketOrderId(known)) : undefined;
+      const confirmed = [...new Set([...named, ...(ticketOrder ? [ticketOrder] : [])])];
+      const orderIds = [...new Set([...confirmed.map((o) => o.id), ...(orders.length === 1 ? [orders[0]!.id] : [])])];
+      let order: Order | null = confirmed[0] ?? null;
+      if (!order && ASK_INTENTS.includes(triage.intent)) {
+        const candidates = candidateOrders(triage.intent, orders);
+        const sure = orders.length === 1 ? orders[0]! : !MONEY_INTENTS.includes(triage.intent) && candidates.length === 1 ? candidates[0]! : null;
+        if (sure) order = sure;
+        else if (!answer && !forceTicket) {
+          // Nothing fits the request exactly (e.g. no delivered order for a damage claim): offer their unsettled orders.
+          const offer = candidates.length ? candidates : liveOrders(orders).length ? liveOrders(orders) : orders;
+          return askWhichOrder(c, known && known.status !== "solved" ? known : null, triage, offer);
+        }
+      }
+      // Information only (no money moves on it): the model's reading of which order may stand.
+      if (!order && !MONEY_INTENTS.includes(triage.intent)) order = orders.find((o) => o.id === triage!.order_id) ?? null;
+
+      /* 8. Level, then route: a simple question is answered in the chat without a ticket; anything more gets one. */
       const recent = (await api.customerTickets(customer_id).catch(() => [])).filter((t) => t.id !== known?.id && Date.now() - new Date(t.created_at).getTime() < 30 * DAY).length;
       const refundLimit = await platform.refundLimit();
       const crit = assessCriticality({ intent: triage.intent, signals: triage.signals, confidence: triage.confidence, order, recentTickets: recent, refundLimit });
       await step("main", { step: "Set level", tool: "Criticality rules", result: "success", detail: `${LEVEL_LABEL[crit.level]}: ${crit.reasons.join("; ")}` });
 
-      const { ticket, isNew } = await ticketFor(known, session_id, customer_id, message);
+      if (!known && crit.handled_by === "low" && !forceTicket) return answerDirect(c, triage, crit, order, orderIds);
 
-      // A person already owns this ticket: pass the message on, don't let the AI act over them.
-      if (!isNew && ticket.assignee && ticket.assignee !== BOT) {
-        const reply = `Thanks, I've added this to your ticket #${ticket.id}. ${ticket.assignee.split(" – ")[0]} from our team is on it and will reply here.`;
-        await api.addComment(ticket.id, { body: reply, public: true });
-        await platform.updateRun(run.id, { ticket_id: ticket.id, intent: triage.intent, plan: triage.plan, handled_by: "human", status: "escalated", reply });
-        await step("main", { step: "Pass to owner", tool: "Zendesk", result: "escalated", detail: `#${ticket.id} is with ${ticket.assignee}` });
-        return { status: 200, body: { reply, ticket_id: ticket.id } };
-      }
-
-      /** Writes the triage onto the run and the ticket (level, who handles it, priority, triage note). */
-      const recordTriage = async () => {
-        await platform.updateRun(run.id, {
-          ticket_id: ticket.id,
-          intent: triage!.intent,
-          level: crit.level,
-          level_reason: crit.reasons.join("; "),
-          handled_by: crit.handled_by,
-          plan: triage!.plan,
-          status: "working",
-        });
-        await api.updateTicket(ticket.id, {
-          ...(isNew && { subject: subjectFor(triage!, order) }),
-          priority: crit.level,
-          type: triage!.intent === "order_tracking" || triage!.intent === "question" ? "question" : "incident",
-          tags: [...new Set([...ticket.tags.filter((t) => !t.startsWith("level:")), triage!.intent, `level:${crit.level}`])],
-          level: crit.level,
-          handled_by: crit.handled_by,
-        });
-        await api.addComment(ticket.id, {
-          public: false,
-          body: `ResolveAI triage: ${LEVEL_LABEL[crit.level]} → ${HANDLER_LABEL[crit.handled_by]}.\nWhy: ${crit.reasons.join("; ")}.\nPlan:\n${triage!.plan.map((p, i) => `${i + 1}. ${p}`).join("\n")}`,
-        });
-        await step("main", { step: isNew ? "Open ticket" : "Update ticket", tool: "Zendesk", result: "success", detail: `#${ticket.id}: ${LEVEL_LABEL[crit.level]}, routed to ${HANDLER_LABEL[crit.handled_by]}` });
-      };
-
+      const { ticket, isNew } = await ticketFor(known, c);
       if (crit.handled_by === "human") {
-        await recordTriage();
+        await recordTriage(c, ticket, isNew, triage, crit, order);
         return escalateCritical(run.id, ticket, customer_id, triage, crit, order);
       }
 
-      // The main agent answers straight away; the bookkeeping and the level agent's work happen in the
-      // background, and its reply lands on the ticket (the ShopKart chat watches the ticket) when it's done.
+      // The level agent works in the background and its reply lands on the ticket (the ShopKart chat watches it).
+      // If it finishes within a few seconds its reply is the answer; only a slow one gets the "I'm on it" first.
+      const out: { done?: Result<ChatResponse> } = {};
+      const job = (async () => {
+        await recordTriage(c, ticket, isNew, triage!, crit, order);
+        return work(c, ticket, isNew, triage!, crit, refundLimit, orderIds);
+      })();
+      track(job.then((r) => (out.done = r)).catch((e) => log.error(`[agent] background work on ticket #${ticket.id} failed:`, e)));
+      await Promise.race([job.catch(() => null), new Promise((r) => setTimeout(r, ackAfterMs))]);
+      if (out.done) return out.done;
       const ack = `Thanks, ${customer.name.split(" ")[0]}. I'm on it: this is ticket #${ticket.id}, and I'll get back to you here in a few minutes.`;
       await api.addComment(ticket.id, { body: ack, public: true });
-      track(
-        (async () => {
-          await step("main", { step: "Acknowledge", tool: channel.name, result: "success", detail: `Told the customer ${HANDLER_LABEL[crit.handled_by]} is on it` });
-          await recordTriage();
-          await platform.updateRun(run.id, { reply: ack });
-          await work(run.id, ticket, isNew, customer.name, customer_id, session_id, message, triage!, crit, refundLimit);
-        })().catch((e) => log.error(`[agent] background work on ticket #${ticket.id} failed:`, e)),
-      );
+      await step("main", { step: "Acknowledge", tool: channel.name, result: "success", detail: `Told the customer ${HANDLER_LABEL[crit.handled_by]} is on it` });
+      if (!out.done) await platform.updateRun(run.id, { reply: ack }).catch(() => {});
       return { status: 200, body: { reply: ack, ticket_id: ticket.id } };
     });
   }
 
+  /** Earlier exchanges in this chat, for the agents' prompts. */
+  function earlierLines(c: Chat): string[] {
+    const done = c.earlier.filter((r) => r.reply).slice(-4);
+    return done.length ? ["Earlier in this chat:", ...done.map((r) => `- Customer: ${r.message.slice(0, 200)} → Aria: ${r.reply!.slice(0, 240)}`)] : [];
+  }
+
+  /**
+   * Low level, no ticket: the direct agent answers and its answer is the chat's reply. If it hands over to a
+   * person, escalate_to_human opens the ticket then (through the run context), with the conversation so far.
+   */
+  async function answerDirect(c: Chat, triage: Triage, crit: Criticality, order: Order | null, orderIds: number[]): Promise<Result<ChatResponse>> {
+    const step = stepper(c.runId);
+    await platform.updateRun(c.runId, { intent: triage.intent, level: crit.level, level_reason: crit.reasons.join("; "), handled_by: crit.handled_by, plan: triage.plan, status: "working" });
+    const ctx: SupportRun = {
+      ticketId: null,
+      customerId: c.customerId,
+      runId: c.runId,
+      agent: "low",
+      orderIds,
+      openTicket: async () => {
+        const { ticket } = await ticketFor(null, c);
+        await recordTriage(c, ticket, true, triage, crit, order, " (opened to hand over; answered in the chat until now)");
+        const found = ((await platform.run(c.runId).catch(() => null))?.steps ?? []).filter((s) => s.agent === "low").map((s) => `- ${s.step}: ${s.detail}`);
+        if (found.length) await api.addComment(ticket.id, { public: false, body: `What Aria checked before handing over:\n${found.join("\n")}` });
+        return ticket.id;
+      },
+    };
+    const prompt = [
+      `[Chat with ${c.customerName} (customer id ${c.customerId}) · no ticket · today ${today()}]`,
+      `Level: ${LEVEL_LABEL[crit.level]} (${crit.reasons.join("; ")})`,
+      ...earlierLines(c),
+      `Main agent's plan:\n${triage.plan.map((p, i) => `${i + 1}. ${p}`).join("\n")}`,
+      `Customer message: ${c.message}`,
+    ].join("\n");
+
+    let reply: string;
+    try {
+      const res = await levels.direct.generateText(prompt, { userId: `customer-${c.customerId}`, conversationId: c.sessionId, context: runContext(ctx) });
+      reply = res.text.trim();
+      if (!reply) throw new Error("the model returned an empty reply");
+    } catch (e) {
+      log.error(`[agent] low agent failed on run ${c.runId}:`, e);
+      const opened = ctx.ticketId ? await api.ticket(ctx.ticketId) : null;
+      return handOver(c, opened, `the low agent failed (${errorText(e)})`, !!opened);
+    }
+
+    if (ctx.ticketId) {
+      // It went to a person: the ticket now holds the conversation, and this reply goes there too.
+      await api.addComment(ctx.ticketId, { body: reply, public: true });
+      const after = await api.ticket(ctx.ticketId);
+      const escalated = !!after.assignee && after.assignee !== BOT;
+      await platform.updateRun(c.runId, { ticket_id: ctx.ticketId, status: escalated ? "escalated" : "resolved", reply, ...(escalated && { handled_by: "human" }) });
+      await remember(c.runId, { ticketId: ctx.ticketId, customerId: c.customerId, intent: triage.intent, level: crit.level, handledBy: escalated ? "human" : "low", problem: triage.summary, resolution: reply, outcome: escalated ? "escalated" : "resolved" });
+      return { status: 200, body: { reply, ticket_id: ctx.ticketId } };
+    }
+    await platform.updateRun(c.runId, { status: "resolved", reply });
+    await step("main", { step: "Answer", tool: c.channel, result: "success", detail: "Answered in the chat; no ticket needed" });
+    await remember(c.runId, { ticketId: null, customerId: c.customerId, intent: triage.intent, level: crit.level, handledBy: "low", problem: triage.summary, resolution: reply, outcome: "resolved" });
+    return { status: 200, body: { reply } };
+  }
+
+  /** "Any update?" about something answered in this chat without a ticket: answer from that run. */
+  async function statusFromRun(c: Chat, answered: AgentRun, triage: Triage): Promise<Result<ChatResponse>> {
+    let reply = `Here's where that stands: ${answered.reply}`;
+    try {
+      const res = await writer.generateText(
+        `The customer is asking again about something already answered in this chat (there is no ticket). Write 1–2 plain sentences telling them where it stands, using only these facts. Facts: ${JSON.stringify({ they_asked: answered.message, we_answered: answered.reply, answered_at: answered.updated_at })}\nTheir message: ${c.message}`,
+      );
+      const text = res.text.trim();
+      if (text && !/^[{[]/.test(text)) reply = text;
+    } catch (e) {
+      log.warn(`[agent] status update for run ${answered.id} fell back to a template:`, errorText(e));
+    }
+    await platform.updateRun(c.runId, { kind: "status_check", intent: triage.intent, level: answered.level, handled_by: answered.handled_by, status: "resolved", reply, plan: ["Read the earlier answer in this chat", "Tell the customer where it stands"] });
+    await stepper(c.runId)("main", { step: "Status update", tool: c.channel, result: "success", detail: `Answered from run #${answered.id} in this chat (no ticket)` });
+    return { status: 200, body: { reply } };
+  }
+
   /** Critical: a person takes it. The main agent writes the brief; the customer is told straight away. */
   async function escalateCritical(runId: number, ticket: Ticket, customerId: number, triage: Triage, crit: Criticality, order: Order | null): Promise<Result<ChatResponse>> {
-    const money = triage.intent === "payment_failed" || triage.intent === "refund" || triage.intent === "damaged_item" || order?.payment_status === "failed_debited";
+    const money = triage.intent === "payment_failed" || order?.payment_status === "failed_debited";
     const assignee = SUPPORT_AGENTS[0];
     await api.addComment(ticket.id, {
       public: false,
@@ -338,38 +518,45 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     return { status: 200, body: { reply, ticket_id: ticket.id } };
   }
 
-  /** Low, medium or high: that level's agent works the ticket with its own tools. */
-  async function work(runId: number, ticket: Ticket, isNew: boolean, customerName: string, customerId: number, sessionId: string, message: string, triage: Triage, crit: Criticality, refundLimit: number): Promise<Result<ChatResponse>> {
+  /** Low, medium or high with a ticket: that level's agent works it with its own tools. */
+  async function work(c: Chat, ticket: Ticket, isNew: boolean, triage: Triage, crit: Criticality, refundLimit: number, orderIds: number[]): Promise<Result<ChatResponse>> {
     const level = crit.handled_by as "low" | "medium" | "high";
     const prompt = [
-      `[Zendesk ticket #${ticket.id}${isNew ? " (new)" : ""} · customer ${customerName} (id ${customerId}) · today ${today()}]`,
+      `[Zendesk ticket #${ticket.id}${isNew ? " (new)" : ""} · customer ${c.customerName} (id ${c.customerId}) · today ${today()}]`,
       `Level: ${LEVEL_LABEL[crit.level]} (${crit.reasons.join("; ")})`,
       `Auto-refund limit: ${rupees(refundLimit)}`,
+      `Orders the customer named (the only ones you may refund): ${orderIds.length ? orderIds.map((id) => `#${id}`).join(", ") : "none yet: ask which order before refunding"}`,
+      ...earlierLines(c),
       `Main agent's plan:\n${triage.plan.map((p, i) => `${i + 1}. ${p}`).join("\n")}`,
-      `Customer message: ${message}`,
+      `Customer message: ${c.message}`,
     ].join("\n");
 
     let reply: string;
     try {
       const res = await levels[level].generateText(prompt, {
-        userId: `customer-${customerId}`,
-        conversationId: sessionId,
-        context: runContext({ ticketId: ticket.id, customerId, runId, agent: level }),
+        userId: `customer-${c.customerId}`,
+        conversationId: c.sessionId,
+        context: runContext({ ticketId: ticket.id, customerId: c.customerId, runId: c.runId, agent: level, orderIds }),
       });
       reply = res.text.trim();
       if (!reply) throw new Error("the model returned an empty reply");
     } catch (e) {
       log.error(`[agent] ${level} agent failed on ticket #${ticket.id}:`, e);
-      return handOver(runId, ticket, sessionId, customerId, message, `the ${level} agent failed (${errorText(e)})`, true);
+      return handOver(c, ticket, `the ${level} agent failed (${errorText(e)})`, true);
     }
 
     await api.addComment(ticket.id, { body: reply, public: true });
-    const [after, run] = await Promise.all([api.ticket(ticket.id), platform.run(runId)]);
+    const [after, run] = await Promise.all([api.ticket(ticket.id), platform.run(c.runId)]);
     const escalated = !!after.assignee && after.assignee !== BOT;
-    const status = run.status === "waiting_approval" ? "waiting_approval" : escalated ? "escalated" : after.status === "solved" ? "resolved" : "working";
-    await platform.updateRun(runId, { status, reply, ...(escalated && { handled_by: "human" }) });
-    if (status === "resolved" || status === "escalated") {
-      await remember(runId, { ticketId: ticket.id, customerId, intent: triage.intent, level: crit.level, handledBy: escalated ? "human" : level, problem: triage.summary, resolution: reply, outcome: status === "resolved" ? "resolved" : "escalated" });
+    const solved = after.status === "solved";
+    // Not solved, escalated or waiting for approval: the agent answered and the next move is the customer's (it asked
+    // for a detail). The run is finished, so it must not stay "working"; the ticket waits on the customer.
+    const waitsOnCustomer = !solved && !escalated && run.status !== "waiting_approval";
+    if (waitsOnCustomer && after.status !== "pending") await api.updateTicket(ticket.id, { status: "pending" });
+    const status = run.status === "waiting_approval" ? "waiting_approval" : escalated ? "escalated" : "resolved";
+    await platform.updateRun(c.runId, { status, reply, ...(escalated && { handled_by: "human" }) });
+    if (solved || escalated) {
+      await remember(c.runId, { ticketId: ticket.id, customerId: c.customerId, intent: triage.intent, level: crit.level, handledBy: escalated ? "human" : level, problem: triage.summary, resolution: reply, outcome: solved ? "resolved" : "escalated" });
     }
     return { status: 200, body: { reply, ticket_id: ticket.id } };
   }
@@ -379,7 +566,7 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     await addCustomerMessage(ticket, message);
     const [runs, approval] = await Promise.all([platform.runsForTicket(ticket.id).catch(() => []), platform.pendingApprovalFor(ticket.id).catch(() => undefined)]);
     const last = runs.find((r) => r.id !== runId && r.kind === "request");
-    const lastReply = [...ticket.comments].reverse().find((c) => c.public && c.author_type !== "customer");
+    const lastReply = [...ticket.comments].reverse().find((x) => x.public && x.author_type !== "customer");
     const facts = {
       ticket: ticket.id,
       subject: ticket.subject,
@@ -407,15 +594,46 @@ export function createService({ api, platform, main, writer, levels, sales, anal
     return { status: 200, body: { reply, ticket_id: ticket.id } };
   }
 
-  /** Not a ShopKart matter: answer politely. No ticket is opened; an existing chat ticket just gets the exchange. */
-  async function outOfScope(runId: number, known: Ticket | null, message: string, triage: Triage): Promise<Result<ChatResponse>> {
-    const reply = "Sorry, I can only help with ShopKart orders, deliveries, refunds and payments. Is there anything about an order I can help you with?";
+  /**
+   * We need to know which order before anything can be done. Nothing is opened in Zendesk yet: the customer
+   * picks from their orders in the chat, and the answer comes back with the original message.
+   */
+  async function askWhichOrder(c: Chat, known: Ticket | null, triage: Triage, choices: Order[]): Promise<Result<ChatResponse>> {
+    const perItem = triage.intent === "damaged_item";
+    const ask: ChatQuestion = {
+      kind: "order",
+      prompt: perItem ? "Which item is it about?" : "Which order is this about?",
+      description: perItem ? "Pick the product, so we look at the right order." : "Pick the order, so we look at the right one.",
+      choices: choices.slice(0, 6).flatMap((o) =>
+        (perItem ? o.items : [o.items[0]!]).filter(Boolean).map((i) => ({
+          value: String(o.id),
+          label: perItem || o.items.length === 1 ? i.name : `${i.name} + ${o.items.length - 1} more`,
+          description: [`Order #${o.id}`, ORDER_STATUS_LABEL[o.status] ?? o.status, PAYMENT_NOTE[o.payment_status], rupees(perItem ? i.price * i.qty : o.amount)].filter(Boolean).join(" · "),
+          image: i.image,
+        })),
+      ),
+      other: { label: "A different order", placeholder: "Order number, e.g. 1047" },
+      original: c.message,
+    };
+    const reply = perItem ? "Sorry to hear that. Which item arrived damaged?" : "Sure, I can help with that. Which order is it about?";
     if (known) {
-      await addCustomerMessage(known, message);
+      await addCustomerMessage(known, c.message);
       await api.addComment(known.id, { body: reply, public: true });
     }
-    await platform.updateRun(runId, { ticket_id: known?.id ?? null, intent: triage.intent, status: "resolved", reply, plan: ["Not a ShopKart request: reply politely, no ticket"] });
-    await stepper(runId)("main", { step: "Out of scope", tool: "Aria LLM", result: "success", detail: `${triage.summary} (no ticket opened)` });
+    await platform.updateRun(c.runId, { ticket_id: known?.id ?? null, intent: triage.intent, status: "resolved", reply, plan: ["Ask the customer which order, then work the request"] });
+    await stepper(c.runId)("main", { step: "Ask which order", tool: c.channel, result: "success", detail: `${ask.choices.length} options shown; the customer didn't say which order (${triage.summary})` });
+    return { status: 200, body: { reply, ask, ...(known && { ticket_id: known.id }) } };
+  }
+
+  /** Not a ShopKart matter: answer politely. No ticket is opened; an existing chat ticket just gets the exchange. */
+  async function outOfScope(c: Chat, known: Ticket | null, triage: Triage): Promise<Result<ChatResponse>> {
+    const reply = "Sorry, I can only help with ShopKart orders, deliveries, refunds and payments. Is there anything about an order I can help you with?";
+    if (known) {
+      await addCustomerMessage(known, c.message);
+      await api.addComment(known.id, { body: reply, public: true });
+    }
+    await platform.updateRun(c.runId, { ticket_id: known?.id ?? null, intent: triage.intent, status: "resolved", reply, plan: ["Not a ShopKart request: reply politely, no ticket"] });
+    await stepper(c.runId)("main", { step: "Out of scope", tool: "Aria LLM", result: "success", detail: `${triage.summary} (no ticket opened)` });
     return { status: 200, body: { reply, ...(known && { ticket_id: known.id }) } };
   }
 
@@ -423,27 +641,27 @@ export function createService({ api, platform, main, writer, levels, sales, anal
    * We don't have the data to answer (no orders, no earlier request): the ticket goes to the support team
    * with a note saying what's missing, and the customer is told the team is on it.
    */
-  async function toTeam(runId: number, known: Ticket | null, sessionId: string, customerId: number, message: string, triage: Triage, why: string): Promise<Result<ChatResponse>> {
-    const { ticket } = await ticketFor(known, sessionId, customerId, message);
+  async function toTeam(c: Chat, known: Ticket | null, triage: Triage, why: string): Promise<Result<ChatResponse>> {
+    const { ticket } = await ticketFor(known, c);
     const assignee = SUPPORT_AGENTS[0];
     await api.addComment(ticket.id, { public: false, body: `Handed to ${assignee} by ResolveAI: the customer ${why}.\nWhat they said: ${triage.summary}\nPlease check with the customer and follow up on this ticket.` });
     await api.updateTicket(ticket.id, { assignee, status: "open", priority: "normal", handled_by: "human", tags: [...new Set([...ticket.tags, triage.intent, "needs-data"])] });
     const reply = `I couldn't find what I need to sort this out myself, so I've passed it to our support team (ticket #${ticket.id}). They're looking into it and will get back to you here shortly.`;
     await api.addComment(ticket.id, { body: reply, public: true });
-    await platform.updateRun(runId, { ticket_id: ticket.id, intent: triage.intent, handled_by: "human", status: "escalated", reply, plan: ["No data to answer from", `Hand to ${assignee}`, "Tell the customer the team is on it"] });
-    await stepper(runId)("main", { step: "Hand to team", tool: "Zendesk", result: "escalated", detail: `No data: the customer ${why}. Assigned to ${assignee}` });
+    await platform.updateRun(c.runId, { ticket_id: ticket.id, intent: triage.intent, handled_by: "human", status: "escalated", reply, plan: ["No data to answer from", `Hand to ${assignee}`, "Tell the customer the team is on it"] });
+    await stepper(c.runId)("main", { step: "Hand to team", tool: "Zendesk", result: "escalated", detail: `No data: the customer ${why}. Assigned to ${assignee}` });
     return { status: 200, body: { reply, ticket_id: ticket.id } };
   }
 
   /** When a model fails: the ticket goes to a person and the customer still gets an answer. */
-  async function handOver(runId: number, known: Ticket | null, sessionId: string, customerId: number, message: string, why: string, alreadyAttached = false): Promise<Result<ChatResponse>> {
-    const ticket = alreadyAttached && known ? known : (await ticketFor(known, sessionId, customerId, message)).ticket;
+  async function handOver(c: Chat, known: Ticket | null, why: string, alreadyAttached = false): Promise<Result<ChatResponse>> {
+    const ticket = alreadyAttached && known ? known : (await ticketFor(known, c)).ticket;
     await api.addComment(ticket.id, { public: false, body: `Aria couldn't handle this message: ${why}. Needs a person.` });
     await api.updateTicket(ticket.id, { assignee: null, status: "open", handled_by: "human" });
     const reply = `Thanks for reaching out. I've logged this as ticket #${ticket.id} and a teammate will get back to you shortly.`;
     await api.addComment(ticket.id, { body: reply, public: true });
-    await platform.updateRun(runId, { ticket_id: ticket.id, handled_by: "human", status: "failed", reply });
-    await stepper(runId)("main", { step: "Hand over", tool: "Zendesk", result: "blocked", detail: why });
+    await platform.updateRun(c.runId, { ticket_id: ticket.id, handled_by: "human", status: "failed", reply });
+    await stepper(c.runId)("main", { step: "Hand over", tool: "Zendesk", result: "blocked", detail: why });
     return { status: 200, body: { reply, ticket_id: ticket.id } };
   }
 
@@ -648,6 +866,47 @@ export function createService({ api, platform, main, writer, levels, sales, anal
 function mentionedOrder(message: string): number | null {
   const m = message.match(/\border\s*(?:no\.?|number|id)?\s*#?\s*(\d{3,})\b/i);
   return m ? Number(m[1]) : null;
+}
+
+/** A bare order number in a free-text answer ("1047", "#1047", "order 1047"). */
+function mentionedNumber(text: string): number | null {
+  const m = text.match(/#?\s*(\d{3,})/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Requests that can't be worked without knowing the order. */
+const ASK_INTENTS: readonly Triage["intent"][] = [...ORDER_INTENTS, "payment_failed"];
+/** Money changes hands: never act on an order the customer didn't name (unless it's their only order). */
+const MONEY_INTENTS: readonly Triage["intent"][] = ["damaged_item", "refund", "cancel_order"];
+const ORDER_STATUS_LABEL: Record<string, string> = { placed: "Placed", shipped: "Shipped", delivered: "Delivered", damaged: "Delivered damaged" };
+const PAYMENT_NOTE: Record<string, string | undefined> = { refunded: "Refunded", refund_initiated: "Refund started", failed_debited: "Payment failed" };
+
+/** The customer's orders this kind of request can be about, newest first; empty when none fit. */
+function candidateOrders(intent: Triage["intent"], orders: Order[]): Order[] {
+  const unsettled = (o: Order) => o.payment_status !== "refunded" && o.payment_status !== "refund_initiated";
+  const fits: Partial<Record<Triage["intent"], (o: Order) => boolean>> = {
+    order_tracking: (o) => o.status === "placed" || o.status === "shipped",
+    damaged_item: (o) => (o.status === "delivered" || o.status === "damaged") && unsettled(o),
+    refund: unsettled,
+    cancel_order: (o) => (o.status === "placed" || o.status === "shipped") && unsettled(o),
+    address_change: (o) => o.status === "placed",
+    payment_failed: (o) => o.payment_status === "failed_debited",
+  };
+  const fit = fits[intent];
+  return orders.filter((o) => !fit || fit(o)).sort((a, b) => b.placed_at.localeCompare(a.placed_at));
+}
+
+/** The request an answer to "which order?" belongs to, as one message the agents can work. */
+const answerMessage = (a: ChatAnswer) => `${a.original}\n(About order ${a.value && /^\d+$/.test(a.value) ? `#${a.value}` : "?"}: ${a.text})`;
+
+/** The order a ticket is about: the agent writes subjects like "Damaged item, refund requested – order #1023". */
+const ticketOrderId = (t: Ticket) => t.order_id ?? (Number(t.subject.match(/order #(\d+)/i)?.[1]) || null);
+
+/** A message about the same problem as a (solved) ticket: same intent, and the same order if one is named. */
+function sameIssue(t: Ticket, triage: Triage, named: Order[]): boolean {
+  if (!t.tags.includes(triage.intent)) return false;
+  const tid = ticketOrderId(t);
+  return !named.length || !tid || named.some((o) => o.id === tid);
 }
 
 const orderBrief = (o: Order) => ({ id: o.id, status: o.status, payment_status: o.payment_status, amount: o.amount, items: o.items.map((i) => i.name) });

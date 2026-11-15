@@ -99,7 +99,7 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
     dataset("campaign_performance", [INR("spend", "Spend"), COUNT("clicks", "Clicks"), COUNT("responses", "Responses"), COUNT("leads", "Leads created")],
       campaigns.map((c) => ({ key: String(c.id), label: c.name, channel: CAMPAIGN_CHANNELS.find((x) => x.id === c.channel)?.label ?? c.channel, spend: c.spend, clicks: c.clicks, responses: c.responses, leads: c.converted }))),
     dataset("contacts_by_source", [COUNT("contacts", "Contacts")],
-      byCategory(contacts, ["Business enquiry form", "Campaign", "Chat", "Referral", "Import"].map((k) => ({ key: k, label: k })), (c) => c.source, { contacts: n })),
+      byCategory(contacts, ["Business enquiry form", "Campaign", "Voice call", "Chat", "Referral", "Import"].map((k) => ({ key: k, label: k })), (c) => c.source, { contacts: n })),
   ];
 
   const ai = tickets.filter(byAi).length;

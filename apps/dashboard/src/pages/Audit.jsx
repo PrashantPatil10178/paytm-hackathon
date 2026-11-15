@@ -23,7 +23,7 @@ function exportCsv(rows) {
 
 export default function Audit() {
   const audit = useAuditLog()
-  const { tickets, leads, toast } = useApp()
+  const { tickets, conversations, leads, toast } = useApp()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const [q, setQ] = useState('')
@@ -45,11 +45,13 @@ export default function Audit() {
   const rows = result === 'all' ? filtered : filtered.filter((a) => a.result === result)
   const count = (r) => filtered.filter((a) => a.result === r).length
 
-  const subject = openRef && (tickets.find((t) => t.id === openRef) || leads.find((l) => l.id === openRef))
+  const subject = openRef && (tickets.find((t) => t.id === openRef) || conversations.find((c) => c.id === openRef) || leads.find((l) => l.id === openRef))
   const highlight = subject && focusKey ? subject.steps.findIndex((_, i) => `${openRef}-${i}` === focusKey) : -1
   const open = (row) => { setFocusKey(row.key); setParams({ ref: row.ref }) }
   const close = () => { setFocusKey(null); setParams({}) }
-  const isTicket = subject && 'customer' in subject
+  // A chat Aria answered without a ticket has a customer too, but no status, amount or helpdesk.
+  const isChat = subject && subject.id.startsWith('C-')
+  const isTicket = subject && 'customer' in subject && !isChat
   const filtersOn = q || tool !== 'all' || result !== 'all'
 
   return (
@@ -67,7 +69,7 @@ export default function Audit() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Ticket / lead ID, customer, step…"
+              placeholder="Ticket / chat / lead ID, customer, step…"
               className="h-9 w-full rounded-lg border border-slate-200 pr-3 pl-9 text-sm outline-none placeholder:text-slate-400 focus:border-brand-500"
             />
           </div>
@@ -94,7 +96,7 @@ export default function Audit() {
             <thead>
               <tr className="border-b border-slate-100 text-left text-xs font-medium text-slate-500">
                 <th className="px-5 py-3 font-medium">Time</th>
-                <th className="px-3 py-3 font-medium">Ticket / lead</th>
+                <th className="px-3 py-3 font-medium">Ticket / chat / lead</th>
                 <th className="px-3 py-3 font-medium">Step</th>
                 <th className="px-3 py-3 font-medium">Tool</th>
                 <th className="px-3 py-3 font-medium">Detail</th>
@@ -133,14 +135,16 @@ export default function Audit() {
           subject && (
             <>
               <p className="text-xs font-medium text-slate-500">Trace · {subject.id}</p>
-              <h2 className="mt-0.5 truncate text-base font-semibold text-slate-900">{isTicket ? subject.issue : subject.need}</h2>
+              <h2 className="mt-0.5 truncate text-base font-semibold text-slate-900">{isTicket || isChat ? subject.issue : subject.need}</h2>
             </>
           )
         }
         subtitle={
           subject && (
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              {isTicket ? (
+              {isChat ? (
+                <><span>{subject.customer.name}</span>{subject.level && <LevelBadge level={subject.level} />}<Badge className="bg-brand-50 text-brand-700 ring-brand-100">Answered in chat · no ticket</Badge></>
+              ) : isTicket ? (
                 <><span>{subject.customer.name}</span><LevelBadge level={subject.level} /><StatusBadge status={subject.status} /></>
               ) : (
                 <><span>{[subject.name, subject.company].filter(Boolean).join(' · ')}</span><Badge className="bg-slate-100 text-slate-700 ring-slate-200">Lead score {subject.score}</Badge></>
@@ -154,9 +158,18 @@ export default function Audit() {
             <div className="mb-6 grid grid-cols-3 gap-3">
               <Stat label="Steps" value={subject.steps.length} />
               <Stat label="Elapsed" value={subject.steps.length ? duration(subject.steps[0].time, subject.steps.at(-1).time) : '—'} />
-              <Stat label={isTicket ? 'Amount' : 'Deal value'} value={rupees(isTicket ? subject.amount : subject.value)} />
+              {isChat
+                ? <Stat label="Answered in" value={duration(subject.createdAt, subject.answeredAt)} />
+                : <Stat label={isTicket ? 'Amount' : 'Deal value'} value={rupees(isTicket ? subject.amount : subject.value)} />}
             </div>
             <Trace steps={subject.steps} highlight={highlight} />
+            {isChat && (
+              <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-semibold text-slate-900">Aria's answer</p>
+                <p className="mt-1 text-sm text-slate-700">{subject.result}</p>
+                <Button size="sm" className="mt-3" icon={ExternalLink} onClick={() => navigate(`/conversations?id=${subject.id}`)}>Open conversation</Button>
+              </div>
+            )}
             {isTicket && (
               <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <p className="text-sm font-semibold text-slate-900">Outcome</p>

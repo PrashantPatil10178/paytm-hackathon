@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, errorText, live, type LeadPatch } from './api'
 import { OWNER } from '@ph/shared'
 import { STATUSES } from './meta'
-import type { Approvals, Decision, Lead, Settings, Stats, Status, Step, Ticket, Toast } from './types'
+import type { Approvals, Conversation, Decision, Lead, Settings, Stats, Status, Step, Ticket, Toast } from './types'
 
 export type NewToast = Omit<Toast, 'id' | 'tone'> & { tone?: Toast['tone'] }
 
@@ -13,6 +13,8 @@ export type NewToast = Omit<Toast, 'id' | 'tone'> & { tone?: Toast['tone'] }
  */
 export interface AppState {
   tickets: Ticket[]
+  /** Chats Aria answered directly, without a ticket. */
+  conversations: Conversation[]
   leads: Lead[]
   approvals: Approvals
   settings: Settings | null
@@ -77,9 +79,11 @@ function useOptimistic<T>(refresh: () => Promise<void>) {
 }
 
 const EMPTY_APPROVALS: Approvals = { pending: [], history: [] }
+const NO_CONVERSATIONS: Conversation[] = []
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const ticketsPoll = live.useTickets()
+  const conversationsPoll = live.useConversations()
   const leadsPoll = live.useLeads()
   const approvalsPoll = live.useApprovals()
   const settingsPoll = live.useSettings()
@@ -198,31 +202,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [refreshSettings, failed],
   )
 
+  const conversations = conversationsPoll.data?.conversations ?? NO_CONVERSATIONS
   const settings = settingsPoll.data ?? null
   const stats = statsPoll.data ?? null
   const value = useMemo<AppState>(
     () => ({
-      tickets, leads, approvals, settings, stats, loading, error,
+      tickets, conversations, leads, approvals, settings, stats, loading, error,
       toasts, toast, dismissToast, setTicketStatus, moveTicket, updateLead, decideApproval, saveSettings,
     }),
-    [tickets, leads, approvals, settings, stats, loading, error, toasts, toast, dismissToast, setTicketStatus, moveTicket, updateLead, decideApproval, saveSettings],
+    [tickets, conversations, leads, approvals, settings, stats, loading, error, toasts, toast, dismissToast, setTicketStatus, moveTicket, updateLead, decideApproval, saveSettings],
   )
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }
 
-export type AuditRow = Step & { key: string; ref: string; kind: 'ticket' | 'lead'; who: string }
+export type AuditRow = Step & { key: string; ref: string; kind: 'ticket' | 'lead' | 'conversation'; who: string }
 
-// Every agent action across tickets and leads, newest first.
+// Every agent action across tickets, chats answered without a ticket, and leads, newest first.
 export function useAuditLog(): AuditRow[] {
-  const { tickets, leads } = useApp()
+  const { tickets, conversations, leads } = useApp()
   return useMemo(() => {
     const rows: AuditRow[] = []
     tickets.forEach((t) =>
       t.steps.forEach((s, i) => rows.push({ ...s, key: `${t.id}-${i}`, ref: t.id, kind: 'ticket', who: t.customer.name })),
     )
+    conversations.forEach((c) =>
+      c.steps.forEach((s, i) => rows.push({ ...s, key: `${c.id}-${i}`, ref: c.id, kind: 'conversation', who: c.customer.name })),
+    )
     leads.forEach((l) =>
       l.steps.forEach((s, i) => rows.push({ ...s, key: `${l.id}-${i}`, ref: l.id, kind: 'lead', who: l.name || l.company })),
     )
     return rows.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-  }, [tickets, leads])
+  }, [tickets, conversations, leads])
 }

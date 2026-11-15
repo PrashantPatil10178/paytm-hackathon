@@ -81,12 +81,12 @@ export async function convertResponse(id: number, b: ConvertResponseBody): Promi
     const at = new Date();
 
     // One contact per email: a campaign reply from someone already in the CRM reuses their contact.
-    const [existing] = await tx.select().from(s.contacts).where(sql`lower(${s.contacts.email}) = lower(${r.email})`).limit(1);
+    const [existing] = await tx.select().from(s.contacts).where(sql`lower(trim(${s.contacts.email})) = lower(trim(${r.email}))`).limit(1);
     const contactRow =
       existing ??
       (await tx
         .insert(s.contacts)
-        .values({ name: r.name, email: r.email, phone: r.phone, company: r.company, lead_status: "Open deal", owner: BOT, source: "Campaign", created_at: at })
+        .values({ name: r.name, email: r.email.trim(), phone: r.phone, company: r.company, lead_status: "Open deal", owner: BOT, source: "Campaign", created_at: at })
         .returning())[0]!;
     if (existing?.lead_status === "New") await tx.update(s.contacts).set({ lead_status: "Open deal" }).where(eq(s.contacts.id, existing.id));
 
@@ -135,7 +135,7 @@ export async function skipResponse(id: number, b: SkipResponseBody): Promise<Cam
 /** The CRM contact (and their deals) that a response's email already belongs to, if any. */
 export async function contactForEmail(email: string) {
   const row = await db.query.contacts.findFirst({
-    where: sql`lower(${s.contacts.email}) = lower(${email})`,
+    where: sql`lower(trim(${s.contacts.email})) = lower(trim(${email}))`,
     with: { deals: { columns: { id: true, name: true, stage: true, amount: true } } },
   });
   return row ? { ...toContact(row), deals: row.deals } : null;

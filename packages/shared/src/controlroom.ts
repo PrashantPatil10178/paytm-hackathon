@@ -45,6 +45,33 @@ export interface Ticket {
   result: string
 }
 
+/**
+ * A chat Aria answered directly, without a Zendesk ticket (low-level requests: where is my order, delivery times,
+ * policy questions, "which order?" questions, status checks answered from an earlier answer). One per ResolveAI
+ * run with no ticket. If the chat later needs a person, a ticket is opened then and shows up under tickets.
+ */
+export interface Conversation {
+  /** "C-<run id>" */
+  id: string
+  customer: { name: string; contact: string; city: string }
+  channel: ChannelId
+  /** What the customer asked, as they wrote it (trimmed) */
+  issue: string
+  /** The main agent's one-line reading of it; '' when it wasn't triaged */
+  summary: string
+  /** Null for messages that weren't triaged into a level (out of scope, "which order?") */
+  level: Level | null
+  /** 'request' = a question; 'status_check' = asked again about an earlier answer */
+  kind: 'request' | 'status_check'
+  createdAt: string
+  /** When Aria answered */
+  answeredAt: string
+  conversation: Message[]
+  steps: Step[]
+  /** Aria's answer */
+  result: string
+}
+
 export interface Lead {
   id: string
   name: string

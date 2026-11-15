@@ -54,7 +54,7 @@ export async function sarvamConfig(): Promise<{ ok: true; config: SarvamConfig }
       appId: env("SARVAM_APP_ID", "Aria---Sale-a01f8007-240c"),
       appVersion: Number(env("SARVAM_APP_VERSION", "3")) || 3,
       supportAppId: env("SARVAM_SUPPORT_APP_ID", "Aria---Supp-c275c85f-5a2e"),
-      supportAppVersion: Number(env("SARVAM_SUPPORT_APP_VERSION", "2")) || 2,
+      supportAppVersion: Number(env("SARVAM_SUPPORT_APP_VERSION", "3")) || 3,
       supportTestNumber: env("SARVAM_TEST_NUMBER"),
       connectionId: env("SARVAM_CONNECTION_ID", "50ccd51e-3f-4c3775cb-fbe7"),
       callerNumber: env("SARVAM_CALLER_NUMBER", "+918064260576"),

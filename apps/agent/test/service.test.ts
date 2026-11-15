@@ -19,6 +19,9 @@ import { createPlatform } from "../src/platform.ts";
 import { analysisNote, analysisThread, createAgentMemory } from "../src/memory.ts";
 import { indianRupees } from "../src/tools/analysis.ts";
 import { createService } from "../src/service.ts";
+import { createVisionAgent, type PhotoVerdict } from "../src/evidence.ts";
+import { schedule, DEFAULT_SETTINGS } from "../src/settings.ts";
+import { ticketSolver } from "@ph/shared";
 
 /* ───── Fake demo API ───── */
 
@@ -39,8 +42,10 @@ let db: {
   cases: Json[];
   responses: Json[];
   reports: Json[];
-  /** The Control Room settings (GET /control-room/settings): only refundLimit matters to the agent */
+  /** The Control Room settings (GET /control-room/settings) */
   settings: Json;
+  /** Photos customers attached (attachments): id, customer_id, ticket_id, order_id, sha256 */
+  attachments: Json[];
 };
 
 const TOKEN = "rai_test_token";
@@ -82,6 +87,7 @@ beforeEach(() => {
       response(3, { name: "Rakesh Sharma", email: "rakesh@sharmarestaurants.example", company: "Sharma Restaurants", need: "billing_setup", budget: 50000, message: "Still interested in billing." }),
     ],
     reports: [],
+    attachments: [],
     // Always in business hours (00:00–24:00 every day), so replies don't depend on when the tests run. Photos
     // are only required where POL-DMG asks (above ₹1,000); the photo tests switch the setting on.
     settings: { agentName: "Aria", refundLimit: 1000, requireDamagePhotos: false, hours: { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], from: "00:00", to: "24:00", afterHours: "autonomous" } },
@@ -121,14 +127,30 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     return json(ticketView(t));
   }
   if ((m = p.match(/^\/zendesk\/tickets\/(\d+)\/comments$/))) {
-    db.comments.push({ ticket_id: Number(m[1]), ...body });
+    const ticketId = Number(m[1]);
+    db.comments.push({ ticket_id: ticketId, ...body });
+    // Photos ride on the comment: they join the ticket (and its order, from the subject) like the demo API does.
+    const t = db.tickets.find((x) => x.id === ticketId);
+    for (const id of body.attachment_ids ?? []) {
+      const a = db.attachments.find((x) => x.id === id && x.customer_id === t?.requester.id);
+      if (a) Object.assign(a, { ticket_id: ticketId, order_id: Number(String(t?.subject ?? "").match(/order #(\d+)/)?.[1]) || a.order_id });
+    }
     return json({ id: db.comments.length }, 201);
   }
+  if ((m = p.match(/^\/zendesk\/tickets\/(\d+)\/attachments$/))) {
+    const tid = Number(m[1]);
+    const mine = db.attachments.filter((a) => a.ticket_id === tid);
+    return json({
+      attachments: mine.map((a) => ({ ...a, url: `/attachments/${a.id}`, reused: db.attachments.filter((x) => x.sha256 === a.sha256 && x.id !== a.id && x.ticket_id !== tid) })),
+    });
+  }
+  if ((m = p.match(/^\/zendesk\/attachments\/(\d+)$/))) return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), { headers: { "content-type": "image/jpeg" } });
   if ((m = p.match(/^\/zendesk\/users\/(\d+)\/tickets$/))) {
     return json({ tickets: db.tickets.filter((t) => t.requester.id === Number(m![1])).sort((a, b) => b.id - a.id) });
   }
 
   /* Shop */
+  if (p === "/shop/products") return json({ products: [{ id: 8, name: "Mug", category: "Home" }, { id: 9, name: "Lamp", category: "Home" }, { id: 1, name: "Headphones", category: "Audio" }] });
   if ((m = p.match(/^\/shop\/customers\/(\d+)\/orders$/))) {
     return json({ customer: { id: Number(m[1]), name: "Ananya Iyer" }, orders: db.orders.filter((o) => o.customer_id === Number(m![1])) });
   }
@@ -314,7 +336,9 @@ function service(model: MockLanguageModelV3, baseUrl = "http://demo", fetchImpl:
   const platform = createPlatform(baseUrl, fetchImpl);
   const api = createDemoAPI(baseUrl, fetchImpl, () => platform.connectors());
   const quiet = { warn() {}, error() {} };
-  return createService({ api, platform, main: createMainAgent(model), writer: createWriterAgent(model), levels: createLevelAgents(api, model, platform), sales: createSalesAgent(api, model), analysis: createAnalysisAgent(api, model), leads: createLeadsAgent(api, model), log: quiet, ackAfterMs });
+  // The same scripted model plays the photo checker too (its verdict is one scripted JSON text).
+  const levels = createLevelAgents(api, model, platform, undefined, undefined, { vision: createVisionAgent(model) });
+  return createService({ api, platform, main: createMainAgent(model), writer: createWriterAgent(model), levels, sales: createSalesAgent(api, model), analysis: createAnalysisAgent(api, model), leads: createLeadsAgent(api, model), log: quiet, ackAfterMs });
 }
 
 /** Sends a chat, then waits for the level agent working in the background, like the customer would. */

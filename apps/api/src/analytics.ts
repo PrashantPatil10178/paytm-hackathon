@@ -3,7 +3,7 @@
  * from Postgres on request, so the charts can never disagree with the demo apps. The agent only writes
  * findings about these datasets (POST /analytics/reports); it never supplies numbers for a chart.
  */
-import {
+import { ticketSolver,
   ANALYTICS_DATASETS,
   BOT,
   CAMPAIGN_CHANNELS,
@@ -77,8 +77,8 @@ export async function computeMetrics(): Promise<AnalyticsMetrics> {
   type D = (typeof deals)[number];
   /** Still with the AI, never escalated. Split: Aria alone, or Aria after a person approved its action. */
   const withAi = (t: T) => t.assignee === BOT && !t.escalated;
-  const byAi = (t: T) => withAi(t) && !approved.has(t.id);
-  const byAiApproved = (t: T) => withAi(t) && approved.has(t.id);
+  const byAi = (t: T) => ticketSolver({ withPerson: !withAi(t), approved: approved.has(t.id) }) === "ai";
+  const byAiApproved = (t: T) => ticketSolver({ withPerson: !withAi(t), approved: approved.has(t.id) }) === "ai_approved";
   // Money that actually came in: not refunded, not stuck in a failed payment.
   const counted = (o: O) => o.payment !== "refunded" && o.payment !== "refund_initiated" && o.payment !== "failed_debited";
   const open = (d: D) => d.stage !== "closed_won" && d.stage !== "closed_lost";

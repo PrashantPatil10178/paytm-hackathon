@@ -192,13 +192,14 @@ export async function assessDamageClaim(x: AssessInput): Promise<DamageAssessmen
     const reused = photos.flatMap((p) => p.reused.filter((r) => r.ticket_id !== x.ticketId).map((r) => ({ p, r })));
     let verdict: PhotoVerdict | null = null;
     let visionError = "";
-    if (x.vision) {
+    // A photo already sent on another claim fails on its own; no need to ask the model.
+    if (x.vision && !reused.length) {
       try {
         verdict = await inspect(x.vision, x.api, o, x.claim, photos);
       } catch (e) {
         visionError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
       }
-    } else visionError = "no vision model";
+    } else if (!x.vision) visionError = "no vision model";
     if (reused.length) {
       const first = reused[0]!;
       const where = first.r.customer_id !== x.customerId ? "by another customer" : first.r.ticket_id ? `on ticket #${first.r.ticket_id}` : "in an earlier chat";
@@ -273,9 +274,8 @@ export async function assessDamageClaim(x: AssessInput): Promise<DamageAssessmen
     if (sc.mode === "autonomous" && o.amount <= limit) reasons.push(`photo check unclear, but autonomy is Fully autonomous and ${rupee(o.amount)} is within the ${rupee(limit)} limit`);
     else hold(`photo check unclear: ${photo.notes}`, "Photo unclear");
   }
-  const verifiedOk = photo.status === "verified" || photo.status === "not_needed";
   if (o.amount > damageLimit) hold(`${rupee(o.amount)} is above the ${rupee(damageLimit)} limit for verified damage`, `Above the ${rupee(damageLimit)} limit`);
-  else if (o.amount > limit && !(verifiedOk && photo.status === "verified")) hold(`${rupee(o.amount)} is above the ${rupee(limit)} auto-refund limit and the photo isn't verified`, `Above the ${rupee(limit)} limit`);
+  else if (o.amount > limit && photo.status !== "verified") hold(`${rupee(o.amount)} is above the ${rupee(limit)} auto-refund limit and the photo isn't verified`, `Above the ${rupee(limit)} limit`);
   if (decision === "refund") {
     reasons.push(
       o.amount > limit

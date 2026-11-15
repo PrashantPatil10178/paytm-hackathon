@@ -9,7 +9,7 @@
  * batched rounds of queries (Promise.all, inArray), never one query per row.
  */
 import type * as CR from "@ph/shared/controlroom";
-import { BOT, DEAL_STAGES, OWNER, rupees, type DealStage, type TicketChannel } from "@ph/shared";
+import { BOT, DEAL_STAGES, OWNER, rupees, ticketSolver, type DealStage, type TicketChannel } from "@ph/shared";
 import { and, count, DEFAULT_SETTINGS, desc, eq, gte, inArray, isNotNull, isNull, schema as s, sql } from "@ph/db";
 import { updateContact, updateDeal } from "./crm.ts";
 import { attachmentsByComment, attachmentsByTicket } from "./attachments.ts";
@@ -240,7 +240,7 @@ async function loadTickets(ids?: number[]): Promise<TicketView[]> {
     const latest = myRuns.at(-1);
     const pub = mine.filter((c) => c.public);
     const person = withPerson(t, mine);
-    const solver: CR.Solver = person ? "human" : approved.has(t.id) ? "ai_approved" : "ai";
+    const solver: CR.Solver = ticketSolver({ withPerson: person, approved: approved.has(t.id) });
     const status = crStatus(t, latest);
     const lastNote = mine.filter((c) => !c.public).at(-1);
     const lastReply = pub.filter((c) => c.author_type !== "customer").at(-1);

@@ -560,6 +560,91 @@ export interface AnalysisResponse {
   report: AnalysisReport;
 }
 
+/* ───────────────────────── Policies (ShopKart's business rules) ───────────────────────── */
+
+export type PolicyArea =
+  | "returns"
+  | "refunds"
+  | "damaged_items"
+  | "cancellations"
+  | "shipping"
+  | "payments"
+  | "cod"
+  | "warranty"
+  | "exchanges"
+  | "address_changes"
+  | "price_protection"
+  | "compensation"
+  | "fraud"
+  | "service_levels"
+  | "privacy"
+  | "store_credit"
+  | "bulk_orders";
+
+export type PolicyStatus = "active" | "draft" | "retired";
+
+/**
+ * What a rule means for whoever applies it:
+ * auto = the AI may act on its own · allow = permitted, no action needed · require = permitted once a condition is met
+ * (evidence, details) · approval = a person (approver) must approve first · escalate = hand to a team · deny = not allowed ·
+ * info = a fact to tell the customer (timelines, fees).
+ */
+export type PolicyEffect = "auto" | "allow" | "require" | "approval" | "escalate" | "deny" | "info";
+
+/** When a rule applies. Every field is optional; a rule applies when all the fields it has match. Amounts in ₹. */
+export interface PolicyConditions {
+  /** Product categories as in the shop: Audio, Wearables, Cameras, Accessories, Bags, Home, Fashion */
+  categories?: string[];
+  /** Item tags that change the rule, e.g. "innerwear", "personalised", "gift_card" */
+  tags?: string[];
+  order_status?: OrderStatus[];
+  payment?: ("prepaid" | "cod")[];
+  /** Order (or refund) amount, inclusive */
+  min_amount?: number;
+  max_amount?: number;
+  /** Customer reasons it covers, e.g. "change_of_mind", "defective", "wrong_item", "damaged_in_transit" */
+  reasons?: string[];
+  channels?: string[];
+}
+
+export type PolicyParams = Record<string, string | number | boolean | string[] | number[]>;
+
+export interface Policy {
+  /** Stable code, e.g. "POL-RET" */
+  code: string;
+  area: PolicyArea;
+  title: string;
+  /** Internal summary for the team and the agents */
+  summary: string;
+  /** What we may tell customers, word for word */
+  customer_text: string;
+  /** Team that owns the policy */
+  owner: string;
+  version: number;
+  status: PolicyStatus;
+  effective_from: string;
+  updated_at: string;
+}
+
+export interface PolicyRule {
+  /** Stable code, e.g. "REF-AUTO-AI" */
+  code: string;
+  policy_code: string;
+  title: string;
+  description: string;
+  conditions: PolicyConditions;
+  effect: PolicyEffect;
+  /** Limits, windows, fees, timelines: whatever the rule needs */
+  params: PolicyParams;
+  /** Role that approves or receives it (approval / escalate rules) */
+  approver: string | null;
+  /** Lower runs first when several rules match */
+  priority: number;
+  active: boolean;
+}
+
+export type PolicyWithRules = Policy & { rules: PolicyRule[] };
+
 export interface ApiError {
   error: string;
 }

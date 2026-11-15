@@ -1,15 +1,16 @@
 import { cn, clockSec, duration } from '../lib'
 import { RESULTS, toolMeta } from '../meta'
+import type { Step } from '../types'
 
 // Vertical step-by-step timeline of everything the agent did on one ticket/lead.
-export default function Trace({ steps, highlight }) {
+export default function Trace({ steps, highlight }: { steps: Step[]; highlight?: number }) {
   return (
     <ol className="relative">
       {steps.map((s, i) => {
         const r = RESULTS[s.result]
         const t = toolMeta(s.tool)
         const last = i === steps.length - 1
-        const took = i > 0 ? duration(steps[i - 1].time, s.time) : null
+        const took = i > 0 ? duration(steps[i - 1]!.time, s.time) : null
         return (
           <li key={i} className="relative flex gap-4 pb-5 last:pb-0" style={{ animationDelay: `${i * 40}ms` }}>
             {!last && <span className="absolute top-8 bottom-0 left-[15px] w-px bg-slate-200" />}

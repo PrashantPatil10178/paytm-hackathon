@@ -1,14 +1,21 @@
 import { cn } from '../lib'
 import { RESULTS, toolMeta } from '../meta'
+import type { Step, StepResult } from '../types'
 
 // Signature: a ticket drawn as the tools the agent went through, in order.
 // Consecutive steps in the same tool share one node. Blocked / escalated hops get a coloured ring.
 // `labels` prints each tool's name under its node; `live` adds a dashed, moving link to a hollow
 // "next" node, so an open conversation visibly has work still in flight.
-const RING = { blocked: 'ring-1 ring-red-500', escalated: 'ring-1 ring-amber-500' }
+const RING: Partial<Record<StepResult, string>> = { blocked: 'ring-1 ring-red-500', escalated: 'ring-1 ring-amber-500' }
 
-export function hops(steps = []) {
-  const out = []
+export interface Hop {
+  tool: string
+  steps: string[]
+  result: StepResult
+}
+
+export function hops(steps: Step[] = []): Hop[] {
+  const out: Hop[] = []
   for (const s of steps) {
     const last = out[out.length - 1]
     if (last && last.tool === s.tool) {
@@ -19,7 +26,18 @@ export function hops(steps = []) {
   return out
 }
 
-export default function ToolChain({ steps, size = 'sm', live = false, animate = false, labels = false, max, className }) {
+interface ToolChainProps {
+  steps: Step[]
+  size?: 'sm' | 'md'
+  live?: boolean
+  animate?: boolean
+  labels?: boolean
+  /** Show only the last `max` hops, with a +n for the rest. */
+  max?: number
+  className?: string
+}
+
+export default function ToolChain({ steps, size = 'sm', live = false, animate = false, labels = false, max, className }: ToolChainProps) {
   const all = hops(steps)
   const shown = max && all.length > max ? all.slice(all.length - max) : all
   const hidden = all.length - shown.length

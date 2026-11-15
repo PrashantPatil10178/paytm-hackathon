@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["vite/client"],
+    "resolveJsonModule": true,
+    // Pages still in .jsx import the typed modules and vice versa. JS files aren't type-checked;
+    // move a file to .tsx to check it.
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["src"]
+}

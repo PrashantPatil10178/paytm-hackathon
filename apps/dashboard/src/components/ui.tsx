@@ -1,10 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, type ComponentProps, type ReactNode } from 'react'
 import { X, CheckCircle2, Info, UserRound } from 'lucide-react'
 import { ResolveAIGlyph } from '@ph/shared/brand'
 import { cn } from '../lib'
-import { LEVELS, STATUSES, RESULTS, CHANNELS, toolMeta } from '../meta'
+import { LEVELS, STATUSES, RESULTS, CHANNELS, toolMeta, type Icon as IconType } from '../meta'
+import type { ChannelId, Level, Solver, Status, StepResult, Toast } from '../types'
 
-export function Card({ className, children, ...rest }) {
+export function Card({ className, children, ...rest }: ComponentProps<'div'>) {
   return (
     <div className={cn('rounded-xl border border-ink/[0.07] bg-surface', className)} {...rest}>
       {children}
@@ -13,7 +14,7 @@ export function Card({ className, children, ...rest }) {
 }
 
 /** Neutral bordered square that holds an icon, as in the reference card headers. */
-export function IconTile({ icon: Icon, className, size = 'md' }) {
+export function IconTile({ icon: Icon, className, size = 'md' }: { icon: IconType; className?: string; size?: 'sm' | 'md' }) {
   return (
     <span
       className={cn(
@@ -32,7 +33,16 @@ export function IconTile({ icon: Icon, className, size = 'md' }) {
  * Tray card, as in the references: header and footer sit in a tinted tray, the content in an
  * inset panel. `bodyClassName` styles the inset panel.
  */
-export function Panel({ icon, title, meta, action, footer, className, bodyClassName, children, ...rest }) {
+type PanelProps = Omit<ComponentProps<'section'>, 'title'> & {
+  icon?: IconType
+  title: ReactNode
+  meta?: ReactNode
+  action?: ReactNode
+  footer?: ReactNode
+  bodyClassName?: string
+}
+
+export function Panel({ icon, title, meta, action, footer, className, bodyClassName, children, ...rest }: PanelProps) {
   return (
     <section className={cn('rounded-2xl border border-ink/[0.06] bg-tray p-1', className)} {...rest}>
       <header className="flex min-h-11 items-center gap-2.5 py-1.5 pr-1.5 pl-2.5">
@@ -59,7 +69,9 @@ const BTN = {
   destructive: 'bg-red-500 text-canvas hover:bg-red-600',
   dark: 'border border-ink/10 bg-ink/[0.06] text-slate-900 hover:bg-ink/10',
 }
-export function Button({ variant = 'secondary', size = 'md', icon: Icon, className, children, ...rest }) {
+type ButtonProps = ComponentProps<'button'> & { variant?: keyof typeof BTN; size?: 'sm' | 'md'; icon?: IconType }
+
+export function Button({ variant = 'secondary', size = 'md', icon: Icon, className, children, ...rest }: ButtonProps) {
   return (
     <button
       className={cn(
@@ -76,7 +88,7 @@ export function Button({ variant = 'secondary', size = 'md', icon: Icon, classNa
   )
 }
 
-export function Badge({ className, dot, children }) {
+export function Badge({ className, dot, children }: { className?: string; dot?: string; children?: ReactNode }) {
   return (
     <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset', className)}>
       {dot && <span className={cn('size-1.5 rounded-full', dot)} />}
@@ -85,13 +97,13 @@ export function Badge({ className, dot, children }) {
   )
 }
 
-export const LevelBadge = ({ level }) => (
+export const LevelBadge = ({ level }: { level: Level }) => (
   <Badge className={LEVELS[level].badge} dot={LEVELS[level].dot}>{LEVELS[level].label}</Badge>
 )
-export const StatusBadge = ({ status }) => (
+export const StatusBadge = ({ status }: { status: Status }) => (
   <Badge className={STATUSES[status].badge} dot={STATUSES[status].dot}>{STATUSES[status].label}</Badge>
 )
-export function ResultBadge({ result }) {
+export function ResultBadge({ result }: { result: StepResult }) {
   const r = RESULTS[result]
   return (
     <Badge className={r.badge}>
@@ -101,7 +113,7 @@ export function ResultBadge({ result }) {
   )
 }
 
-export function SolvedBy({ by }) {
+export function SolvedBy({ by }: { by?: Solver | null }) {
   if (!by) return <span className="text-xs text-slate-400">—</span>
   return by === 'ai' ? (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-700">
@@ -114,7 +126,7 @@ export function SolvedBy({ by }) {
   )
 }
 
-export function ChannelTag({ channel, compact }) {
+export function ChannelTag({ channel, compact }: { channel: ChannelId; compact?: boolean }) {
   const c = CHANNELS[channel]
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-slate-600" title={c.label}>
@@ -124,7 +136,7 @@ export function ChannelTag({ channel, compact }) {
   )
 }
 
-export function ToolTag({ tool }) {
+export function ToolTag({ tool }: { tool: string }) {
   const t = toolMeta(tool)
   return (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700">
@@ -134,7 +146,7 @@ export function ToolTag({ tool }) {
   )
 }
 
-export function Toggle({ checked, onChange, label }) {
+export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (next: boolean) => void; label?: string }) {
   return (
     <button
       type="button"
@@ -149,16 +161,26 @@ export function Toggle({ checked, onChange, label }) {
   )
 }
 
-function useEscape(open, onClose) {
+function useEscape(open: boolean, onClose: () => void) {
   useEffect(() => {
     if (!open) return
-    const h = (e) => e.key === 'Escape' && onClose()
+    const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [open, onClose])
 }
 
-export function Drawer({ open, onClose, title, subtitle, actions, children, width = 'max-w-xl' }) {
+interface OverlayProps {
+  open: boolean
+  onClose: () => void
+  title?: ReactNode
+  subtitle?: ReactNode
+  children?: ReactNode
+  /** Tailwind max-width class. */
+  width?: string
+}
+
+export function Drawer({ open, onClose, title, subtitle, actions, children, width = 'max-w-xl' }: OverlayProps & { actions?: ReactNode }) {
   useEscape(open, onClose)
   if (!open) return null
   return (
@@ -180,7 +202,7 @@ export function Drawer({ open, onClose, title, subtitle, actions, children, widt
   )
 }
 
-export function Modal({ open, onClose, title, subtitle, children, footer, width = 'max-w-lg' }) {
+export function Modal({ open, onClose, title, subtitle, children, footer, width = 'max-w-lg' }: OverlayProps & { footer?: ReactNode }) {
   useEscape(open, onClose)
   if (!open) return null
   return (
@@ -201,7 +223,7 @@ export function Modal({ open, onClose, title, subtitle, children, footer, width 
   )
 }
 
-export function PageHeader({ title, description, actions }) {
+export function PageHeader({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
       <div>
@@ -214,7 +236,14 @@ export function PageHeader({ title, description, actions }) {
 }
 
 /** Segmented control, as in the reference's 1h / 24h / 7d / 30d switcher. */
-export function Tabs({ tabs, value, onChange, className }) {
+export interface Tab<T extends string> {
+  value: T
+  label: ReactNode
+  icon?: IconType
+  count?: number
+}
+
+export function Tabs<T extends string>({ tabs, value, onChange, className }: { tabs: Tab<T>[]; value: T; onChange: (value: T) => void; className?: string }) {
   return (
     <div role="tablist" className={cn('inline-flex max-w-full overflow-x-auto rounded-full border border-ink/[0.07] bg-ink/[0.02] p-0.5 [scrollbar-width:none]', className)}>
       {tabs.map((t) => (
@@ -241,7 +270,7 @@ export function Tabs({ tabs, value, onChange, className }) {
   )
 }
 
-export function SectionTitle({ children, action }) {
+export function SectionTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
     <div className="mb-3 flex items-center justify-between gap-3">
       <h3 className="text-sm font-medium text-slate-950">{children}</h3>
@@ -250,9 +279,9 @@ export function SectionTitle({ children, action }) {
   )
 }
 
-export const Skeleton = ({ className }) => <div className={cn('animate-pulse rounded-md bg-ink/[0.05]', className)} />
+export const Skeleton = ({ className }: { className?: string }) => <div className={cn('animate-pulse rounded-md bg-ink/[0.05]', className)} />
 
-export function EmptyState({ icon: Icon = Info, title, text, action }) {
+export function EmptyState({ icon: Icon = Info, title, text, action }: { icon?: IconType; title: ReactNode; text?: ReactNode; action?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
       <IconTile icon={Icon} className="size-11 rounded-xl [&>svg]:size-5" />
@@ -263,7 +292,13 @@ export function EmptyState({ icon: Icon = Info, title, text, action }) {
   )
 }
 
-export function Select({ value, onChange, options, className, label }) {
+export function Select({ value, onChange, options, className, label }: {
+  value: string
+  onChange: (value: string) => void
+  options: { value: string; label: string }[]
+  className?: string
+  label?: string
+}) {
   return (
     <select
       aria-label={label}
@@ -276,7 +311,7 @@ export function Select({ value, onChange, options, className, label }) {
   )
 }
 
-export function Toaster({ toasts, dismiss, className }) {
+export function Toaster({ toasts, dismiss, className }: { toasts: Toast[]; dismiss: (id: string) => void; className?: string | false }) {
   return (
     <div className={cn('pointer-events-none fixed right-4 bottom-4 z-[60] flex w-80 flex-col gap-2', className)}>
       {toasts.map((t) => (
@@ -286,16 +321,20 @@ export function Toaster({ toasts, dismiss, className }) {
             <p className="text-sm font-medium">{t.title}</p>
             {t.desc && <p className="mt-0.5 text-xs text-slate-500">{t.desc}</p>}
           </div>
-          {t.action && (
-            <button
-              className="cursor-pointer text-xs font-semibold text-brand-600 hover:text-brand-300"
-              onClick={() => { t.action.onClick(); dismiss(t.id) }}
-            >
-              {t.action.label}
-            </button>
-          )}
+          {t.action && <ToastAction action={t.action} onDone={() => dismiss(t.id)} />}
         </div>
       ))}
     </div>
+  )
+}
+
+function ToastAction({ action, onDone }: { action: NonNullable<Toast['action']>; onDone: () => void }) {
+  return (
+    <button
+      className="cursor-pointer text-xs font-semibold text-brand-600 hover:text-brand-300"
+      onClick={() => { action.onClick(); onDone() }}
+    >
+      {action.label}
+    </button>
   )
 }

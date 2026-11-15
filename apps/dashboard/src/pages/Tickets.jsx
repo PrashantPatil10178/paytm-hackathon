@@ -16,8 +16,18 @@ const DESK = { zendesk: 'Zendesk', freshdesk: 'Freshdesk' }
 export default function Tickets() {
   const { tickets, loading } = useApp()
   const [params, setParams] = useSearchParams()
+  // Change one query param, keep the rest: the status view (?status=, set from the sidebar too) and
+  // the open ticket (?id=) are independent.
+  const patch = (key, value) =>
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (value == null) next.delete(key)
+      else next.set(key, value)
+      return next
+    })
+  const status = STATUS_ORDER.includes(params.get('status')) ? params.get('status') : 'all'
+  const setStatus = (s) => patch('status', s === 'all' ? null : s)
   const navigate = useNavigate()
-  const [status, setStatus] = useState('all')
   const [level, setLevel] = useState('all')
   const [channel, setChannel] = useState('all')
   const [q, setQ] = useState('')
@@ -34,7 +44,7 @@ export default function Tickets() {
   const rows = status === 'all' ? base : base.filter((t) => t.status === status)
 
   const selected = tickets.find((t) => t.id === params.get('id'))
-  const close = () => setParams({})
+  const close = () => patch('id', null)
 
   return (
     <div>
@@ -77,8 +87,8 @@ export default function Tickets() {
                 <tr
                   key={t.id}
                   tabIndex={0}
-                  onClick={() => setParams({ id: t.id })}
-                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setParams({ id: t.id }))}
+                  onClick={() => patch('id', t.id)}
+                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), patch('id', t.id))}
                   className={cn('cursor-pointer align-top transition-colors hover:bg-slate-50 focus-visible:bg-brand-50/50 focus-visible:outline-none', t.id === params.get('id') && 'bg-brand-50/50')}
                 >
                   <td className="px-5 py-3.5 whitespace-nowrap">

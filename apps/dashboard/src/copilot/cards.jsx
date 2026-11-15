@@ -239,7 +239,7 @@ export function LeadCard({ leadId }) {
   const l = leads.find((x) => x.id.toLowerCase() === leadId.trim().toLowerCase())
   if (!l) return <NotFound title="Lead">No lead {leadId} in this workspace.</NotFound>
   return (
-    <Frame title={l.company} meta={l.id} action={<OpenLink to={`/audit?ref=${l.id}`}>Audit</OpenLink>}>
+    <Frame title={l.company} meta={l.id} action={<OpenLink to={`/leads?id=${l.id}`}>Lead</OpenLink>}>
       <div className="space-y-3 p-3">
         <p className="text-xs leading-relaxed text-slate-700">{l.name} · {l.need}</p>
         <dl className="grid grid-cols-3 gap-2 text-xs">

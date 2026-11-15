@@ -90,7 +90,7 @@ function ApprovalsCallout({ pending }) {
   ].filter(Boolean)
   const plural = what.length > 1 || deals.length > 1 || (refunds > 0 && what.length === 1)
   const urgent = pending.find((p) => p.tone === 'red') ?? pending[0]
-  const openUrgent = () => navigate(urgent.kind === 'ticket' ? `/tickets?id=${urgent.ref}` : `/audit?ref=${urgent.ref}`)
+  const openUrgent = () => navigate(urgent.kind === 'ticket' ? `/tickets?id=${urgent.ref}` : `/leads?id=${urgent.ref}`)
 
   return (
     <section aria-label="Waiting for approval" className="rounded-2xl border border-amber-200 bg-amber-50 p-1">
@@ -284,14 +284,14 @@ function RecentActivity({ audit }) {
 function HotLeads({ leads }) {
   const hot = leads.filter((l) => l.hot)
   return (
-    <Panel icon={Flame} title="Hot leads" meta={hot.length} action={<AllLink to="/audit">Audit</AllLink>}>
+    <Panel icon={Flame} title="Hot leads" meta={hot.length} action={<AllLink to="/leads">Leads</AllLink>}>
       {hot.length === 0 ? (
         <p className="px-4 py-6 text-[13px] text-slate-500">No hot leads yet today.</p>
       ) : (
         <ul className="divide-y divide-ink/[0.06]">
           {hot.map((l) => (
             <li key={l.id}>
-              <Link to={`/audit?ref=${l.id}`} className={cn('block px-4 py-3', Row)}>
+              <Link to={`/leads?id=${l.id}`} className={cn('block px-4 py-3', Row)}>
                 <div className="flex items-baseline justify-between gap-3">
                   <p className="truncate text-[13px] font-medium text-slate-950">{l.company}</p>
                   <span className="ref shrink-0 text-[13px] text-slate-950">{rupees(l.value)}</span>

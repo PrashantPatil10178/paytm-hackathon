@@ -74,6 +74,16 @@ instructions), not as hidden background jobs.
   It also wipes the agent's tables (`voltagent_*`, `agent_chat_sessions`, found by name via `agentMemoryTables`) so a
   fresh demo has no remembered chats. The agent still checks recycled ticket numbers by `created_at`.
 - The DB is remote (~100 ms a round trip): run independent queries with `Promise.all`, avoid per-row queries.
+- **Policies** (`policies`, `policy_rules`; content in `packages/db/src/policies.ts`): ShopKart's business rules for testing,
+  17 policies / 73 rules (returns, refunds and approval limits, damaged items, cancellations, shipping, payments, COD,
+  warranty, exchanges, address changes, price protection, goodwill, fraud, SLAs, privacy, store credit, bulk orders).
+  Each rule has `conditions` (categories, tags, order status, payment, amount range, reasons), an `effect`
+  (auto / allow / require / approval / escalate / deny / info), `params` (limits, days, fees) and an `approver` role.
+  They are configuration, not demo data: `ensurePolicies` (API startup) adds missing codes and never overwrites, and
+  `reset` keeps them. Nothing reads them yet; the agents still use `AUTO_REFUND_LIMIT` in `criticality.ts`.
+- jsonb gotcha: Drizzle on Bun's driver stores jsonb as a JSON *string* (`jsonb_typeof` = 'string'), so SQL like
+  `col->>'key'` finds nothing. Drizzle reads both forms. `ensurePolicies` unwraps the policy columns to real objects;
+  other tables (orders.items, rai_runs.plan, …) are still strings.
 
 ## Agent (`apps/agent`)
 

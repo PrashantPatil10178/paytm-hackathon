@@ -5,6 +5,11 @@
  */
 import type { Settings as ControlRoomSettings } from "@ph/shared/controlroom";
 import type {
+  PolicyArea,
+  PolicyConditions,
+  PolicyEffect,
+  PolicyParams,
+  PolicyStatus,
   ActivityType,
   CallExtraction,
   CallOutcome,
@@ -402,6 +407,39 @@ export const analysisReports = pgTable("analysis_reports", {
   created_at: at().notNull(),
 });
 
+/* ───── Policies: ShopKart's business rules (configuration, not demo data: reset keeps them) ───── */
+
+export const policies = pgTable("policies", {
+  code: text().primaryKey(),
+  area: text().$type<PolicyArea>().notNull(),
+  title: text().notNull(),
+  summary: text().notNull(),
+  customer_text: text().notNull(),
+  owner: text().notNull(),
+  version: integer().notNull().default(1),
+  status: text().$type<PolicyStatus>().notNull().default("active"),
+  effective_from: timestamp({ withTimezone: true, mode: "date" }).notNull(),
+  updated_at: timestamp({ withTimezone: true, mode: "date" }).notNull().defaultNow(),
+});
+
+/** One fine-grained rule of a policy: when it applies (conditions), what it means (effect) and its numbers (params). */
+export const policyRules = pgTable(
+  "policy_rules",
+  {
+    code: text().primaryKey(),
+    policy_code: text().notNull().references(() => policies.code, { onDelete: "cascade" }),
+    title: text().notNull(),
+    description: text().notNull(),
+    conditions: jsonb().$type<PolicyConditions>().notNull().default({}),
+    effect: text().$type<PolicyEffect>().notNull(),
+    params: jsonb().$type<PolicyParams>().notNull().default({}),
+    approver: text(),
+    priority: integer().notNull().default(100),
+    active: boolean().notNull().default(true),
+  },
+  (t) => [index().on(t.policy_code), index().on(t.effect)],
+);
+
 /* ───── Relations (for db.query.*.findMany({ with })) ───── */
 
 export const customersRelations = relations(customers, ({ many }) => ({ orders: many(orders) }));
@@ -428,3 +466,6 @@ export const activitiesRelations = relations(activities, ({ one }) => ({ deal: o
 
 /** Every demo table, children first: the order `reset` truncates in. */
 export const DEMO_TABLES = ["rai_calls", "rai_approvals", "rai_steps", "rai_runs", "analysis_reports", "campaign_responses", "campaigns", "chat_sessions", "ticket_comments", "tickets", "zd_users", "deal_activities", "meetings", "deals", "contacts", "orders", "products", "customers"] as const;
+
+export const policiesRelations = relations(policies, ({ many }) => ({ rules: many(policyRules) }));
+export const policyRulesRelations = relations(policyRules, ({ one }) => ({ policy: one(policies, { fields: [policyRules.policy_code], references: [policies.code] }) }));

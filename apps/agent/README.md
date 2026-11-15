@@ -30,9 +30,14 @@ What is code and what is the model:
 - **If the model fails** (no key, provider down), the customer still gets a reply, the ticket is unassigned with an
   internal note saying why, and the enquiry's deal gets a note. Demo API errors return 502.
 
-Storage: with `DATABASE_URL` (repo-root `.env`), each chat's conversation memory (`@voltagent/postgres`, `voltagent_*`
-tables) and the chat → ticket map (`agent_chat_sessions`) are in Postgres and survive restarts. Without it, both are
-in process.
+Memory (`src/memory.ts`; full notes in the repo's CLAUDE.md, "Agent memory"): with `DATABASE_URL`, conversation memory
+(`@voltagent/postgres`, `voltagent_*` tables) and the chat → ticket map (`agent_chat_sessions`) are in Postgres and
+survive restarts; without it, both are in process.
+
+- Threads: support per chat session; sales and leads per person (email), so a returning person is recognised; analysis
+  one thread run with no raw history, reading a working-memory note the service rewrites after every report.
+- Cleanup: `bun run reset` wipes it with the demo data; threads idle longer than `AGENT_MEMORY_RETENTION_DAYS`
+  (default 30, 0 = forever) are deleted on start and every 6 hours.
 
 Models (`src/models.ts`), as `provider/model` from the repo-root `.env`:
 
@@ -47,6 +52,7 @@ Models (`src/models.ts`), as `provider/model` from the repo-root `.env`:
 | --- | --- |
 | `src/index.ts` | VoltAgent bootstrap, Hono server, `/health`, `/chat`, `/lead`, `/analysis`, `/campaigns/sync` |
 | `src/models.ts` | The heavy and lite model tiers, key lookup |
+| `src/memory.ts` | Conversation memory, the analysis working-memory note, thread keys, retention |
 | `src/service.ts` | Request validation (zod), ticket/deal bookkeeping, running the agents, fallbacks |
 | `src/agents/` | `support.ts`, `sales.ts`, `analysis.ts`, `leads.ts`: instructions and settings per agent |
 | `src/tools/` | The agents' tools, plus `context.ts` (per-request ids) |

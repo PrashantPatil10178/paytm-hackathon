@@ -62,7 +62,8 @@ instructions), not as hidden background jobs.
 - Rows map to the `@ph/shared` types in `src/map.ts` (timestamps are `Date` in the DB, ISO strings in the API).
   Import `eq`, `sql`, etc. from `@ph/db`, not `drizzle-orm`, so there's one copy of drizzle.
 - `reset` truncates the demo tables (`DEMO_TABLES`) and re-seeds with ids continuing from the old numbers (#2041…).
-  It leaves the agent's tables alone; the agent spots recycled ticket numbers by `created_at`.
+  It also wipes the agent's tables (`voltagent_*`, `agent_chat_sessions`, found by name via `agentMemoryTables`) so a
+  fresh demo has no remembered chats. The agent still checks recycled ticket numbers by `created_at`.
 - The DB is remote (~100 ms a round trip): run independent queries with `Promise.all`, avoid per-row queries.
 
 ## Agent (`apps/agent`)
@@ -83,11 +84,38 @@ instructions), not as hidden background jobs.
 - Analysis and leads rules in tools/API: findings may only name known dataset ids (`ANALYTICS_DATASETS`), one report
   per run; a lead's deal amount is the response's stated budget (never the model's), a response is converted or skipped
   once (API 409), and an email that already has a contact reuses it. Responses the agent couldn't decide stay `new`.
-- Every agent shares the Postgres `Memory`; the analysis agent keeps one thread (`control-room-analysis`).
+- Memory: see "Agent memory" below.
 - Tests (`bun test`) run the real agents against a fake demo API with `MockLanguageModelV3` from `ai/test`
   scripting the tool calls; keep them standalone.
 - Skills: `voltagent-best-practices`, `voltagent-core-reference`, `voltagent-docs-bundle`, `create-voltagent`
   (from github.com/VoltAgent/skills, in `.claude/skills/`). Version-matched docs: `apps/agent/node_modules/@voltagent/core/docs`.
+
+## Agent memory (`apps/agent/src/memory.ts`)
+
+Three layers. Only the first is LLM memory; decisions never rest on it, because tools read live records every run.
+
+1. **Conversation memory** (VoltAgent `Memory`, `@voltagent/postgres`, `voltagent_*` tables; in process without
+   `DATABASE_URL`). One store for all agents. Before a run VoltAgent loads the thread's last messages
+   (`contextLimit`, default 10); a run is stored as about 2 rows (the prompt, and the reply with its tool calls folded in).
+   Threads (userId / conversationId):
+   - support: `customer-<id>` / the chat `session_id`. Real multi-turn memory within one chat.
+   - sales: `person:<email>` / `sales:<email>`. A second enquiry from the same email sees the first.
+   - leads: `person:<email>` / `leads:<email>`. Same person across campaign replies. `syncLeads` runs one person's
+     responses one after another (people in parallel) so two runs never share a thread at once.
+   - analysis: `control-room` / `control-room-analysis`, run with `contextLimit: 0` (no raw history replay).
+   Emails are normalised with `personKey` (trim + lowercase).
+2. **Working memory, analysis only** (`analysisMemory`, same storage, conversation scope, stored in
+   `voltagent_conversations.metadata.workingMemory`). After each published report the service rewrites it in replace
+   mode with `analysisNote()`: last headline, findings, totals, plus the previous headline one level deep. VoltAgent
+   puts it in the system prompt; the agent is told not to edit it. Older reports: the `get_previous_reports` tool.
+3. **App state, not LLM memory**: `agent_chat_sessions` (chat → ticket), `analysis_reports`, and the demo tables.
+
+Cleanup: `bun run reset` wipes layers 1–2 and the chat sessions. On start and every 6 h the agent deletes threads idle
+longer than `AGENT_MEMORY_RETENTION_DAYS` (default 30, `0` = keep forever); messages and steps cascade. `/health`
+shows the setting. Memory holds customer messages (names, emails, orders): don't log it or copy it elsewhere.
+
+To change memory: keep thread keys in `service.ts` built from `personKey` / `ANALYSIS_THREAD`, keep the note small
+(it is in every analysis prompt), and test with `createAgentMemory(undefined)` (in process) as `test/service.test.ts` does.
 
 ## Dashboard (`apps/dashboard`)
 
@@ -151,5 +179,6 @@ instructions), not as hidden background jobs.
 - Ports 3001–3004, 4000, 4100 and 8000 must be free. If the API fails with EADDRINUSE, an earlier instance is still running.
 - Screenshots / visual checks: `bunx playwright@1.60.0 screenshot --color-scheme=dark|light …` matches the
   locally installed Chromium; other versions try to download a browser.
-- Never commit `.env` (only `.env.example`). Env vars that matter: `DATABASE_URL`, `AGENT_URL`, `API_URL`, `AGENT_MODEL`, and for Ask Aria
+- Never commit `.env` (only `.env.example`). Env vars that matter: `DATABASE_URL`, `AGENT_URL`, `API_URL`, `AGENT_MODEL_HEAVY`,
+  `AGENT_MODEL_LITE`, `AGENT_MEMORY_RETENTION_DAYS`, and for Ask Aria
   `COPILOT_MODEL`, `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` + `OPENAI_BASE_URL`. Bun loads the root `.env` in apps/copilot via `--env-file`.

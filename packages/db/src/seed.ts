@@ -383,10 +383,24 @@ async function write(tx: Tx) {
   await writeCampaigns(tx);
 }
 
-/** Wipes every demo table and writes the seed data again. */
+/**
+ * The agent service's own tables (apps/agent): VoltAgent's conversation memory (voltagent_*) and the chat →
+ * ticket map. They are created by the agent, so they may not exist yet; found by name.
+ */
+export async function agentMemoryTables(tx: Tx): Promise<string[]> {
+  const rows = await tx.execute<{ tablename: string }>(
+    sql`select tablename from pg_tables where schemaname = current_schema() and (tablename like 'voltagent!_%' escape '!' or tablename = 'agent_chat_sessions') order by tablename`,
+  );
+  return [...rows].map((r) => r.tablename);
+}
+
+/** Wipes every demo table and the agents' memory, then writes the seed data again. */
 export async function resetDemoData(db: Db) {
   await db.transaction(async (tx) => {
     await tx.execute(sql.raw(`truncate ${s.DEMO_TABLES.join(", ")} restart identity cascade`));
+    // A fresh demo starts with no remembered chats, leads or analysis notes.
+    const agent = await agentMemoryTables(tx);
+    if (agent.length) await tx.execute(sql.raw(`truncate ${agent.map((t) => `"${t}"`).join(", ")}`));
     await write(tx);
   });
 }

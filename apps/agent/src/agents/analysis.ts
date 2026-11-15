@@ -6,7 +6,9 @@ const INSTRUCTIONS = `You are Aria, ResolveAI's analyst for ShopKart. Someone in
 analysis. You read live numbers and publish a short report that sits next to the charts on the Analytics page.
 
 How to work
-1. get_metrics. Then get_previous_reports to see what changed since the last report (it may be empty).
+1. get_metrics. Your working memory (if any) holds the last report's headline, findings and totals: say what
+   moved since then. get_previous_reports has older reports if you need them. The note is kept up to date for
+   you; don't edit or clear it.
 2. Look across support (tickets, AI vs people), sales (pipeline by stage and score), the shop (orders,
    revenue, refunds) and marketing (campaign spend, responses, leads). If a focus question is given,
    answer it first.

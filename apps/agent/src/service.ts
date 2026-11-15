@@ -16,9 +16,10 @@ import {
   type LeadSyncResponse,
   type LeadSyncResult,
 } from "@ph/shared";
-import type { Agent } from "@voltagent/core";
+import type { Agent, Memory } from "@voltagent/core";
 import { z } from "zod";
 import { DemoAPIError, type DemoAPI, type KnownContact } from "./demo-api.ts";
+import { ANALYSIS_THREAD, analysisNote, personKey } from "./memory.ts";
 import { memorySessions, type SessionStore } from "./sessions.ts";
 import { runContext, type AnalysisRun, type LeadsRun } from "./tools/context.ts";
 
@@ -57,10 +58,12 @@ export interface ServiceDeps {
   leads: Agent;
   /** Chat session → ticket. Postgres in the app, in memory in tests. */
   sessions?: SessionStore;
+  /** The analysis agent's memory (with working memory), where the note about the last report is kept. */
+  analysisMemory?: Memory;
   log?: Pick<Console, "warn" | "error">;
 }
 
-export function createService({ api, support, sales, analysis, leads, sessions = memorySessions(), log = console }: ServiceDeps) {
+export function createService({ api, support, sales, analysis, leads, sessions = memorySessions(), analysisMemory, log = console }: ServiceDeps) {
 
   async function ticketFor(sessionId: string, customerId: number, message: string): Promise<{ id: number; customer: string; isNew: boolean }> {
     const known = await sessions.get(sessionId);
@@ -138,9 +141,10 @@ export function createService({ api, support, sales, analysis, leads, sessions =
 
       let message = "Thanks! Our team will contact you shortly.";
       try {
+        // One thread per person: a second enquiry from the same email sees what happened with the first.
         const res = await sales.generateText(prompt, {
-          userId: `contact-${contact.id}`,
-          conversationId: `lead-${deal.id}`,
+          userId: `person:${personKey(b.email)}`,
+          conversationId: `sales:${personKey(b.email)}`,
           context: runContext({ dealId: deal.id, contactId: contact.id }),
         });
         message = res.text.trim() || message;
@@ -164,13 +168,15 @@ export function createService({ api, support, sales, analysis, leads, sessions =
       const run: AnalysisRun = { kind: "analysis" };
       const prompt = `[Control Room analysis request · today ${today()}]\nFocus: ${focus || "a general health check of support, sales, the shop and campaigns"}`;
       try {
-        // One long-running thread, so Aria can refer back to what it found last time.
-        await analysis.generateText(prompt, { userId: "control-room", conversationId: "control-room-analysis", context: runContext(run) });
+        // No raw history (contextLimit 0): what Aria knows about earlier runs is the working-memory note, which
+        // VoltAgent puts in the system prompt, plus get_previous_reports. The run itself is still saved.
+        await analysis.generateText(prompt, { memory: { ...ANALYSIS_THREAD, options: { contextLimit: 0 } }, context: runContext(run) });
       } catch (e) {
         log.error("[agent] analysis agent failed:", e);
         if (!run.report) return { status: 502, body: { error: `Aria couldn't finish the analysis (${errorText(e)}).` } };
       }
       if (!run.report) return { status: 502, body: { error: "Aria finished without publishing a report. Try again." } };
+      await rememberReport(run.report);
       return { status: 201, body: { report: run.report } };
     });
   }
@@ -183,7 +189,15 @@ export function createService({ api, support, sales, analysis, leads, sessions =
     return guard(async () => {
       const { responses: queue } = await api.newResponses();
       const batch = queue.slice(0, limit);
-      const results = await mapPool(batch, LEAD_CONCURRENCY, (r) => work(r));
+      // Responses from the same person share a memory thread: run those one after another, people in parallel.
+      const byPerson = [...Map.groupBy(batch, (r) => personKey(r.email)).values()];
+      const done = await mapPool(byPerson, LEAD_CONCURRENCY, async (mine) => {
+        const out: LeadSyncResult[] = [];
+        for (const r of mine) out.push(await work(r));
+        return out;
+      });
+      const order = new Map(batch.map((r, i) => [r.id, i]));
+      const results = done.flat().sort((a, b) => order.get(a.response_id)! - order.get(b.response_id)!);
       const of = (o: LeadSyncResult["outcome"]) => results.filter((x) => x.outcome === o).length;
       return {
         status: 200,
@@ -210,7 +224,8 @@ export function createService({ api, support, sales, analysis, leads, sessions =
         `Message: ${r.message}`,
         `CRM: ${crmLine(existing_contact)}`,
       ].join("\n");
-      const res = await leads.generateText(prompt, { userId: `campaign-response-${r.id}`, conversationId: `campaign-response-${r.id}`, context: runContext(run) });
+      const who = personKey(r.email);
+      const res = await leads.generateText(prompt, { userId: `person:${who}`, conversationId: `leads:${who}`, context: runContext(run) });
       if (!run.outcome) return { ...base, outcome: "failed", reason: `Aria didn't decide: ${res.text.trim().slice(0, 160) || "no answer"}` };
     } catch (e) {
       log.error(`[agent] leads agent failed on campaign response #${r.id}:`, e);
@@ -218,6 +233,17 @@ export function createService({ api, support, sales, analysis, leads, sessions =
     }
     const o = run.outcome!;
     return o.outcome === "converted" ? { ...base, outcome: "converted", deal_id: o.dealId, score: o.score, reason: o.reason } : { ...base, outcome: "skipped", reason: o.reason };
+  }
+
+  /** Rewrites the analysis thread's working-memory note. A failure here never fails the request. */
+  async function rememberReport(report: NonNullable<AnalysisRun["report"]>) {
+    if (!analysisMemory) return;
+    try {
+      const previous = await analysisMemory.getWorkingMemory(ANALYSIS_THREAD);
+      await analysisMemory.updateWorkingMemory({ ...ANALYSIS_THREAD, content: analysisNote(report, previous), options: { mode: "replace" } });
+    } catch (e) {
+      log.warn("[agent] couldn't update the analysis memory note:", e);
+    }
   }
 
   async function guard<T>(fn: () => Promise<Result<T>>): Promise<Result<T>> {

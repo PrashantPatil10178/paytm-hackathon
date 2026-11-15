@@ -10,6 +10,7 @@ import { createLeadsAgent } from "../src/agents/leads.ts";
 import { createSalesAgent } from "../src/agents/sales.ts";
 import { createSupportAgent } from "../src/agents/support.ts";
 import { createDemoAPI } from "../src/demo-api.ts";
+import { analysisNote, createAgentMemory } from "../src/memory.ts";
 import { createService } from "../src/service.ts";
 
 /* ───── Fake demo API ───── */
@@ -418,4 +419,74 @@ test("leads: a response decided elsewhere mid-run is not converted twice", async
   const res = await service(raced).syncLeads({});
   expect(res.body).toMatchObject({ converted: 0, failed: 3 });
   expect(db.deals).toHaveLength(0);
+});
+
+/* ───── Memory ───── */
+
+/** Every message text the model was shown on one call, system prompt included. */
+const shown = (call: { prompt: unknown }) =>
+  (call.prompt as Json[]).map((m) => `${m.role}: ${typeof m.content === "string" ? m.content : m.content.map((c: Json) => c.text ?? "").join("")}`);
+
+test("memory: the analysis agent sees a note about its last report, not the last run's raw history", async () => {
+  const model = scripted([
+    { tool: "publish_report", args: { headline: "First headline: AI handled 60%.", insights: INSIGHTS } },
+    { text: "Published." },
+    { tool: "publish_report", args: { headline: "Second headline.", insights: INSIGHTS } },
+    { text: "Published again." },
+  ]);
+  const api = createDemoAPI("http://demo", fakeFetch);
+  const { analysisMemory } = createAgentMemory(undefined); // in process
+  const svc = createService({
+    api,
+    support: createSupportAgent(api, model),
+    sales: createSalesAgent(api, model),
+    analysis: createAnalysisAgent(api, model, analysisMemory),
+    leads: createLeadsAgent(api, model),
+    analysisMemory,
+    log: { warn() {}, error() {} },
+  });
+
+  await svc.analyze({ focus: "first question" });
+  const note = await analysisMemory.getWorkingMemory({ userId: "control-room", conversationId: "control-room-analysis" });
+  expect(note).toContain("Headline: First headline: AI handled 60%.");
+  expect(note).toContain("[good] AI handled 60% of tickets (tickets_per_day)");
+
+  await svc.analyze({ focus: "second question" });
+  const second = shown(model.doGenerateCalls[2]!).join("\n");
+  expect(second).toContain("First headline: AI handled 60%."); // the note, via the system prompt
+  expect(second).toContain("second question");
+  expect(second).not.toContain("first question"); // contextLimit 0: no replay of the earlier run
+
+  const after = await analysisMemory.getWorkingMemory({ userId: "control-room", conversationId: "control-room-analysis" });
+  expect(after).toContain("Headline: Second headline.");
+  expect(after).toContain("## Report before that"); // the previous headline is kept, one level deep
+});
+
+test("memory: two replies from the same person share a thread and run one after another", async () => {
+  db.responses.push(response(4, { name: "Meera Joshi", email: "MEERA@joshisweets.example ", company: "Joshi Sweets", budget: 20000, message: "Also need 50 small boxes." }));
+  const model = byPrompt(triage);
+  await service(model).syncLeads({});
+
+  const calls = model.doGenerateCalls.map((c) => (c.prompt as Json[]).map((m) => m.role as string));
+  const prompts = model.doGenerateCalls.map(shown);
+  // The first model call for each response: its only user line is that response's prompt.
+  const firstCall = (id: number) => prompts.findIndex((lines) => lines.at(-1)!.startsWith("user:") && lines.at(-1)!.includes(`Campaign response #${id} `));
+  const first = firstCall(1);
+  const later = firstCall(4);
+  // Meera's earlier run (#1) is finished before her later one (#4) starts, and #4 is shown it from the shared thread.
+  expect(first).toBeGreaterThanOrEqual(0);
+  expect(later).toBeGreaterThan(first);
+  expect(calls[later]!.slice(1, -1)).toContain("assistant");
+  // Someone else's run starts with an empty thread.
+  expect(calls[firstCall(2)]!.slice(1, -1)).not.toContain("assistant");
+});
+
+test("memory: analysisNote keeps the report before last", () => {
+  const report = (headline: string) => ({ id: 1, headline, insights: [], author: "ResolveAI Bot", created_at: "2026-11-15T06:00:00.000Z", snapshot: METRICS.totals as any });
+  const first = analysisNote(report("One"), null);
+  const second = analysisNote(report("Two"), first);
+  expect(second).toContain("Headline: Two");
+  expect(second).toContain("## Report before that");
+  expect(second).toContain("Headline: One");
+  expect(analysisNote(report("Three"), second)).not.toContain("Headline: One"); // only one level deep
 });

@@ -26,6 +26,10 @@ What is code and what is the model:
 - **If the model fails** (no key, provider down), the customer still gets a reply, the ticket is unassigned with an
   internal note saying why, and the enquiry's deal gets a note. Demo API errors return 502.
 
+Storage: with `DATABASE_URL` (repo-root `.env`), each chat's conversation memory (`@voltagent/postgres`, `voltagent_*`
+tables) and the chat → ticket map (`agent_chat_sessions`) are in Postgres and survive restarts. Without it, both are
+in process.
+
 Model: `AGENT_MODEL`, else `COPILOT_MODEL`, else `anthropic/claude-opus-5-5`, as `provider/model`, from the repo-root
 `.env`. `openai/<deployment>` with `OPENAI_BASE_URL` + `OPENAI_API_KEY` runs on Azure OpenAI. `GET :8000/health` shows
 the model and whether its key is set. Swagger UI: http://localhost:8000/ui
@@ -36,6 +40,7 @@ the model and whether its key is set. Swagger UI: http://localhost:8000/ui
 | `src/service.ts` | Request validation (zod), ticket/deal bookkeeping, running the agents, fallbacks |
 | `src/agents/` | `support.ts`, `sales.ts`: instructions and settings per agent |
 | `src/tools/` | The agents' tools, plus `context.ts` (per-request ids) |
+| `src/sessions.ts` | Chat session → ticket store (Postgres, or in memory for tests) |
 | `src/demo-api.ts` | Typed client for the Zendesk, CRM and shop endpoints on `API_URL` (default `http://localhost:4000`) |
 | `test/service.test.ts` | Real agents and service against a fake demo API and a scripted model (`MockLanguageModelV3`) |
 

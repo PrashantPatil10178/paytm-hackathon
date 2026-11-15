@@ -1,0 +1,25 @@
+{
+  "name": "@ph/db",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "scripts": {
+    "generate": "drizzle-kit generate",
+    "migrate": "bun --env-file=../../.env src/cli.ts migrate",
+    "reset": "bun --env-file=../../.env src/cli.ts reset",
+    "studio": "drizzle-kit studio",
+    "check-types": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ph/shared": "workspace:*",
+    "drizzle-orm": "0.45.4"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "drizzle-kit": "0.31.11",
+    "typescript": "catalog:"
+  }
+}

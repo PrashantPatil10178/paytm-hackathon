@@ -8,6 +8,7 @@ import { BOT, ENQUIRY_NEEDS, rupees, type ChatResponse, type LeadResponse } from
 import type { Agent } from "@voltagent/core";
 import { z } from "zod";
 import { DemoAPIError, type DemoAPI } from "./demo-api.ts";
+import { memorySessions, type SessionStore } from "./sessions.ts";
 import { runContext } from "./tools/context.ts";
 
 const ChatBody = z.object({
@@ -34,18 +35,19 @@ export interface ServiceDeps {
   api: DemoAPI;
   support: Agent;
   sales: Agent;
+  /** Chat session → ticket. Postgres in the app, in memory in tests. */
+  sessions?: SessionStore;
   log?: Pick<Console, "warn" | "error">;
 }
 
-export function createService({ api, support, sales, log = console }: ServiceDeps) {
-  /** session_id → ticket id. In memory, like the agents' conversation memory. */
-  const sessions = new Map<string, number>();
+export function createService({ api, support, sales, sessions = memorySessions(), log = console }: ServiceDeps) {
 
   async function ticketFor(sessionId: string, customerId: number, message: string): Promise<{ id: number; customer: string; isNew: boolean }> {
-    const known = sessions.get(sessionId);
+    const known = await sessions.get(sessionId);
     if (known) {
       try {
-        const t = await api.ticket(known);
+        const t = await api.ticket(known.ticketId);
+        if (t.created_at !== known.ticketCreatedAt) throw new DemoAPIError(404, "ticket was replaced by a reset");
         await api.addComment(t.id, { body: message, public: true, author: t.requester.name, author_type: "customer" });
         if (t.status === "solved") await api.updateTicket(t.id, { status: "open" });
         return { id: t.id, customer: t.requester.name, isNew: false };
@@ -62,7 +64,7 @@ export function createService({ api, support, sales, log = console }: ServiceDep
       assignee: BOT,
       tags: ["chat"],
     });
-    sessions.set(sessionId, t.id);
+    await sessions.set(sessionId, { ticketId: t.id, ticketCreatedAt: t.created_at });
     return { id: t.id, customer: t.requester.name, isNew: true };
   }
 

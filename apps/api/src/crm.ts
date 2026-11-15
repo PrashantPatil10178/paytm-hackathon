@@ -11,122 +11,127 @@ import {
   type DealCard,
   type DealDetail,
   type DealStage,
+  type Meeting,
   type SaveQuoteBody,
   type Slot,
   type UpdateDealBody,
 } from "@ph/shared";
+import { desc, eq, schema as s, toActivity, toContact, toDeal, toMeeting, type Tx } from "@ph/db";
 import { db } from "./db.ts";
-import { bad, body, handle, intParam, notFound, now, ok, oneOf } from "./http.ts";
+import { bad, body, handle, intParam, notFound, ok, oneOf } from "./http.ts";
 
-const STAGE_IDS = DEAL_STAGES.map((s) => s.id);
+const STAGE_IDS = DEAL_STAGES.map((x) => x.id);
 const SCORES = ["hot", "warm", "cold"] as const;
-const stageLabel = (s: DealStage) => DEAL_STAGES.find((x) => x.id === s)!.label;
+const stageLabel = (x: DealStage) => DEAL_STAGES.find((y) => y.id === x)!.label;
 
-export function findDeal(id: number): Deal {
-  const d = db.deals.find((x) => x.id === id);
-  if (!d) throw notFound(`Deal ${id}`);
-  return d;
+export async function findDeal(id: number, tx: Tx = db): Promise<Deal> {
+  const row = await tx.query.deals.findFirst({ where: eq(s.deals.id, id), with: { meeting: true } });
+  if (!row) throw notFound(`Deal ${id}`);
+  return toDeal(row);
 }
 
-function findContact(id: number): Contact {
-  const c = db.contacts.find((x) => x.id === id);
-  if (!c) throw notFound(`Contact ${id}`);
-  return c;
+async function findContact(id: number, tx: Tx = db): Promise<Contact> {
+  const [row] = await tx.select().from(s.contacts).where(eq(s.contacts.id, id));
+  if (!row) throw notFound(`Contact ${id}`);
+  return toContact(row);
 }
 
-export function logActivity(dealId: number, a: Omit<Activity, "id" | "created_at">): Activity {
-  const entry: Activity = { id: ++db.seq.activity, created_at: now(), ...a };
-  const list = db.activities.get(dealId) ?? [];
-  list.push(entry);
-  db.activities.set(dealId, list);
-  const d = db.deals.find((x) => x.id === dealId);
-  if (d) d.updated_at = entry.created_at;
-  return entry;
+export async function logActivity(dealId: number, a: Omit<Activity, "id" | "created_at">, tx: Tx = db): Promise<Activity> {
+  const at = new Date();
+  const [row] = await tx.insert(s.activities).values({ ...a, deal_id: dealId, created_at: at }).returning();
+  await tx.update(s.deals).set({ updated_at: at }).where(eq(s.deals.id, dealId));
+  return toActivity(row!);
 }
 
-const card = (d: Deal): DealCard => {
-  const c = findContact(d.contact_id);
-  return { ...d, contact: { id: c.id, name: c.name, company: c.company } };
-};
+async function cards(where?: ReturnType<typeof eq>): Promise<DealCard[]> {
+  const rows = await db.query.deals.findMany({ where, with: { meeting: true, contact: { columns: { id: true, name: true, company: true } } }, orderBy: s.deals.id });
+  return rows.map((r) => ({ ...toDeal(r), contact: r.contact }));
+}
 
-const detail = (d: Deal): DealDetail => ({
-  ...d,
-  contact: findContact(d.contact_id),
-  activities: [...(db.activities.get(d.id) ?? [])].sort((a, b) => b.created_at.localeCompare(a.created_at)),
-});
+async function detail(id: number): Promise<DealDetail> {
+  const row = await db.query.deals.findFirst({
+    where: eq(s.deals.id, id),
+    with: { meeting: true, contact: true, activities: { orderBy: [desc(s.activities.created_at), desc(s.activities.id)] } },
+  });
+  if (!row) throw notFound(`Deal ${id}`);
+  return { ...toDeal(row), contact: toContact(row.contact), activities: row.activities.map(toActivity) };
+}
 
 /* ───── Operations (also used by the built-in lead simulator) ───── */
 
-export function createContact(b: CreateContactBody): Contact {
+export async function createContact(b: CreateContactBody): Promise<Contact> {
   if (!b.name?.trim() || !b.email?.trim()) throw bad("name and email are required");
-  const contact: Contact = {
-    id: ++db.seq.contact,
-    name: b.name.trim(),
-    email: b.email.trim(),
-    phone: b.phone ?? "",
-    company: b.company ?? "",
-    lead_status: b.lead_status ?? "New",
-    owner: b.owner ?? BOT,
-    source: b.source ?? "Chat",
-    created_at: now(),
-  };
-  db.contacts.push(contact);
-  return contact;
+  const [row] = await db
+    .insert(s.contacts)
+    .values({
+      name: b.name.trim(),
+      email: b.email.trim(),
+      phone: b.phone ?? "",
+      company: b.company ?? "",
+      lead_status: b.lead_status ?? "New",
+      owner: b.owner ?? BOT,
+      source: b.source ?? "Chat",
+      created_at: new Date(),
+    })
+    .returning();
+  return toContact(row!);
 }
 
-export function createDeal(b: CreateDealBody): Deal {
+export async function createDeal(b: CreateDealBody): Promise<Deal> {
   if (!b.name?.trim()) throw bad("name is required");
   if (typeof b.amount !== "number" || b.amount < 0) throw bad("amount must be a positive number (₹)");
-  const contact = findContact(b.contact_id);
-  const at = now();
-  const close = new Date();
-  close.setDate(close.getDate() + 30);
-  const deal: Deal = {
-    id: ++db.seq.deal,
-    name: b.name.trim(),
-    amount: b.amount,
-    stage: b.stage ? oneOf(b.stage, STAGE_IDS, "stage") : "new_lead",
-    contact_id: contact.id,
-    owner: b.owner ?? BOT,
-    score: b.score ? oneOf(b.score, SCORES, "score") : "warm",
-    next_step: b.next_step ?? "",
-    close_date: b.close_date ?? close.toISOString(),
-    meeting: null,
-    quote: null,
-    payment_link: null,
-    tasks: [],
-    created_at: at,
-    updated_at: at,
-  };
-  db.deals.push(deal);
-  if (contact.lead_status === "New") contact.lead_status = "Open deal";
-  return deal;
+  return db.transaction(async (tx) => {
+    const contact = await findContact(b.contact_id, tx);
+    const at = new Date();
+    const close = new Date();
+    close.setDate(close.getDate() + 30);
+    const [row] = await tx
+      .insert(s.deals)
+      .values({
+        name: b.name.trim(),
+        amount: b.amount,
+        stage: b.stage ? oneOf(b.stage, STAGE_IDS, "stage") : "new_lead",
+        contact_id: contact.id,
+        owner: b.owner ?? BOT,
+        score: b.score ? oneOf(b.score, SCORES, "score") : "warm",
+        next_step: b.next_step ?? "",
+        close_date: b.close_date ? new Date(b.close_date) : close,
+        created_at: at,
+        updated_at: at,
+      })
+      .returning({ id: s.deals.id });
+    if (contact.lead_status === "New") await tx.update(s.contacts).set({ lead_status: "Open deal" }).where(eq(s.contacts.id, contact.id));
+    return findDeal(row!.id, tx);
+  });
 }
 
-export function updateDeal(id: number, b: UpdateDealBody): Deal {
-  const d = findDeal(id);
-  const byAi = b.actor !== "human";
-  const author = byAi ? BOT : (b.author ?? "Sales team");
-  if (b.stage !== undefined) {
-    const next = oneOf(b.stage, STAGE_IDS, "stage");
-    if (next !== d.stage) {
-      logActivity(d.id, { type: "stage_change", body: `Stage moved from ${stageLabel(d.stage)} to ${stageLabel(next)}`, author, ai: byAi });
-      d.stage = next;
+export async function updateDeal(id: number, b: UpdateDealBody): Promise<Deal> {
+  return db.transaction(async (tx) => {
+    const d = await findDeal(id, tx);
+    const byAi = b.actor !== "human";
+    const author = byAi ? BOT : (b.author ?? "Sales team");
+    const next: Partial<typeof s.deals.$inferInsert> = { updated_at: new Date() };
+    if (b.stage !== undefined) {
+      const stage = oneOf(b.stage, STAGE_IDS, "stage");
+      if (stage !== d.stage) {
+        await logActivity(d.id, { type: "stage_change", body: `Stage moved from ${stageLabel(d.stage)} to ${stageLabel(stage)}`, author, ai: byAi }, tx);
+        next.stage = stage;
+      }
     }
-  }
-  if (b.score !== undefined) d.score = oneOf(b.score, SCORES, "score");
-  if (b.name !== undefined) d.name = b.name;
-  if (b.amount !== undefined) d.amount = b.amount;
-  if (b.owner !== undefined) d.owner = b.owner;
-  if (b.next_step !== undefined) d.next_step = b.next_step;
-  if (b.close_date !== undefined) d.close_date = b.close_date;
-  if (b.payment_link !== undefined) d.payment_link = b.payment_link;
-  d.updated_at = now();
-  return d;
+    if (b.score !== undefined) next.score = oneOf(b.score, SCORES, "score");
+    if (b.name !== undefined) next.name = b.name;
+    if (b.amount !== undefined) next.amount = b.amount;
+    if (b.owner !== undefined) next.owner = b.owner;
+    if (b.next_step !== undefined) next.next_step = b.next_step;
+    if (b.close_date !== undefined) next.close_date = new Date(b.close_date);
+    if (b.payment_link !== undefined) next.payment_link = b.payment_link;
+    await tx.update(s.deals).set(next).where(eq(s.deals.id, id));
+    return findDeal(id, tx);
+  });
 }
 
-export function freeSlots(): Slot[] {
-  const booked = new Set(db.deals.flatMap((d) => (d.meeting ? [new Date(d.meeting.start).getTime()] : [])));
+export async function freeSlots(): Promise<Slot[]> {
+  const booked = new Set((await db.select({ start: s.meetings.start }).from(s.meetings)).map((m) => m.start.getTime()));
   const slots: Slot[] = [];
   const day = new Date();
   day.setMinutes(0, 0, 0);
@@ -135,84 +140,89 @@ export function freeSlots(): Slot[] {
     if (day.getDay() === 0 || day.getDay() === 6) continue;
     added++;
     for (const hour of [10, 11, 12, 14, 15, 16, 17]) {
-      const s = new Date(day);
-      s.setHours(hour, 0, 0, 0);
-      if (booked.has(s.getTime())) continue;
-      slots.push({ start: s.toISOString(), end: new Date(s.getTime() + 30 * 60_000).toISOString() });
+      const t = new Date(day);
+      t.setHours(hour, 0, 0, 0);
+      if (booked.has(t.getTime())) continue;
+      slots.push({ start: t.toISOString(), end: new Date(t.getTime() + 30 * 60_000).toISOString() });
     }
   }
   return slots;
+}
+
+async function bookMeeting(b: BookMeetingBody): Promise<Meeting> {
+  if (!b.start || Number.isNaN(Date.parse(b.start))) throw bad("start must be an ISO date-time from GET /crm/slots");
+  return db.transaction(async (tx) => {
+    const d = await findDeal(b.deal_id, tx);
+    const contact = await findContact(d.contact_id, tx);
+    const values = {
+      deal_id: d.id,
+      title: b.title ?? `${d.name.split("–")[1]?.trim() ?? "Intro"} call – ${contact.company}`,
+      start: new Date(b.start),
+      duration_min: b.duration_min ?? 30,
+      attendees: [contact.name, d.owner === BOT ? "Rahul – Sales" : d.owner],
+    };
+    // One meeting per deal: booking again moves it.
+    const [row] = await tx.insert(s.meetings).values(values).onConflictDoUpdate({ target: s.meetings.deal_id, set: values }).returning();
+    const when = row!.start.toLocaleString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+    await logActivity(d.id, { type: "meeting", body: `Booked "${row!.title}" for ${when}.`, author: BOT, ai: true }, tx);
+    return toMeeting(row!);
+  });
 }
 
 /* ───── Routes ───── */
 
 export const crmRoutes = {
   "/crm/contacts": {
-    GET: handle(() => {
-      const contacts = [...db.contacts]
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))
-        .map((c) => ({ ...c, deal_ids: db.deals.filter((d) => d.contact_id === c.id).map((d) => d.id) }));
+    GET: handle(async () => {
+      const rows = await db.query.contacts.findMany({ with: { deals: { columns: { id: true } } }, orderBy: [desc(s.contacts.created_at), desc(s.contacts.id)] });
+      const contacts = rows.map(({ deals, ...c }) => ({ ...toContact(c), deal_ids: deals.map((x) => x.id).sort((a, b) => a - b) }));
       return ok({ contacts });
     }),
-    POST: handle(async (req) => ok(createContact(await body<CreateContactBody>(req)), 201)),
+    POST: handle(async (req) => ok(await createContact(await body<CreateContactBody>(req)), 201)),
   },
   "/crm/contacts/:id": {
-    GET: handle((req) => {
-      const c = findContact(intParam(req.params.id, "Contact id"));
-      return ok({ ...c, deals: db.deals.filter((d) => d.contact_id === c.id).map(card) });
+    GET: handle(async (req) => {
+      const c = await findContact(intParam(req.params.id, "Contact id"));
+      return ok({ ...c, deals: await cards(eq(s.deals.contact_id, c.id)) });
     }),
   },
   "/crm/deals": {
-    GET: handle(() => ok({ stages: DEAL_STAGES, deals: db.deals.map(card) })),
-    POST: handle(async (req) => ok(createDeal(await body<CreateDealBody>(req)), 201)),
+    GET: handle(async () => ok({ stages: DEAL_STAGES, deals: await cards() })),
+    POST: handle(async (req) => ok(await createDeal(await body<CreateDealBody>(req)), 201)),
   },
   "/crm/deals/:id": {
-    GET: handle((req) => ok(detail(findDeal(intParam(req.params.id, "Deal id"))))),
-    PATCH: handle(async (req) => ok(updateDeal(intParam(req.params.id, "Deal id"), await body<UpdateDealBody>(req)))),
+    GET: handle(async (req) => ok(await detail(intParam(req.params.id, "Deal id")))),
+    PATCH: handle(async (req) => ok(await updateDeal(intParam(req.params.id, "Deal id"), await body<UpdateDealBody>(req)))),
   },
   "/crm/deals/:id/notes": {
     POST: handle(async (req) => {
-      const d = findDeal(intParam(req.params.id, "Deal id"));
+      const d = await findDeal(intParam(req.params.id, "Deal id"));
       const b = await body<CreateNoteBody>(req);
       if (!b.body?.trim()) throw bad("body is required");
       const author = b.author ?? BOT;
-      const entry = logActivity(d.id, { type: b.type ?? "note", body: b.body.trim(), author, ai: b.ai ?? author === BOT });
-      return ok(entry, 201);
+      return ok(await logActivity(d.id, { type: b.type ?? "note", body: b.body.trim(), author, ai: b.ai ?? author === BOT }), 201);
     }),
   },
   "/crm/deals/:id/quote": {
     POST: handle(async (req) => {
-      const d = findDeal(intParam(req.params.id, "Deal id"));
+      const d = await findDeal(intParam(req.params.id, "Deal id"));
       const b = await body<SaveQuoteBody>(req);
       if (!Array.isArray(b.items) || !b.items.length) throw bad("items must list at least one { name, qty, unit_price }");
-      const amount = b.items.reduce((s, i) => s + i.qty * i.unit_price, 0);
+      const amount = b.items.reduce((sum, i) => sum + i.qty * i.unit_price, 0);
       const status = b.status ? oneOf(b.status, ["draft", "waiting_approval", "sent"] as const, "status") : "draft";
-      d.quote = { items: b.items, amount, status, updated_at: now() };
+      const quote = { items: b.items, amount, status, updated_at: new Date().toISOString() };
       const verb = status === "sent" ? "Sent" : status === "waiting_approval" ? "Sent for approval:" : "Drafted";
-      logActivity(d.id, { type: "quote", body: `${verb} a quote for ₹${amount.toLocaleString("en-IN")} (${b.items.length} line items).`, author: BOT, ai: true });
-      return ok(d.quote, 201);
+      await db.transaction(async (tx) => {
+        await tx.update(s.deals).set({ quote }).where(eq(s.deals.id, d.id));
+        await logActivity(d.id, { type: "quote", body: `${verb} a quote for ₹${amount.toLocaleString("en-IN")} (${b.items.length} line items).`, author: BOT, ai: true }, tx);
+      });
+      return ok(quote, 201);
     }),
   },
   "/crm/slots": {
-    GET: handle(() => ok({ slots: freeSlots() })),
+    GET: handle(async () => ok({ slots: await freeSlots() })),
   },
   "/crm/meetings": {
-    POST: handle(async (req) => {
-      const b = await body<BookMeetingBody>(req);
-      const d = findDeal(b.deal_id);
-      if (!b.start || Number.isNaN(Date.parse(b.start))) throw bad("start must be an ISO date-time from GET /crm/slots");
-      const contact = findContact(d.contact_id);
-      d.meeting = {
-        id: ++db.seq.meeting,
-        deal_id: d.id,
-        title: b.title ?? `${d.name.split("–")[1]?.trim() ?? "Intro"} call – ${contact.company}`,
-        start: new Date(b.start).toISOString(),
-        duration_min: b.duration_min ?? 30,
-        attendees: [contact.name, d.owner === BOT ? "Rahul – Sales" : d.owner],
-      };
-      const when = new Date(d.meeting.start).toLocaleString("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-      logActivity(d.id, { type: "meeting", body: `Booked "${d.meeting.title}" for ${when}.`, author: BOT, ai: true });
-      return ok(d.meeting, 201);
-    }),
+    POST: handle(async (req) => ok(await bookMeeting(await body<BookMeetingBody>(req)), 201)),
   },
 };

@@ -15,7 +15,10 @@
     "start": "turbo run start",
     "check-types": "turbo run check-types",
     "lint": "turbo run lint",
-    "reset": "curl -s -X POST http://localhost:4000/admin/reset"
+    "reset": "bun run --cwd packages/db reset",
+    "db:migrate": "bun run --cwd packages/db migrate",
+    "db:generate": "bun run --cwd packages/db generate",
+    "db:studio": "bun run --cwd packages/db studio"
   },
   "devDependencies": {
     "turbo": "2.11.10",

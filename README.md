@@ -6,7 +6,7 @@
 # paytm-hackathon · ResolveAI demo apps
 
 Three look-alike apps for the ResolveAI demo, the ResolveAI Control Room dashboard, and the API they share. The agent creates and updates
-tickets and deals through the API; every screen polls every 2 s, so judges watch the work appear.
+tickets and deals through the API, which keeps everything in Postgres; every screen polls every 2 s, so judges watch the work appear.
 
 | App | URL | What it is |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ tickets and deals through the API; every screen polls every 2 s, so judges watch
 | **HubSpot CRM (Demo)** | http://localhost:3002 | CRM: deals pipeline (drag and drop), deal detail, contacts |
 | **ShopKart** | http://localhost:3003 | Shop: products, My Orders, Help, Business Enquiry, support chat |
 | **ResolveAI Control Room** | http://localhost:3004 | ResolveAI's own dashboard: KPIs, audit, tickets, approvals, board, channels, connectors, settings (mock JSON for now) |
-| Demo API | http://localhost:4000 | All endpoints from the build guide, in-memory seed data |
+| Demo API | http://localhost:4000 | All endpoints from the build guide, data in Postgres |
 
 Stack: Bun 1.4 (runtime, HTML bundler and dev server with HMR, no Vite), React 19, Tailwind CSS v4 via
 `bun-plugin-tailwind`, lucide icons, Turborepo. The Control Room (`apps/dashboard`) is a Vite 8 (Rolldown) app
@@ -24,15 +24,22 @@ with React Router, Recharts and dnd-kit; see its own README.
 
 ```sh
 bun install
+cp .env.example .env # then set DATABASE_URL (Postgres) and a model key
 bun run dev          # API + all three apps + the Control Room
 ```
+
+The API creates the tables and seeds the demo data the first time it meets an empty database. After that the
+data survives restarts; `bun run reset` puts it back to the seed.
 
 Or just one app with the API: `bun run dev:zendesk`, `bun run dev:hubspot`, `bun run dev:shop`. The Control Room alone: `bun run dev:dashboard`.
 
 Other commands:
 
 ```sh
-bun run reset        # re-seed the demo data (do this before each demo run)
+bun run reset        # wipe and re-seed the demo data in Postgres (do this before each demo run)
+bun run db:migrate   # apply migrations and seed an empty database (the API also does this on start)
+bun run db:generate  # write a new SQL migration after changing packages/db/src/schema.ts
+bun run db:studio    # browse the tables in Drizzle Studio
 bun run check-types
 bun run lint         # oxlint (Control Room)
 bun run build        # static bundles in apps/*/dist
@@ -110,7 +117,7 @@ Stages: `new_lead → qualified → meeting_booked → quote_sent → closed_won
 | POST | `/shop/orders/{id}/refund` (delivered or damaged orders that are paid; marks it damaged, `refund_initiated`) |
 | POST | `/chat` |
 | POST | `/lead` |
-| POST | `/admin/reset` |
+| POST | `/admin/reset` (same as `bun run reset`) |
 
 ## Demo script
 
@@ -125,14 +132,14 @@ Run `bun run reset`, then open the three apps side by side.
    *Hot* deal lands in HubSpot's **New lead** column and the contact shows up under **Contacts**.
    When the agent moves a deal, its card flies to the new column with a *Moved by ResolveAI* flag.
 
-Seed data: 5 customers, 8 products, 12 orders, 10 Zendesk tickets (#2031–#2040), 8 contacts and 8
+Seed data (`packages/db/src/seed.ts`): 5 customers, 8 products, 12 orders, 10 Zendesk tickets (#2031–#2040), 8 contacts and 8
 deals spread across stages. New tickets start at #2041.
 
 ## Layout
 
 ```
 apps/
-  api/        Bun.serve mock API + agent stand-in        :4000
+  api/        Bun.serve mock API + agent stand-in (Postgres) :4000
   zendesk/    Zendesk (Demo)                             :3001
   hubspot/    HubSpot CRM (Demo)                         :3002
   shopkart/   ShopKart shop + chat                       :3003
@@ -140,6 +147,7 @@ apps/
   agent/      ResolveAI agents (VoltAgent, Bun)          :8000
   copilot/    Ask Aria runtime (CopilotKit)              :4100
 packages/
+  db/         Postgres: Drizzle schema, migrations, seed data, row → API type mappers
   shared/     API types, ₹/date formatting, polling + router hooks, the app server helper
 ```
 

@@ -41,7 +41,7 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   let m: RegExpMatchArray | null;
 
   if (method === "POST" && p === "/zendesk/tickets") {
-    const t = { id: 2041 + db.tickets.length, requester: { id: body.requester_id, name: "Ananya Iyer" }, escalated_by_ai: false, ...body };
+    const t = { id: 2041 + db.tickets.length, requester: { id: body.requester_id, name: "Ananya Iyer" }, escalated_by_ai: false, created_at: new Date().toISOString(), ...body };
     db.tickets.push(t);
     return json(t, 201);
   }
@@ -215,6 +215,19 @@ test("lead: creates contact and deal, the agent scores it and books a call", asy
   expect(res).toEqual({ status: 201, body: { ok: true, message: "Thanks Meera! I've booked an intro call for Mon 17 Nov, 11:00 am.", deal_id: 9 } });
   expect(db.deals[0]).toMatchObject({ name: "Shah Traders – Bulk order", amount: 50000, score: "hot", stage: "meeting_booked" });
   expect(db.meetings).toHaveLength(1);
+});
+
+test("chat: after a demo reset, an open chat gets a new ticket instead of reusing a recycled ticket number", async () => {
+  const svc = service(scripted([{ text: "Hi!" }, { text: "Hello again." }]));
+  await svc.chat({ session_id: "s7", customer_id: 101, message: "First message" });
+
+  // `bun run reset` wipes tickets and someone else's new chat gets #2041.
+  db.tickets = [{ id: 2041, requester: { id: 104, name: "Sneha Kulkarni" }, created_at: "2030-01-01T00:00:00.000Z", status: "open" }];
+  db.comments = [];
+  const res = await svc.chat({ session_id: "s7", customer_id: 101, message: "Still there?" });
+
+  expect(res.body).toMatchObject({ ticket_id: 2042 });
+  expect(db.comments.filter((c) => c.ticket_id === 2041)).toEqual([]);
 });
 
 test("bad input is rejected with 400", async () => {

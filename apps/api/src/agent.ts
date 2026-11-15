@@ -18,11 +18,12 @@ import {
   type Order,
   type Ticket,
 } from "@ph/shared";
+import { eq, schema as s } from "@ph/db";
 import { createContact, createDeal, logActivity } from "./crm.ts";
 import { db } from "./db.ts";
 import { bad, body, CORS, handle, ok } from "./http.ts";
-import { findCustomer, refundOrder } from "./shop.ts";
-import { addComment, createTicket, findTicket, updateTicket } from "./zendesk.ts";
+import { customerOrders, findCustomer, refundOrder } from "./shop.ts";
+import { addComment, createTicket, findTicket, ticketExists, updateTicket } from "./zendesk.ts";
 
 const AGENT_URL = process.env.AGENT_URL?.replace(/\/$/, "");
 const AUTO_REFUND_LIMIT = 1000;
@@ -58,8 +59,8 @@ function intentOf(msg: string): Intent {
   return "other";
 }
 
-function pickOrder(customerId: number, msg: string, intent: Intent): Order | undefined {
-  const mine = db.orders.filter((o) => o.customer_id === customerId).sort((a, b) => b.placed_at.localeCompare(a.placed_at));
+async function pickOrder(customerId: number, msg: string, intent: Intent): Promise<Order | undefined> {
+  const mine = await customerOrders(customerId);
   const mentioned = msg.match(/#?\b(1\d{3})\b/)?.[1];
   if (mentioned) {
     const hit = mine.find((o) => o.id === Number(mentioned));
@@ -87,24 +88,24 @@ function trackingReply(o: Order): string {
 }
 
 async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
-  const customer = findCustomer(req.customer_id);
+  const customer = await findCustomer(req.customer_id);
   const intent = intentOf(req.message);
-  const order = pickOrder(customer.id, req.message, intent);
+  const order = await pickOrder(customer.id, req.message, intent);
 
   // One ticket per chat session, like a real messaging integration.
   let ticket: Ticket;
-  const existing = db.chatSessions.get(req.session_id);
-  if (existing && db.tickets.some((t) => t.id === existing)) {
-    ticket = findTicket(existing);
-    addComment(ticket.id, { body: req.message, public: true, author: customer.name, author_type: "customer" });
-    if (ticket.status === "solved") updateTicket(ticket.id, { status: "open" });
+  const [session] = await db.select().from(s.chatSessions).where(eq(s.chatSessions.session_id, req.session_id));
+  if (session && (await ticketExists(session.ticket_id))) {
+    ticket = await findTicket(session.ticket_id);
+    await addComment(ticket.id, { body: req.message, public: true, author: customer.name, author_type: "customer" });
+    if (ticket.status === "solved") await updateTicket(ticket.id, { status: "open" });
   } else {
     const subject =
       intent === "payment" && order ? `Payment failed but ${rupees(order.amount)} debited – order #${order.id}`
       : intent === "refund" && order ? `Damaged item, refund requested – order #${order.id}`
       : intent === "track" && order ? `Where is my order #${order.id}?`
       : req.message.length > 60 ? `${req.message.slice(0, 57)}…` : req.message;
-    ticket = createTicket({
+    ticket = await createTicket({
       subject,
       comment: req.message,
       requester_id: customer.id,
@@ -116,46 +117,49 @@ async function simulateChat(req: ChatRequest): Promise<ChatResponse> {
       priority: intent === "payment" ? "critical" : intent === "refund" ? "medium" : "low",
       tags: [intent === "track" ? "wismo" : intent, "chat"],
     });
-    db.chatSessions.set(req.session_id, ticket.id);
+    await db
+      .insert(s.chatSessions)
+      .values({ session_id: req.session_id, ticket_id: ticket.id })
+      .onConflictDoUpdate({ target: s.chatSessions.session_id, set: { ticket_id: ticket.id } });
   }
 
   await sleep(900 + Math.random() * 900); // let the typing indicator breathe
 
   let reply: string;
   if (intent === "payment" && order) {
-    addComment(ticket.id, {
+    await addComment(ticket.id, {
       public: false,
       body: `Checked the payment gateway: ${rupees(order.amount)} captured from the customer's bank, but order #${order.id} never got a payment confirmation. That's above the ${rupees(AUTO_REFUND_LIMIT)} auto-refund limit, so handing to Payments for a manual reconcile.`,
     });
-    updateTicket(ticket.id, { assignee: "Priya – Support", priority: "urgent", status: "open", escalated_by_ai: true });
+    await updateTicket(ticket.id, { assignee: "Priya – Support", priority: "urgent", status: "open", escalated_by_ai: true });
     reply = `I can see ${rupees(order.amount)} left your bank for order #${order.id}, but the payment never reached us. Amounts this large need a person to check, so I've passed this to Priya on our payments team with all the details. You'll hear back within 2 hours. Your ticket number is #${ticket.id}.`;
   } else if (intent === "refund" && order) {
     const refundable = (order.status === "damaged" || order.status === "delivered") && (order.payment_status === "paid" || order.payment_status === "cod");
     if (order.amount <= AUTO_REFUND_LIMIT && refundable) {
-      refundOrder(order.id);
-      addComment(ticket.id, {
+      await refundOrder(order.id);
+      await addComment(ticket.id, {
         public: false,
         body: `Policy check passed: delivered order, damage reported within 7 days, ${rupees(order.amount)} is under the ${rupees(AUTO_REFUND_LIMIT)} auto-refund limit. Refund started to the original payment method.`,
       });
       reply = `Sorry order #${order.id} (${itemsText(order)}) arrived damaged. I've started a refund of ${rupees(order.amount)} to your original payment method. It should reach you in 3–5 working days. No need to send anything back.`;
-      addComment(ticket.id, { public: true, body: reply });
-      updateTicket(ticket.id, { status: "solved" });
+      await addComment(ticket.id, { public: true, body: reply });
+      await updateTicket(ticket.id, { status: "solved" });
       return { reply, ticket_id: ticket.id };
     }
-    addComment(ticket.id, { public: false, body: `Refund of ${rupees(order.amount)} is above the auto-refund limit. Needs approval from a person.` });
-    updateTicket(ticket.id, { assignee: "Priya – Support", status: "pending", escalated_by_ai: true });
+    await addComment(ticket.id, { public: false, body: `Refund of ${rupees(order.amount)} is above the auto-refund limit. Needs approval from a person.` });
+    await updateTicket(ticket.id, { assignee: "Priya – Support", status: "pending", escalated_by_ai: true });
     reply = `I've raised a refund request for order #${order.id}. As it's ${rupees(order.amount)}, a teammate needs to approve it. You'll hear back within a day.`;
   } else if (intent === "track" && order) {
     reply = trackingReply(order);
-    addComment(ticket.id, { public: true, body: reply });
-    updateTicket(ticket.id, { status: "solved" });
+    await addComment(ticket.id, { public: true, body: reply });
+    await updateTicket(ticket.id, { status: "solved" });
     return { reply, ticket_id: ticket.id };
   } else {
     reply = `Thanks, ${customer.name.split(" ")[0]}. I've noted this as ticket #${ticket.id}. Could you share the order number so I can look into it?`;
-    updateTicket(ticket.id, { status: "pending" });
+    await updateTicket(ticket.id, { status: "pending" });
   }
 
-  addComment(ticket.id, { public: true, body: reply });
+  await addComment(ticket.id, { public: true, body: reply });
   return { reply, ticket_id: ticket.id };
 }
 
@@ -168,12 +172,12 @@ function scoreLead(b: LeadRequest): { score: LeadScore; why: string } {
   return { score: "cold", why: "small budget and no near start date" };
 }
 
-function simulateLead(b: LeadRequest): LeadResponse {
+async function simulateLead(b: LeadRequest): Promise<LeadResponse> {
   const missing = (["name", "phone", "email", "business_name", "need"] as const).filter((k) => !String(b[k] ?? "").trim());
   if (missing.length) throw bad(`Missing: ${missing.join(", ")}`);
   const budget = Number(b.budget) || 0;
   const need = ENQUIRY_NEEDS.find((n) => n.id === b.need)?.label ?? "Enquiry";
-  const contact = createContact({
+  const contact = await createContact({
     name: b.name,
     email: b.email,
     phone: b.phone,
@@ -181,14 +185,14 @@ function simulateLead(b: LeadRequest): LeadResponse {
     source: "Business enquiry form",
   });
   const { score, why } = scoreLead({ ...b, budget });
-  const deal = createDeal({
+  const deal = await createDeal({
     name: `${b.business_name} – ${need}`,
     amount: budget,
     contact_id: contact.id,
     score,
     next_step: score === "hot" ? "Book a call this week" : "Qualify on a short call",
   });
-  logActivity(deal.id, {
+  await logActivity(deal.id, {
     type: "note",
     author: BOT,
     ai: true,
@@ -214,7 +218,7 @@ export const agentRoutes = {
       const b = await body<LeadRequest>(req);
       const forwarded = await forward("/lead", b);
       if (forwarded) return forwarded;
-      return ok(simulateLead(b), 201);
+      return ok(await simulateLead(b), 201);
     }),
   },
 };

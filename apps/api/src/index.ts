@@ -1,17 +1,20 @@
+import { resetDemoData } from "@ph/db";
 import { agentMode, agentRoutes } from "./agent.ts";
 import { crmRoutes } from "./crm.ts";
-import { reset } from "./db.ts";
+import { db, prepare } from "./db.ts";
 import { CORS, handle, ok } from "./http.ts";
 import { shopRoutes } from "./shop.ts";
 import { zendeskRoutes } from "./zendesk.ts";
+
+const state = await prepare();
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 4000),
   routes: {
     "/health": () => ok({ ok: true }),
     "/admin/reset": {
-      POST: handle(() => {
-        reset();
+      POST: handle(async () => {
+        await resetDemoData(db);
         return ok({ ok: true, message: "Demo data reset" });
       }),
     },
@@ -27,4 +30,5 @@ const server = Bun.serve({
 });
 
 console.log(`Demo API ready on ${server.url}`);
+console.log(`  data: Postgres at ${new URL(process.env.DATABASE_URL!).host} (${state === "seeded" ? "empty, seeded the demo data" : "existing data kept; bun run reset re-seeds"})`);
 console.log(`  /chat and /lead: ${agentMode}`);

@@ -6,6 +6,7 @@
   ],
   "globalPassThroughEnv": [
     "API_URL",
+    "DATABASE_URL",
     "AGENT_URL",
     "AGENT_MODEL",
     "AGENT_PORT",
